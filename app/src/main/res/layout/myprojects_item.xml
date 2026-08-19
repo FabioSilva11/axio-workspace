@@ -1,0 +1,152 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginStart="14dp"
+    android:layout_marginTop="6dp"
+    android:layout_marginEnd="14dp"
+    android:layout_marginBottom="6dp"
+    android:background="@drawable/bg_chat_thread_item"
+    android:clickable="true"
+    android:focusable="true"
+    android:foreground="?attr/selectableItemBackground"
+    android:gravity="center_vertical"
+    android:minHeight="92dp"
+    android:padding="12dp">
+
+<androidx.constraintlayout.widget.ConstraintLayout
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content">
+
+    <com.google.android.material.card.MaterialCardView
+        android:id="@+id/img_icon_view"
+        android:layout_width="52dp"
+        android:layout_height="52dp"
+        app:cardBackgroundColor="@color/chat_surface_soft"
+        app:cardCornerRadius="8dp"
+        app:cardElevation="0dp"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:strokeColor="@color/chat_border"
+        app:strokeWidth="1dp">
+
+        <RelativeLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent">
+
+            <ImageView
+                android:id="@+id/img_icon"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:contentDescription="@null"
+                android:scaleType="centerCrop"
+                android:src="@drawable/sketch_app_icon" />
+
+            <TextView
+                android:id="@+id/tv_published"
+                android:layout_width="match_parent"
+                android:layout_height="18dp"
+                android:layout_alignParentBottom="true"
+                android:background="#66000000"
+                android:ellipsize="end"
+                android:gravity="center"
+                android:maxLines="1"
+                android:textColor="@android:color/white"
+                android:textSize="10sp"
+                tools:text="605" />
+
+        </RelativeLayout>
+    </com.google.android.material.card.MaterialCardView>
+
+    <ImageView
+        android:id="@+id/img_pin"
+        android:layout_width="18dp"
+        android:layout_height="18dp"
+        android:background="@drawable/bg_chat_status_chip"
+        android:padding="3dp"
+        app:layout_constraintEnd_toEndOf="@id/img_icon_view"
+        app:layout_constraintTop_toTopOf="parent"
+        app:srcCompat="@drawable/kelivo_lucide_pin"
+        app:tint="@color/chat_accent" />
+
+</androidx.constraintlayout.widget.ConstraintLayout>
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="12dp"
+        android:layout_marginEnd="8dp"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/project_name"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textColor="@color/chat_text_primary"
+            android:textSize="15sp"
+            android:textStyle="bold"
+            tools:text="Sketchware Pro Demo" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="5dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/project_type_badge"
+                android:layout_width="wrap_content"
+                android:layout_height="22dp"
+                android:background="@drawable/bg_project_type_native"
+                android:gravity="center"
+                android:minWidth="58dp"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp"
+                android:text="@string/project_type_native"
+                android:textSize="11sp"
+                android:textStyle="bold"
+                tools:text="Native" />
+
+            <TextView
+                android:id="@+id/app_name"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:textColor="@color/chat_text_secondary"
+                android:textSize="13sp"
+                tools:text="InternalDemo (1.4)" />
+
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/package_name"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textColor="@color/chat_text_hint"
+            android:textSize="12sp"
+            tools:text="com.jbk.internal.demo" />
+    </LinearLayout>
+
+    <ImageView
+        android:id="@+id/expand"
+        android:layout_width="38dp"
+        android:layout_height="38dp"
+        android:background="?attr/selectableItemBackgroundBorderless"
+        android:padding="9dp"
+        android:scaleType="centerInside"
+        android:src="@drawable/kelivo_lucide_more_horizontal"
+        app:tint="@color/chat_text_secondary" />
+
+</LinearLayout>

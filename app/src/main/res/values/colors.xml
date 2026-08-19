@@ -1,0 +1,180 @@
+<resources>
+    <!-- App Core Colors -->
+    <color name="color_accent">#ff008dcd</color>
+    <color name="color_btn_blue_highlight">#ff005e8a</color>
+    <color name="color_btn_blue_normal">#ff008dce</color>
+    <color name="color_btn_green_highlight">#ff1d7a73</color>
+    <color name="color_btn_ltblue_highlight">#ff0b96d9</color>
+    <color name="color_btn_ltblue_normal">#ff33b8f5</color>
+    <color name="color_btn_ltorange_normal">#ffffb055</color>
+    <color name="color_btn_ltpink_highlight">#ffff3f3a</color>
+    <color name="color_btn_ltpink_normal">#ffff5955</color>
+    <color name="color_chk_white_highlight">#ffffccbc</color>
+    <color name="color_error_bg">#FFF2F1</color>
+    <color name="color_chk_white_normal">#fff5f5f5</color>
+    <color name="color_control_highlight">#20008dcd</color>
+    <color name="color_control_normal">#ff57beee</color>
+    <color name="color_primary">#ff008dcd</color>
+    <color name="color_primary_dark">#ff0084c2</color>
+    <color name="color_secondary">#ff57beee</color>
+
+    <!-- Design Colors -->
+    <color name="design_menu_bg">#ffffffff</color>
+    <color name="design_menu_text_color">#ff000000</color>
+    <color name="design_tab_background">#ff008dcd</color>
+    <color name="design_tab_indicator_color">#ffffc107</color>
+    <color name="design_tab_selected_text_color">#ffffffff</color>
+    <color name="design_tab_text_color">#ffa8cde9</color>
+
+    <!-- General Colors -->
+    <color name="grey">#ff828282</color>
+    <color name="light_grey">#ffc6c6c6</color>
+    <color name="lighter_grey">#ffeeeeee</color>
+    <color name="list_selected_background">#20008dcd</color>
+
+    <!-- Main Tab Colors -->
+    <color name="main_tab_background">#ffffffff</color>
+    <color name="main_tab_indicator_color">#ff71bce9</color>
+    <color name="main_tab_selected_text_color">#ff007cc9</color>
+    <color name="main_tab_text_color">#ff007cc9</color>
+
+    <!-- Project Type Colors -->
+    <color name="project_type_android_studio_bg">#E8F4FF</color>
+    <color name="project_type_android_studio_stroke">#2E84C6</color>
+    <color name="project_type_android_studio_text">#14507E</color>
+    <color name="project_type_native_bg">#EAF7ED</color>
+    <color name="project_type_native_stroke">#2E8B57</color>
+    <color name="project_type_native_text">#17613A</color>
+    <color name="project_type_web_bg">#F3ECFF</color>
+    <color name="project_type_web_stroke">#7C4DFF</color>
+    <color name="project_type_web_text">#4A2C9B</color>
+
+    <!-- SC Colors -->
+    <color name="sc_item_bg">#fffff9ac</color>
+    <color name="scolor_black_01">#ff1d2129</color>
+    <color name="scolor_black_02">#ff757575</color>
+    <color name="scolor_blue_01">#ff09a7ec</color>
+    <color name="scolor_dark_yellow_01">#ffff8700</color>
+    <color name="scolor_green_01">#ff52f55c</color>
+    <color name="scolor_green_02">#ff74f37c</color>
+    <color name="scolor_green_normal">#ff26a59a</color>
+    <color name="scolor_light_grey">#ffd4d4d4</color>
+    <color name="scolor_red_01">#ffde0000</color>
+    <color name="scolor_red_02">#ffff7c79</color>
+    <color name="scolor_sl_01">#ff1d2129</color>
+    <color name="scolor_sl_02">#ffffb055</color>
+    <color name="scolor_sl_03">#ffde0000</color>
+    <color name="scolor_sl_04">#ff008dcd</color>
+    <color name="scolor_green_violet">#ff8a55d7</color>
+
+    <!-- Toolbar Colors -->
+    <color name="tool_bar_text_color">#ffffffff</color>
+    <color name="transparent">#00ffffff</color>
+
+    <!-- Syntax Highlighting Colors -->
+    <color name="darkGrey">#ff272822</color>
+    <color name="black">#ff000000</color>
+    <color name="orange">#ffcc7832</color>
+    <color name="gold">#ffe6b121</color>
+    <color name="monokia_pro_green">#ff9ccc6b</color>
+    <color name="monokia_pro_black">#ff2d2a2e</color>
+    <color name="monokia_pro_white">#fffcfcfa</color>
+    <color name="monokia_pro_pink">#ffff6188</color>
+    <color name="monokia_pro_sky">#ff78dce8</color>
+    <color name="monokia_pro_orange">#ffffd866</color>
+    <color name="monokia_pro_purple">#ffab9df2</color>
+    <color name="monokia_pro_grey">#ff727072</color>
+
+    <!-- Bottom Bar Colors -->
+    <color name="colorBottomBarSW">#ff008dcd</color>
+
+    <!-- Material 3 Text Colors -->
+    <color name="color_text_onSurface">#1A1C1E</color>
+    <color name="color_text_onSurfaceVariant">#41474D</color>
+
+    <!-- Input Layout Colors -->
+    <color name="inputLayoutBackgroundColor">#BFFAFAFA</color>
+    <color name="inputLayoutStrokeColor">#D3D3D3</color>
+
+    <!-- Background Colors -->
+    <color name="backgroundColor">#FFFFFF</color>
+    <color name="backgroundOpenColor">#F5F5F5</color>
+    <color name="dialogBackgroundColor">#FFFFFF</color>
+    <color name="cardStrokeColor">#D1D1D1</color>
+
+    <!-- View Property Colors -->
+    <color name="view_property_background_color">#ffffff</color>
+    <color name="view_property_tab_active">#ff0084c2</color>
+    <color name="view_property_tab_deactive">#30008dcd</color>
+    <color name="view_property_tab_active_text">#ffffffff</color>
+    <color name="view_property_tab_deactive_text">#ff000000</color>
+    <color name="view_property_grid_background">#30008dcd</color>
+    <color name="view_property_grid_see_all_background">#ff008dcd</color>
+    <color name="view_property_spinner_filter">#ff000000</color>
+
+    <!-- Chat Design Colors -->
+    <color name="chat_background">#F8F9FA</color>
+    <color name="chat_surface">#FFFFFF</color>
+    <color name="chat_surface_soft">#F2F2F7</color>
+    <color name="chat_accent">#6B5CE7</color>
+    <color name="chat_accent_soft">#EDE9FE</color>
+    <color name="chat_text_primary">#1C1C1E</color>
+    <color name="chat_text_secondary">#8E8E93</color>
+    <color name="chat_text_hint">#AEAEB2</color>
+    <color name="chat_divider">#E5E5EA</color>
+    <color name="chat_border">#E5E5EA</color>
+    <color name="chat_warning">#B7791F</color>
+    <color name="chat_success">#22C55E</color>
+    <color name="chat_error">#EF4444</color>
+    <color name="store_play_blue">#0B57D0</color>
+    <color name="chat_code_background">#F2EFE7</color>
+    <color name="chat_diff_background">#00000000</color>
+    <color name="chat_diff_header">#F8FAFC</color>
+    <color name="chat_diff_hunk">#EAF3FF</color>
+    <color name="chat_diff_added">#EAF8EF</color>
+    <color name="chat_diff_removed">#FDECEC</color>
+    <color name="chat_diff_line_text">#1F2937</color>
+    <color name="chat_diff_muted_text">#64748B</color>
+
+    <!-- Kelivo Colors -->
+    <color name="kelivo_tool_surface">#F3F0FA</color>
+    <color name="kelivo_surface_soft">#F2F2F7</color>
+    <color name="kelivo_border_soft">#E5E5EA</color>
+    <color name="kelivo_user_bubble">#E8E4F8</color>
+    <color name="kelivo_avatar_bg">#E8E4F8</color>
+    <color name="kelivo_avatar_text">#5B4FCF</color>
+    <color name="kelivo_selected_row">#F0EDFA</color>
+    <color name="kelivo_send_bg">#8E8E93</color>
+
+    <!-- Provider Status Colors -->
+    <color name="provider_status_on_bg">#DCF5E3</color>
+    <color name="provider_status_on_text">#1F9D55</color>
+    <color name="provider_status_off_bg">#FCEFD9</color>
+    <color name="provider_status_off_text">#C77A1F</color>
+
+    <!-- Android Studio Project Editor -->
+    <color name="studio_background">@color/chat_background</color>
+    <color name="studio_surface">@color/chat_surface</color>
+    <color name="studio_surface_alt">@color/chat_surface_soft</color>
+    <color name="studio_accent">@color/chat_accent</color>
+    <color name="studio_accent_soft">@color/chat_accent_soft</color>
+    <color name="studio_border">@color/chat_border</color>
+    <color name="studio_text_primary">@color/chat_text_primary</color>
+    <color name="studio_text_secondary">@color/chat_text_secondary</color>
+    <color name="studio_code_background">@color/chat_surface</color>
+    <color name="studio_output_background">@color/chat_surface</color>
+    <color name="studio_status_background">@color/chat_surface_soft</color>
+    <color name="studio_file_selected">@color/chat_accent_soft</color>
+    <color name="studio_tree_line">@color/chat_border</color>
+    <color name="studio_folder_code">#4EA1FF</color>
+    <color name="studio_folder_resource">#6ACB8F</color>
+    <color name="studio_folder_config">#D8A348</color>
+    <color name="studio_folder_default">@color/studio_text_secondary</color>
+    <color name="studio_file_kotlin">#B56DFF</color>
+    <color name="studio_file_java">#F18A54</color>
+    <color name="studio_file_xml">#6ACB8F</color>
+    <color name="studio_file_config">#D8A348</color>
+    <color name="studio_file_json">#E5C84F</color>
+    <color name="studio_file_image">#63C7D8</color>
+    <color name="studio_file_default">@color/studio_text_secondary</color>
+</resources>

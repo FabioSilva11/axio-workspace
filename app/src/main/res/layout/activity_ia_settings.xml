@@ -1,0 +1,88 @@
+<androidx.coordinatorlayout.widget.CoordinatorLayout
+  xmlns:android="http://schemas.android.com/apk/res/android"
+  xmlns:app="http://schemas.android.com/apk/res-auto"
+  android:id="@+id/settings_body"
+  android:layout_width="match_parent"
+  android:layout_height="match_parent"
+  android:background="@color/chat_background">
+
+  <com.google.android.material.appbar.AppBarLayout
+    android:id="@+id/app_bar_layout"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@color/chat_background"
+    android:elevation="0dp">
+
+    <com.google.android.material.appbar.MaterialToolbar
+      android:id="@+id/top_app_bar"
+      android:layout_width="match_parent"
+      android:layout_height="?attr/actionBarSize"
+      android:background="@color/chat_background"
+      app:menu="@menu/menu_providers"
+      app:navigationIcon="@drawable/ic_mtrl_back"
+      app:navigationIconTint="@color/chat_text_primary"
+      app:title="@string/ia_settings_title"
+      app:titleTextColor="@color/chat_text_primary" />
+
+  </com.google.android.material.appbar.AppBarLayout>
+
+  <LinearLayout
+    android:id="@+id/providers_content"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:clipToPadding="false"
+    android:paddingBottom="16dp"
+    app:layout_behavior="@string/appbar_scrolling_view_behavior">
+
+    <!-- Pesquisa -->
+    <com.google.android.material.textfield.TextInputLayout
+      android:id="@+id/til_search_providers"
+      style="@style/Widget.Material3.TextInputLayout.FilledBox"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginHorizontal="16dp"
+      android:layout_marginTop="12dp"
+      android:layout_marginBottom="18dp"
+      app:boxBackgroundColor="@color/chat_surface_soft"
+      app:boxCornerRadiusTopStart="16dp"
+      app:boxCornerRadiusTopEnd="16dp"
+      app:boxCornerRadiusBottomStart="16dp"
+      app:boxCornerRadiusBottomEnd="16dp"
+      app:boxStrokeWidth="0dp"
+      app:boxStrokeWidthFocused="0dp"
+      app:hintEnabled="false"
+      app:startIconDrawable="@drawable/ic_mtrl_search"
+      app:startIconTint="@color/chat_text_secondary">
+
+      <com.google.android.material.textfield.TextInputEditText
+        android:id="@+id/et_search_providers"
+        android:layout_width="match_parent"
+        android:layout_height="46dp"
+        android:background="@android:color/transparent"
+        android:hint="@string/ia_search_providers_hint"
+        android:importantForAutofill="no"
+        android:paddingTop="0dp"
+        android:paddingBottom="0dp"
+        android:singleLine="true"
+        android:textColor="@color/chat_text_primary"
+        android:textColorHint="@color/chat_text_secondary"
+        android:textSize="14sp" />
+
+    </com.google.android.material.textfield.TextInputLayout>
+
+    <!-- Card Máximo de Tokens -->
+    <!-- Lista -->
+    <androidx.recyclerview.widget.RecyclerView
+      android:id="@+id/rv_providers"
+      android:layout_width="match_parent"
+      android:layout_height="0dp"
+      android:layout_weight="1"
+      android:clipToPadding="false"
+      android:overScrollMode="never"
+      android:paddingHorizontal="16dp"
+      android:paddingBottom="16dp" />
+
+  </LinearLayout>
+
+</androidx.coordinatorlayout.widget.CoordinatorLayout>

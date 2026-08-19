@@ -1,0 +1,148 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="com.google.android.gms.permission.AD_ID" />
+
+    <application
+        android:name=".SketchApplication"
+        android:allowBackup="true"
+        android:icon="@drawable/app_icon_new"
+        android:roundIcon="@drawable/app_icon_new"
+        android:label="@string/app_name"
+        android:largeHeap="true"
+        android:localeConfig="@xml/locales_config"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Axion"
+        android:usesCleartextTraffic="true"
+        android:networkSecurityConfig="@xml/network_security_config"
+        tools:targetApi="34">
+
+        <meta-data
+            android:name="com.google.android.gms.ads.APPLICATION_ID"
+            android:value="ca-app-pub-6598765502914364~5860680424" />
+
+        <service
+            android:name=".AxionMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <service
+            android:name=".ChatRunForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.provider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/provider_paths" />
+        </provider>
+
+        <activity
+            android:name=".auth.AuthActivity"
+            android:screenOrientation="portrait"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.Axion"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".AppBlockedActivity"
+            android:screenOrientation="portrait"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:theme="@style/Theme.Axion" />
+
+        <activity
+            android:name="com.saaspaymentsolutions.axion.MainActivity"
+            android:screenOrientation="portrait"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.Axion" />
+
+        <activity
+            android:name=".splash.SplashActivity"
+            android:screenOrientation="portrait"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.Axion" />
+
+
+
+        <activity
+            android:name=".resources.ProjectResourceManagerActivity"
+            android:screenOrientation="portrait"
+            android:exported="false"
+            android:theme="@style/Theme.Axion" />
+
+        <activity
+            android:name=".resources.ImportProjectIconActivity"
+            android:screenOrientation="portrait"
+            android:exported="false"
+            android:theme="@style/Theme.Axion" />
+
+        <activity
+            android:name=".resources.ProjectAssetManagerActivity"
+            android:screenOrientation="portrait"
+            android:exported="false"
+            android:theme="@style/Theme.Axion" />
+
+        <activity
+            android:name=".account.PlansActivity"
+            android:screenOrientation="portrait"
+            android:exported="false"
+            android:theme="@style/Theme.Axion" />
+
+        <activity
+            android:name=".account.ProfileActivity"
+            android:screenOrientation="portrait"
+            android:exported="false"
+            android:theme="@style/Theme.Axion" />
+
+
+        <activity
+            android:name=".account.ProfileActivity"
+            android:screenOrientation="portrait"
+            android:exported="false"
+            android:theme="@style/Theme.Axion" />
+
+        <activity
+            android:name=".ChatActivity"
+            android:screenOrientation="portrait"
+            android:exported="false"
+            android:theme="@style/Theme.Axion" />
+
+        <activity
+            android:name=".FolderPickerActivity"
+            android:screenOrientation="portrait"
+            android:exported="false"
+            android:theme="@style/Theme.Axion" />
+
+    </application>
+
+</manifest>

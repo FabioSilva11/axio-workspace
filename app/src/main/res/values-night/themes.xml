@@ -1,0 +1,7 @@
+<resources>
+    <style name="Platform.V21.Theme.Axion" parent="Base.Theme.Axion">
+        <item name="android:navigationBarColor">?android:attr/colorBackground</item>
+        <item name="android:statusBarColor">?android:attr/colorBackground</item>
+    </style>
+    <style name="Platform.Theme.Axion" parent="Platform.V21.Theme.Axion" />
+</resources>

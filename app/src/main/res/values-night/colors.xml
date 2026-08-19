@@ -1,0 +1,30 @@
+<resources>
+    <color name="color_accent">#ff008dcd</color>
+    <color name="color_text_onSurface">#E2E2E5</color>
+    <color name="color_text_onSurfaceVariant">#C1C7CE</color>
+    <color name="inputLayoutBackgroundColor">#2e2e2e</color>
+    <color name="inputLayoutStrokeColor">#505050</color>
+    <color name="backgroundColor">#1C1C1C</color>
+    <color name="backgroundOpenColor">#252729</color>
+    <color name="dialogBackgroundColor">#2E2E2E</color>
+    <color name="cardStrokeColor">#2E2E2E</color>
+    <color name="view_property_background_color">#292929</color>
+    <color name="view_property_tab_active">#525252</color>
+    <color name="view_property_tab_deactive">#60525252</color>
+    <color name="view_property_tab_active_text">#ff000000</color>
+    <color name="view_property_tab_deactive_text">#ffffffff</color>
+    <color name="view_property_grid_background">#60525252</color>
+    <color name="view_property_spinner_filter">#ffffffff</color>
+    <color name="color_error_bg">#261008</color>
+    <color name="chat_background">#0F111A</color>
+    <color name="chat_surface">#171A26</color>
+    <color name="chat_surface_soft">#202436</color>
+    <color name="chat_accent">#8B84FF</color>
+    <color name="chat_success">#4ADE80</color>
+    <color name="chat_error">#F87171</color>
+    <color name="chat_text_primary">#F4F6FF</color>
+    <color name="chat_text_secondary">#A6AEC8</color>
+    <color name="chat_text_hint">#737B95</color>
+    <color name="chat_divider">#2B3044</color>
+    <color name="chat_border">#30364D</color>
+</resources>

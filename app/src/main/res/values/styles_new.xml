@@ -1,0 +1,170 @@
+<resources>
+    <style name="TextAppearance.Axion.DisplayLarge" parent="TextAppearance.Material3.DisplayLarge" />
+    <style name="TextAppearance.Axion.DisplayMedium" parent="TextAppearance.Material3.DisplayMedium" />
+    <style name="TextAppearance.Axion.DisplaySmall" parent="TextAppearance.Material3.DisplaySmall" />
+    <style name="TextAppearance.Axion.HeadlineLarge" parent="TextAppearance.Material3.HeadlineLarge" />
+    <style name="TextAppearance.Axion.HeadlineMedium" parent="TextAppearance.Material3.HeadlineMedium" />
+    <style name="TextAppearance.Axion.HeadlineSmall" parent="TextAppearance.Material3.HeadlineSmall" />
+    <style name="TextAppearance.Axion.TitleLarge" parent="TextAppearance.Material3.TitleLarge" />
+    <style name="TextAppearance.Axion.TitleMedium" parent="TextAppearance.Material3.TitleMedium" />
+    <style name="TextAppearance.Axion.TitleSmall" parent="TextAppearance.Material3.TitleSmall" />
+    <style name="TextAppearance.Axion.BodyLarge" parent="TextAppearance.Material3.BodyLarge" />
+    <style name="TextAppearance.Axion.BodyMedium" parent="TextAppearance.Material3.BodyMedium" />
+    <style name="TextAppearance.Axion.BodySmall" parent="TextAppearance.Material3.BodySmall" />
+    <style name="TextAppearance.Axion.LabelLarge" parent="TextAppearance.Material3.LabelLarge" />
+    <style name="TextAppearance.Axion.LabelMedium" parent="TextAppearance.Material3.LabelMedium" />
+    <style name="TextAppearance.Axion.LabelSmall" parent="TextAppearance.Material3.LabelSmall" />
+
+    <style name="Widget.Axion.BottomNavigationView" parent="Widget.Material3.BottomNavigationView">
+        <item name="android:background">@color/chat_surface</item>
+        <item name="elevation">0dp</item>
+    </style>
+
+    <style name="Widget.Axion.CollapsingToolbar" parent="Widget.Material3Expressive.CollapsingToolbar.Large">
+        <item name="collapsedTitleTextAppearance">
+            @style/TextAppearance.Axion.CollapsingToolbar.Collapsed
+        </item>
+        <item name="expandedTitleTextAppearance">
+            @style/TextAppearance.Axion.CollapsingToolbar.Expanded
+        </item>
+        <item name="titleCollapseMode">scale</item>
+    </style>
+
+    <style name="TextAppearance.Axion.CollapsingToolbar.Collapsed" parent="TextAppearance.Axion.TitleLarge" />
+    <style name="TextAppearance.Axion.CollapsingToolbar.Expanded" parent="TextAppearance.Axion.HeadlineMedium" />
+
+    <style name="Widget.Axion.Toolbar.SmallText" parent="Widget.Material3Expressive.Toolbar.OnSurface">
+        <item name="titleTextAppearance">?attr/textAppearanceBodyLarge</item>
+    </style>
+
+    <style name="Widget.Axion.NavigationView.Main" parent="Widget.Material3.NavigationView">
+        <item name="itemHorizontalPadding">16dp</item>
+        <item name="itemIconPadding">8dp</item>
+        <item name="itemShapeInsetEnd">16dp</item>
+        <item name="itemShapeInsetStart">16dp</item>
+        <item name="itemTextAppearance">?attr/textAppearanceBodyMedium</item>
+        <item name="subheaderInsetEnd">16dp</item>
+        <item name="subheaderInsetStart">16dp</item>
+    </style>
+
+    <style name="Widget.Axion.TextInputLayout" parent="Widget.Material3.TextInputLayout.OutlinedBox">
+        <item name="shapeAppearance">@style/ShapeAppearance.Material3.Corner.Medium</item>
+        <item name="boxBackgroundColor">@color/chat_surface</item>
+        <item name="boxStrokeColor">@color/chat_border</item>
+        <item name="hintTextColor">@color/chat_text_secondary</item>
+    </style>
+
+    <style name="Widget.Axion.TextInputLayout.ExposedDropdownMenu" parent="Widget.Material3.TextInputLayout.OutlinedBox.ExposedDropdownMenu">
+        <item name="shapeAppearance">@style/ShapeAppearance.Material3.Corner.Medium</item>
+    </style>
+
+    <style name="ThemeOverlay.Axion.ViewEditor" parent="Base.Theme.MaterialComponents.Light" />
+
+    <style name="ThemeOverlay.Axion.ViewEditor.Material3.Light" parent="ThemeOverlay.Material3.DynamicColors.Light" />
+
+    <style name="ThemeOverlay.Axion.ViewEditor.Material3.Dark" parent="ThemeOverlay.Material3.DynamicColors.Dark" />
+
+    <style name="ThemeOverlay.Axion.ViewEditor.Material3.NON_DYNAMIC.Light" parent="Base.Theme.Material3.Light" />
+
+    <style name="ThemeOverlay.Axion.ViewEditor.Material3.NON_DYNAMIC.Dark" parent="Base.Theme.Material3.Dark" />
+
+    <style name="Preference.Axion.SwitchPreferenceCompat" parent="Preference.SwitchPreferenceCompat.Material">
+        <item name="widgetLayout">@layout/preference_widget_layout_m3_switch</item>
+    </style>
+
+    <style name="Widget.Axion.CompoundButton.MaterialSwitch" parent="Widget.Material3.CompoundButton.MaterialSwitch">
+        <item name="thumbTint">@color/sketchware_switch_thumb_tint</item>
+        <item name="trackTint">@color/sketchware_switch_track_tint</item>
+        <item name="trackDecorationTint">@color/sketchware_switch_track_decoration_tint</item>
+    </style>
+
+    <style name="Widget.Axion.CompoundButton.Switch" parent="Widget.Material3.CompoundButton.Switch">
+        <item name="thumbTint">@color/sketchware_switch_thumb_tint</item>
+        <item name="trackTint">@color/sketchware_switch_track_tint</item>
+    </style>
+
+    <style name="Widget.Axion.TabLayout" parent="Widget.Material3.TabLayout">
+        <item name="tabIndicator">@drawable/view_tab_indicator</item>
+    </style>
+
+    <style name="ThemeOverlay.Axion.BottomSheetDialog" parent="ThemeOverlay.Material3.BottomSheetDialog">
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="bottomSheetStyle">@style/Widget.Axion.BottomSheet.Modal</item>
+    </style>
+
+    <style name="Widget.Axion.BottomSheet.Modal" parent="Widget.Material3.BottomSheet">
+        <item name="android:elevation">0dp</item>
+        <item name="backgroundTint">@color/chat_surface</item>
+    </style>
+
+    <style name="ThemeOverlay.Axion.AlertDialog" parent="ThemeOverlay.Material3Expressive.MaterialAlertDialog.Centered">
+        <item name="android:colorBackground">@color/chat_surface</item>
+        <item name="android:windowAnimationStyle">@style/MaterialAlertDialog.Material3.Animation
+        </item>
+        <item name="android:windowSoftInputMode">adjustResize</item>
+        <item name="android:windowMinWidthMajor">65%</item>
+        <item name="android:windowMinWidthMinor">98%</item>
+        <item name="alertDialogStyle">@style/MaterialAlertDialog.Axion</item>
+
+        <item name="buttonBarButtonStyle">@style/Widget.Material3.Button.TextButton.Dialog</item>
+        <item name="buttonBarNegativeButtonStyle">@style/Widget.Material3.Button.TextButton.Dialog
+        </item>
+        <item name="buttonBarNeutralButtonStyle">
+            @style/Widget.Material3.Button.TextButton.Dialog.Flush
+        </item>
+        <item name="buttonBarPositiveButtonStyle">@style/Widget.Material3.Button.TextButton.Dialog
+        </item>
+    </style>
+
+    <style name="MaterialAlertDialog.Axion" parent="MaterialAlertDialog.Material3Expressive">
+        <item name="backgroundInsetBottom">8dp</item>
+        <item name="backgroundInsetTop">8dp</item>
+        <item name="shapeAppearance">@style/ShapeAppearance.Material3.Corner.Medium</item>
+    </style>
+
+    <style name="Widget.Axion.CardView" parent="Widget.Material3.CardView.Filled">
+        <item name="cardCornerRadius">8dp</item>
+        <item name="cardBackgroundColor">@color/chat_surface</item>
+        <item name="strokeColor">@color/chat_border</item>
+        <item name="strokeWidth">1dp</item>
+    </style>
+
+    <style name="Widget.Axion.Chip" parent="Widget.Material3.Chip.Input.Icon.Elevated">
+        <item name="closeIconEnabled">false</item>
+        <item name="closeIcon">@null</item>
+        <item name="checkedIconEnabled">true</item>
+        <item name="checkedIconTint">?attr/colorOnSecondary</item>
+        <item name="checkedIcon">@drawable/ic_mtrl_done</item>
+        <item name="chipBackgroundColor">?attr/colorSecondary</item>
+        <item name="chipCornerRadius">90dp</item>
+        <item name="android:textAppearance">@style/TextAppearance.Axion.Chip</item>
+        <item name="android:textColor">?attr/colorOnSecondary</item>
+    </style>
+
+    <style name="Widget.Axion.Chip.ProjectPreview" parent="Widget.Material3.Chip.Suggestion">
+        <item name="android:focusable">false</item>
+        <item name="android:clickable">false</item>
+        <item name="android:stateListAnimator">@null</item>
+        <item name="rippleColor">@null</item>
+        <item name="shapeAppearance">?attr/shapeAppearanceCornerLarge</item>
+    </style>
+
+    <style name="TextAppearance.Axion.Chip" parent="TextAppearance.Axion.BodyMedium">
+    </style>
+
+    <style name="TextAppearance.Axion.BodyLargeEmphasized" parent="TextAppearance.Axion.BodyLarge">
+        <item name="android:textStyle">bold</item>
+    </style>
+
+    <style name="ThemeOverlay.Axion.Chip.ProjectPreview" parent="">
+        <item name="chipStyle">@style/Widget.Axion.Chip.ProjectPreview</item>
+    </style>
+
+    <style name="AsdEditorDialogTheme" parent="Theme.Axion">
+        <item name="android:windowIsFloating">false</item>
+        <item name="android:windowFullscreen">false</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowSoftInputMode">stateVisible|adjustResize</item>
+        <item name="android:windowAnimationStyle">@android:style/Animation.Dialog</item>
+    </style>
+</resources>
