@@ -4,35 +4,35 @@
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:layout_marginStart="14dp"
-    android:layout_marginTop="6dp"
+    android:layout_marginTop="4dp"
     android:layout_marginEnd="14dp"
-    android:layout_marginBottom="6dp"
+    android:layout_marginBottom="4dp"
     android:background="@drawable/bg_chat_thread_item"
     android:clickable="true"
     android:focusable="true"
     android:foreground="?attr/selectableItemBackground"
     android:gravity="center_vertical"
-    android:minHeight="82dp"
+    android:minHeight="68dp"
     android:orientation="horizontal"
-    android:padding="12dp">
+    android:padding="9dp">
 
     <FrameLayout
-        android:layout_width="46dp"
-        android:layout_height="46dp">
+        android:layout_width="40dp"
+        android:layout_height="40dp">
 
         <ImageView
             android:id="@+id/img_icon"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:background="@drawable/bg_chat_project_icon"
-            android:padding="7dp"
+            android:padding="6dp"
             android:scaleType="centerCrop"
             android:src="@drawable/default_icon" />
 
         <ImageView
             android:id="@+id/img_kind_badge"
-            android:layout_width="20dp"
-            android:layout_height="20dp"
+            android:layout_width="18dp"
+            android:layout_height="18dp"
             android:layout_gravity="bottom|end"
             android:background="@drawable/bg_badge_native"
             android:contentDescription="@string/project_kind_native"
@@ -46,7 +46,7 @@
     <LinearLayout
         android:layout_width="0dp"
         android:layout_height="wrap_content"
-        android:layout_marginStart="12dp"
+        android:layout_marginStart="10dp"
         android:layout_weight="1"
         android:orientation="vertical">
 

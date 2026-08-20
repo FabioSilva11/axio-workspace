@@ -377,7 +377,6 @@ public class ContextBuilder {
                 + "- Always read relevant files before modifying them.\n"
                 + "- Make complete and self-contained edits when requested; do not leave placeholders or TODOs for requested work.\n"
                 + "- Maintain consistency across related files and update imports when moving/renaming.\n"
-                + "- Axion does NOT have an embedded Android compiler, APK builder, or built-in Web runner. Never claim you compiled an APK or launched a preview unless a valid tool result provides evidence.\n"
                 + "- Never attempt to modify files outside the authorized workspace boundary.";
     }
 

@@ -25,6 +25,13 @@
     <string name="main_drawer_app_subtitle">Editor Agêntico de Workspaces</string>
     <string name="main_drawer_ai_models">Modelos de IA</string>
     <string name="main_drawer_app_version">v1.0</string>
+    <string name="main_menu_about">Sobre</string>
+    <string name="main_menu_share_apk">Compartilhar Axion</string>
+    <string name="main_menu_telegram">Telegram</string>
+    <string name="about_axion_title">Sobre o Axion</string>
+    <string name="about_axion_message">Axion é um editor agêntico de workspaces para criar, editar e organizar projetos. Acompanhe novidades, projetos e conteúdos da comunidade no Telegram: @sketcware_ia</string>
+    <string name="share_apk_message">Conheça o Axion: um editor agêntico de workspaces para seus projetos. Baixe e compartilhe com sua equipe!</string>
+    <string name="share_apk_unavailable">Não foi possível localizar o APK do Axion para compartilhar.</string>
     <string name="main_delete_project_title">Remover dos Recentes</string>
     <string name="main_delete_project_message">Remover \"%1$s\" dos workspaces recentes? Os arquivos não serão apagados.</string>
     <string name="main_delete_project_cancel">Cancelar</string>

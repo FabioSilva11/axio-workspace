@@ -9,6 +9,8 @@ import android.os.Looper;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.view.Gravity;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.view.View;
 import android.widget.EditText;
 import android.widget.FrameLayout;
@@ -23,6 +25,7 @@ import androidx.appcompat.app.ActionBarDrawerToggle;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.app.AlertDialog;
 import androidx.core.view.GravityCompat;
+import androidx.core.content.FileProvider;
 import androidx.drawerlayout.widget.DrawerLayout;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
@@ -77,6 +80,7 @@ public class MainActivity extends AppCompatActivity {
         preference = new PrefsManager(this, "project");
 
         initViews();
+        setSupportActionBar(findViewById(R.id.toolbar));
         setupDrawer();
         setupSearch();
         setupFab();
@@ -139,6 +143,45 @@ public class MainActivity extends AppCompatActivity {
                 drawerLayout.openDrawer(GravityCompat.START);
             }
         });
+    }
+
+    @Override
+    public boolean onCreateOptionsMenu(Menu menu) {
+        getMenuInflater().inflate(R.menu.main_overflow_menu, menu);
+        return true;
+    }
+
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        int id = item.getItemId();
+        if (id == R.id.action_about) {
+            startActivity(new Intent(this, AboutActivity.class));
+            return true;
+        }
+        if (id == R.id.action_telegram) {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/sketcware_ia")));
+            return true;
+        }
+        if (id == R.id.action_share_apk) {
+            shareInstalledApk();
+            return true;
+        }
+        return super.onOptionsItemSelected(item);
+    }
+
+    private void shareInstalledApk() {
+        try {
+            java.io.File apk = new java.io.File(getApplicationInfo().sourceDir);
+            Uri apkUri = FileProvider.getUriForFile(this, getPackageName() + ".provider", apk);
+            Intent share = new Intent(Intent.ACTION_SEND);
+            share.setType("application/vnd.android.package-archive");
+            share.putExtra(Intent.EXTRA_STREAM, apkUri);
+            share.putExtra(Intent.EXTRA_TEXT, getString(R.string.share_apk_message));
+            share.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(Intent.createChooser(share, getString(R.string.main_menu_share_apk)));
+        } catch (Exception e) {
+            Toast.makeText(this, R.string.share_apk_unavailable, Toast.LENGTH_LONG).show();
+        }
     }
 
     private void setupSearch() {

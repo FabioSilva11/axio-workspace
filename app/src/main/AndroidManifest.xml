@@ -63,6 +63,12 @@
         </activity>
 
         <activity
+            android:name=".AboutActivity"
+            android:screenOrientation="portrait"
+            android:exported="false"
+            android:theme="@style/Theme.Axion" />
+
+        <activity
             android:name=".resources.ProjectResourceManagerActivity"
             android:screenOrientation="portrait"
             android:exported="false"
