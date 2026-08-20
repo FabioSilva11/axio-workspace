@@ -149,9 +149,8 @@
             android:background="@color/chat_surface"
             android:visibility="visible"
             app:tabIndicatorColor="@color/chat_accent"
-            app:tabMode="scrollable"
-            app:tabGravity="start"
-            app:tabMinWidth="88dp"
+            app:tabMode="fixed"
+            app:tabGravity="fill"
             app:tabSelectedTextColor="@color/chat_accent"
             app:tabTextColor="@color/chat_text_secondary" />
 
