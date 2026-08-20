@@ -214,7 +214,54 @@ public class VoidToolWrapper implements Tool {
             false
         ));
 
-        // Terminal/shell tools removed: the assistant no longer has shell access.
+        // Terminal/shell tools
+        manager.registerTool(new VoidToolWrapper(
+            "run_command",
+            "Executes a shell command on the Android device and returns the output. Use this as a last resort when other tools cannot accomplish the task. Commands run inside the project folder. The output is truncated at 100 000 characters.",
+            createParams(new String[][]{
+                {"command", "string", "The shell command to execute."}
+            }, new String[][]{
+                {"cwd", "string", "Optional. Working directory relative to the project root. Defaults to the project root."},
+                {"timeout_seconds", "number", "Optional. Timeout in seconds (5-300). Default is 60."}
+            }),
+            true,
+            true,
+            false
+        ));
+
+        manager.registerTool(new VoidToolWrapper(
+            "open_persistent_terminal",
+            "Opens a persistent terminal session that can be reused across multiple commands. Returns a persistent_terminal_id.",
+            createParams(null, new String[][]{
+                {"cwd", "string", "Optional. Working directory relative to the project root."}
+            }),
+            true,
+            false,
+            false
+        ));
+
+        manager.registerTool(new VoidToolWrapper(
+            "run_persistent_command",
+            "Sends a command to an existing persistent terminal. Returns partial output after a short wait.",
+            createParams(new String[][]{
+                {"command", "string", "The shell command to execute."},
+                {"persistent_terminal_id", "string", "The ID of the terminal created using open_persistent_terminal."}
+            }, null),
+            true,
+            true,
+            false
+        ));
+
+        manager.registerTool(new VoidToolWrapper(
+            "kill_persistent_terminal",
+            "Forcefully closes a persistent terminal and frees its resources.",
+            createParams(new String[][]{
+                {"persistent_terminal_id", "string", "The ID of the terminal to close."}
+            }, null),
+            true,
+            false,
+            false
+        ));
     }
 
     private static boolean registerVoidToolDefinitions(ToolManager manager) {
@@ -249,14 +296,16 @@ public class VoidToolWrapper implements Tool {
 
     private static boolean requiresApprovalFor(String toolName) {
         return switch (toolName) {
-            case "rewrite_file", "edit_file", "create_file_or_folder", "delete_file_or_folder" -> true;
+            case "rewrite_file", "edit_file", "create_file_or_folder", "delete_file_or_folder",
+                 "run_command", "run_persistent_command", "open_persistent_terminal", "kill_persistent_terminal" -> true;
             default -> false;
         };
     }
 
     private static boolean isDestructiveTool(String toolName) {
         return switch (toolName) {
-            case "rewrite_file", "edit_file", "delete_file_or_folder" -> true;
+            case "rewrite_file", "edit_file", "delete_file_or_folder",
+                 "run_command", "run_persistent_command" -> true;
             default -> false;
         };
     }
