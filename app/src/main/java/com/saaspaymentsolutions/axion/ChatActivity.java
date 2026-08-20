@@ -81,13 +81,7 @@ import com.saaspaymentsolutions.axion.port.VoidPortRefreshModelService;
 import com.saaspaymentsolutions.axion.port.VoidPortScmService;
 import com.saaspaymentsolutions.axion.port.VoidPortSettings;
 import com.saaspaymentsolutions.axion.analytics.AxionAnalytics;
-import com.saaspaymentsolutions.axion.account.AxionAccount;
-import com.saaspaymentsolutions.axion.account.AxionSession;
-import com.saaspaymentsolutions.axion.account.FirebaseAccountStore;
-import com.saaspaymentsolutions.axion.account.PlanEntitlements;
 import com.saaspaymentsolutions.axion.agent.MultiAgentPolicy;
-import com.google.firebase.auth.FirebaseAuth;
-import com.google.firebase.auth.FirebaseUser;
 
 import com.google.android.material.bottomsheet.BottomSheetBehavior;
 import com.google.android.material.bottomsheet.BottomSheetDialog;
@@ -143,12 +137,6 @@ public class ChatActivity extends AppCompatActivity {
     private ChatDiffFragment chatDiffFragment;
     private ChatArtifactsFragment chatArtifactsFragment;
     private ChatPlanFragment chatPlanFragment;
-    private ChatLogsFragment chatLogsFragment;
-    private ProgressBar tokenUsageProgress;
-    private TextView textTokenUsage;
-    private TextView textTokenPercent;
-
-    private final TokenUsageStore.Listener tokenUsageListener = this::renderTokenUsage;
 
     private String currentRunStatus = "";
     private final Handler streamUiHandler = new Handler(Looper.getMainLooper());
@@ -182,13 +170,11 @@ public class ChatActivity extends AppCompatActivity {
     private List<ChatThread> drawerThreads = new ArrayList<>();
     private Uri pendingCameraImageUri;
     private File pendingCameraImageFile;
-    private FirebaseAccountStore accountStore;
-    private final AxionManagedApi.ModelsListener liveModelsListener = () -> runOnUiThread(() -> {
+    private final Runnable liveModelsListener = () -> runOnUiThread(() -> {
         SharedPreferences aiPrefs = AiChatSettingsHelper.prefs(this);
         AiChatSettingsHelper.ensureValidCurrentSelection(aiPrefs);
         updateModelUI();
     });
-    private final AxionSession.Listener liveSessionListener = () -> liveModelsListener.onModelsUpdated();
 
     @Override
     public Resources getResources() {
@@ -217,7 +203,6 @@ public class ChatActivity extends AppCompatActivity {
         }
 
         executorService = Executors.newSingleThreadExecutor();
-        accountStore = new FirebaseAccountStore(this);
         historyManager = new ChatHistoryManager(this);
         activeThreadId = historyManager.getCurrentThreadId(sc_id);
         Log.d("ChatActivity", "onCreate: Managers criados em " + (System.currentTimeMillis() - startTime) + "ms");
@@ -231,9 +216,6 @@ public class ChatActivity extends AppCompatActivity {
         bindPagingThread(true);
         Log.d("ChatActivity", "onCreate: setupViews em " + (System.currentTimeMillis() - setupTime) + "ms (total: " + (System.currentTimeMillis() - startTime) + "ms)");
         
-        TokenUsageStore.subscribe(this, tokenUsageListener);
-        AxionManagedApi.addModelsListener(liveModelsListener);
-        AxionSession.addListener(liveSessionListener);
         refreshManagedAiState(false);
         loadProjectInfo();
         Log.d("ChatActivity", "=== onCreate: CONCLUÍDO em " + (System.currentTimeMillis() - startTime) + "ms ===");
@@ -405,18 +387,6 @@ public class ChatActivity extends AppCompatActivity {
 
         chatViewPager = findViewById(R.id.chat_view_pager);
         chatPageTabs = findViewById(R.id.chat_page_tabs);
-        tokenUsageProgress = findViewById(R.id.progress_token_usage);
-        textTokenUsage = findViewById(R.id.text_token_usage);
-        textTokenPercent = findViewById(R.id.text_token_percent);
-
-        findViewById(R.id.token_usage_container)
-                .setOnClickListener(view -> {
-                    if (AxionManagedApi.isSelected(this)) {
-                        refreshManagedAiState(true);
-                    } else {
-                        showTokenBudgetDialog();
-                    }
-                });
         editTextMessage = findViewById(R.id.edit_text_message);
         btnSend = findViewById(R.id.btn_send);
         btnAttach = findViewById(R.id.btn_attach);
@@ -461,13 +431,12 @@ public class ChatActivity extends AppCompatActivity {
         chatDiffFragment = ChatDiffFragment.newInstance(sc_id);
         chatArtifactsFragment = ChatArtifactsFragment.newInstance(sc_id);
         chatPlanFragment = ChatPlanFragment.newInstance(sc_id);
-        chatLogsFragment = ChatLogsFragment.newInstance(sc_id);
         chatMessagesFragment.setAdapter(messageAdapter);
         chatArtifactsFragment.setMessages(messages);
         chatPlanFragment.setMessages(messages);
         ChatPagerAdapter pagerAdapter = new ChatPagerAdapter(
                 this, chatMessagesFragment, chatDiffFragment, chatArtifactsFragment,
-                chatPlanFragment, chatLogsFragment);
+                chatPlanFragment);
         chatViewPager.setAdapter(pagerAdapter);
         chatViewPager.setOffscreenPageLimit(Math.max(1, pagerAdapter.getCount() - 1));
         if (chatPageTabs != null) {
@@ -856,12 +825,8 @@ public class ChatActivity extends AppCompatActivity {
         if (textCurrentModel != null) {
             if (ChatMessage.hasVisibleText(currentModel)
                     && AiChatSettingsHelper.isCurrentSelectionValid(prefs, currentProvider, currentModel)) {
-                String displayModel = AxionManagedApi.PROVIDER_ID.equals(currentProvider)
-                        ? AxionManagedApi.modelDisplayName(currentModel)
-                        : currentModel;
-                String iconProvider = AxionManagedApi.PROVIDER_ID.equals(currentProvider)
-                        ? AxionManagedApi.selectedServerProviderId(prefs)
-                        : currentProvider;
+                String displayModel = currentModel;
+                String iconProvider = currentProvider;
                 textCurrentModel.setText(displayModel);
                 bindModelIcon(btnModelSelector instanceof ImageView ? (ImageView) btnModelSelector : null,
                         iconProvider, currentModel, true);
@@ -921,41 +886,19 @@ public class ChatActivity extends AppCompatActivity {
                                     modelId)));
             updateModelUI();
             updateThreadSummary();
-            String serverProviderId = AxionManagedApi.selectedServerProviderId(prefs);
-            String selectedLabel = AxionManagedApi.providerDisplayName(serverProviderId)
-                    + " / " + AxionManagedApi.modelDisplayName(modelId);
+            String selectedLabel = providerId + " / " + modelId;
             Toast.makeText(this, getString(R.string.chat_model_changed, selectedLabel), Toast.LENGTH_SHORT).show();
         });
     }
 
     private void refreshManagedAiState(boolean notifyErrors) {
-        AxionManagedApi.refreshAccountAndProviders(this, (changed, error) -> {
-            if (isFinishing() || isDestroyed()) {
-                return;
-            }
-            SharedPreferences preferences = AiChatSettingsHelper.prefs(this);
-            AiChatSettingsHelper.ensureValidCurrentSelection(preferences);
-            updateModelUI();
-            AxionManagedApi.refreshWallet(this, (walletChanged, walletError) -> {
-                if (!notifyErrors || isFinishing() || isDestroyed()) return;
-                String finalError = walletError == null || walletError.trim().isEmpty()
-                        ? error
-                        : walletError;
-                if (finalError == null || finalError.trim().isEmpty()) {
-                    Toast.makeText(this, R.string.chat_usage_updated, Toast.LENGTH_SHORT).show();
-                } else {
-                    Toast.makeText(this, finalError, Toast.LENGTH_LONG).show();
-                }
-            });
-        });
+        SharedPreferences preferences = AiChatSettingsHelper.prefs(this);
+        AiChatSettingsHelper.ensureValidCurrentSelection(preferences);
+        updateModelUI();
     }
 
     private void showKelivoToolsSheet() {
         SharedPreferences prefs = AiChatSettingsHelper.prefs(this);
-        if (!PlanEntitlements.allowsFiles(prefs)) {
-            showPlanRestriction(R.string.plan_attachments_paid_required);
-            return;
-        }
         KelivoToolsBottomSheet.show(this, new KelivoToolsBottomSheet.Callback() {
             @Override
             public void onCamera() {
@@ -975,10 +918,6 @@ public class ChatActivity extends AppCompatActivity {
     }
 
     private void pickReferenceImageFromCamera() {
-        if (!PlanEntitlements.allowsImages(AiChatSettingsHelper.prefs(this))) {
-            showPlanRestriction(R.string.plan_images_paid_required);
-            return;
-        }
         try {
             File imageFile = createCameraImageFile();
             Uri imageUri = FileProvider.getUriForFile(
@@ -1680,23 +1619,7 @@ public class ChatActivity extends AppCompatActivity {
             updateModelUI();
             return false;
         }
-        if (AxionManagedApi.PROVIDER_ID.equals(provider)
-                && !PlanEntitlements.canUseManagedAi(prefs)) {
-            showPlanRestriction(R.string.plan_managed_tokens_exhausted);
-            return false;
-        }
 
-        boolean hasImages = stagingSelections != null
-                && !ChatReferenceManager.getImageReferences(stagingSelections).isEmpty();
-        if (hasImages && !PlanEntitlements.allowsImages(prefs)) {
-            showPlanRestriction(R.string.plan_images_paid_required);
-            return false;
-        }
-        if (stagingSelections != null && !stagingSelections.isEmpty()
-                && !PlanEntitlements.allowsFiles(prefs)) {
-            showPlanRestriction(R.string.plan_files_paid_required);
-            return false;
-        }
         return true;
     }
 
@@ -1713,10 +1636,6 @@ public class ChatActivity extends AppCompatActivity {
     }
 
     private void showAttachMenu(View anchor) {
-        if (!PlanEntitlements.allowsFiles(AiChatSettingsHelper.prefs(this))) {
-            showPlanRestriction(R.string.plan_files_paid_required);
-            return;
-        }
         PopupMenu popup = new PopupMenu(this, anchor);
         popup.getMenu().add(0, 1, 0, getString(R.string.chat_attach_project_reference));
         popup.getMenu().add(0, 3, 1, getString(R.string.chat_attach_reference_file));
@@ -1740,10 +1659,6 @@ public class ChatActivity extends AppCompatActivity {
     }
 
     private void showReferencePicker(boolean replaceAtTrigger) {
-        if (!PlanEntitlements.allowsFiles(AiChatSettingsHelper.prefs(this))) {
-            showPlanRestriction(R.string.plan_files_paid_required);
-            return;
-        }
         List<ChatReferenceManager.ReferenceOption> allOptions = ChatReferenceManager.getProjectReferenceOptions(sc_id);
         if (allOptions.isEmpty()) {
             Toast.makeText(this, R.string.chat_reference_none, Toast.LENGTH_SHORT).show();
@@ -1821,10 +1736,6 @@ public class ChatActivity extends AppCompatActivity {
 
     private void pickReferenceImage() {
         SharedPreferences prefs = AiChatSettingsHelper.prefs(this);
-        if (!PlanEntitlements.allowsImages(prefs)) {
-            showPlanRestriction(R.string.plan_images_paid_required);
-            return;
-        }
         String provider = prefs.getString(AiChatSettingsHelper.PREF_CURRENT_PROVIDER, "");
         String model = prefs.getString(AiChatSettingsHelper.PREF_CURRENT_MODEL, "");
         if (!KelivoModelSheetAdapter.supportsImageInput(this, provider, model)) {
@@ -1846,10 +1757,6 @@ public class ChatActivity extends AppCompatActivity {
     }
 
     private void pickReferenceFile() {
-        if (!PlanEntitlements.allowsFiles(AiChatSettingsHelper.prefs(this))) {
-            showPlanRestriction(R.string.plan_files_paid_required);
-            return;
-        }
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("*/*");
@@ -1867,15 +1774,7 @@ public class ChatActivity extends AppCompatActivity {
             return false;
         }
         SharedPreferences prefs = AiChatSettingsHelper.prefs(this);
-        if (reference.isImage()) {
-            if (!PlanEntitlements.allowsImages(prefs)) {
-                showPlanRestriction(R.string.plan_images_paid_required);
-                return false;
-            }
-        } else if (!PlanEntitlements.allowsFiles(prefs)) {
-            showPlanRestriction(R.string.plan_files_paid_required);
-            return false;
-        }
+
         for (ChatReference pending : pendingReferences) {
             if (pending != null && pending.stableKey().equals(reference.stableKey())) {
                 updatePendingReferencesUi();
@@ -3094,32 +2993,16 @@ public class ChatActivity extends AppCompatActivity {
     @Override
     protected void onStart() {
         super.onStart();
-        FirebaseUser user = FirebaseAuth.getInstance().getCurrentUser();
-        if (user == null || accountStore == null) {
-            applyPlanUi();
-            return;
-        }
-        accountStore.start(user, false, new FirebaseAccountStore.Listener() {
-            @Override
-            public void onAccountChanged(@NonNull AxionAccount account) {
-                applyPlanUi();
-            }
-
-            @Override
-            public void onError(@NonNull Exception error) {
-                applyPlanUi();
-            }
-        });
+        applyPlanUi();
     }
 
     private void applyPlanUi() {
         SharedPreferences prefs = AiChatSettingsHelper.prefs(this);
         AiChatSettingsHelper.ensureValidCurrentSelection(prefs);
-        boolean attachmentsAllowed = PlanEntitlements.allowsFiles(prefs);
         if (btnAttach != null) {
-            btnAttach.setVisibility(attachmentsAllowed ? View.VISIBLE : View.GONE);
+            btnAttach.setVisibility(View.VISIBLE);
         }
-        if (!attachmentsAllowed && !pendingReferences.isEmpty()) {
+        if (!pendingReferences.isEmpty()) {
             clearPendingReferences();
         }
         updateModelUI();
@@ -3147,9 +3030,6 @@ public class ChatActivity extends AppCompatActivity {
 
     @Override
     protected void onStop() {
-        if (accountStore != null) {
-            accountStore.stop();
-        }
         // Persist before the app is backgrounded. onDestroy is not guaranteed
         // when Android later reclaims the process, and asynchronous work can be
         // cancelled during that transition.
@@ -3193,11 +3073,6 @@ public class ChatActivity extends AppCompatActivity {
                     chatPlanFragment = (ChatPlanFragment) fragment;
                     chatPlanFragment.setMessages(messages);
                     chatPlanFragment.setRunState(isProcessing, currentRunStatus);
-                }
-                break;
-            case 4:
-                if (fragment instanceof ChatLogsFragment) {
-                    chatLogsFragment = (ChatLogsFragment) fragment;
                 }
                 break;
             default:
@@ -3254,75 +3129,10 @@ public class ChatActivity extends AppCompatActivity {
         }
     }
 
-    private void renderTokenUsage(long used, long budget, long remaining, long reserved) {
-        if (textTokenUsage == null || tokenUsageProgress == null || textTokenPercent == null) return;
-        long safeBudget = Math.max(1L, budget);
-        long committed = Math.max(0L, used) + Math.max(0L, reserved);
-        double ratio = Math.min(1d, committed / (double) safeBudget);
-        int basisPoints = (int) Math.round(ratio * 10000d);
-        tokenUsageProgress.setProgress(basisPoints);
-        int progressColor = ratio >= 0.90d
-                ? R.color.chat_error
-                : ratio >= 0.70d ? R.color.chat_warning : R.color.chat_accent;
-        tokenUsageProgress.setProgressTintList(ColorStateList.valueOf(
-                ContextCompat.getColor(this, progressColor)));
-        textTokenUsage.setText(getString(
-                R.string.chat_token_usage_value,
-                formatCompactTokens(Math.max(0L, remaining)),
-                formatCompactTokens(Math.max(0L, used)),
-                formatCompactTokens(safeBudget),
-                reserved > 0L
-                        ? " • " + formatCompactTokens(reserved) + " reservado"
-                        : ""));
-        textTokenPercent.setText(String.format(Locale.ROOT, "%.1f%%", ratio * 100d));
-    }
-
-    private void showTokenBudgetDialog() {
-        AxionAccount account = AxionSession.current();
-        if (account == null) {
-            refreshManagedAiState(true);
-            Toast.makeText(this, R.string.account_usage_loading, Toast.LENGTH_SHORT).show();
-            return;
-        }
-        String cycleEnd = account.periodEnd > 0L
-                ? new SimpleDateFormat("dd/MM/yyyy", Locale.getDefault())
-                .format(new Date(account.periodEnd))
-                : getString(R.string.chat_wallet_no_expiry);
-        String message = getString(
-                R.string.chat_wallet_details,
-                account.isPaid() ? getString(R.string.plans_paid_name) : getString(R.string.plans_free_name),
-                formatCompactTokens(account.creditsRemaining),
-                formatCompactTokens(account.creditsUsed),
-                formatCompactTokens(account.creditsReserved),
-                formatCompactTokens(account.creditLimit),
-                cycleEnd);
-        new AlertDialog.Builder(this)
-                .setTitle(R.string.chat_wallet_title)
-                .setMessage(message)
-                .setNegativeButton(android.R.string.cancel, null)
-                .setNeutralButton(R.string.chat_wallet_refresh, (dialog, which) -> refreshManagedAiState(true))
-                .setPositiveButton(R.string.chat_wallet_plans, (dialog, which) ->
-                        startActivity(new Intent(this, com.saaspaymentsolutions.axion.account.PlansActivity.class)))
-                .show();
-    }
-
-    private static String formatCompactTokens(long value) {
-        if (value < 1000L) return String.valueOf(value);
-        if (value < 1_000_000L) {
-            return String.format(Locale.ROOT, "%.1fk", value / 1000d);
-        }
-        if (value < 1_000_000_000L) {
-            return String.format(Locale.ROOT, "%.1fM", value / 1_000_000d);
-        }
-        return String.format(Locale.ROOT, "%.1fB", value / 1_000_000_000d);
-    }
-
     @Override
     protected void onDestroy() {
         activityDestroying = true;
-        TokenUsageStore.unsubscribe(tokenUsageListener);
-        AxionManagedApi.removeModelsListener(liveModelsListener);
-        AxionSession.removeListener(liveSessionListener);
+
         List<ChatReference> abandonedReferences = new ArrayList<>(pendingReferences);
         pendingReferences.clear();
         releaseReferenceGrantsIfUnused(abandonedReferences);

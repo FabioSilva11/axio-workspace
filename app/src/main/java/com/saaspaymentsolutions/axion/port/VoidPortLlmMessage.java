@@ -5,7 +5,7 @@ import android.content.SharedPreferences;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import com.saaspaymentsolutions.axion.AxionManagedApi;
+
 
 public final class VoidPortLlmMessage {
     public enum ProviderFamily {
@@ -80,14 +80,6 @@ public final class VoidPortLlmMessage {
             return resolveCustomProviderConfig(prefs, customProvider);
         }
         return switch (providerId) {
-            case AxionManagedApi.PROVIDER_ID -> new ProviderConfig(
-                    AxionManagedApi.PROVIDER_ID,
-                    ProviderFamily.OPENAI_COMPATIBLE,
-                    AxionManagedApi.chatEndpoint(),
-                    "",
-                    AxionManagedApi.requestHeaders(prefs),
-                    true
-            );
             case "anthropic" -> new ProviderConfig(
                     "anthropic",
                     ProviderFamily.ANTHROPIC,

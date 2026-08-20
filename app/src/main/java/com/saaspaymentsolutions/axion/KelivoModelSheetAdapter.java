@@ -12,7 +12,6 @@ import androidx.recyclerview.widget.RecyclerView;
 import java.util.ArrayList;
 import java.util.List;
 
-import com.saaspaymentsolutions.axion.account.PlanEntitlements;
 import com.saaspaymentsolutions.axion.port.VoidPortSettings;
 
 public class KelivoModelSheetAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
@@ -165,7 +164,7 @@ public class KelivoModelSheetAdapter extends RecyclerView.Adapter<RecyclerView.V
         }
 
         ModelHolder modelHolder = (ModelHolder) holder;
-        modelHolder.name.setText(AxionManagedApi.modelDisplayName(row.modelId));
+        modelHolder.name.setText(row.modelId);
         int iconRes = KelivoModelIconResolver.resolve(row.providerId, row.modelId);
         if (iconRes != 0) {
             modelHolder.icon.setVisibility(View.VISIBLE);
@@ -200,11 +199,7 @@ public class KelivoModelSheetAdapter extends RecyclerView.Adapter<RecyclerView.V
 
     public static boolean supportsImageInput(android.content.Context context, String providerId, String modelId) {
         android.content.SharedPreferences prefs = VoidPortSettings.prefs(context);
-        String routeProvider = AxionManagedApi.providerById(providerId) != null
-                ? AxionManagedApi.PROVIDER_ID
-                : providerId;
-        return PlanEntitlements.allowsImages(prefs)
-                && VoidPortSettings.supportsImageInput(prefs, routeProvider, modelId);
+        return VoidPortSettings.supportsImageInput(prefs, providerId, modelId);
     }
 
     static class EmptyHolder extends RecyclerView.ViewHolder {

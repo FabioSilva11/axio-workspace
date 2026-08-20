@@ -25,7 +25,7 @@ internal class SqliteChatPagingSource(
 
     override suspend fun load(params: LoadParams<Int>): LoadResult<Int, ChatPagingItem> {
         return try {
-            val showAds = !com.saaspaymentsolutions.axion.account.AxionSession.isPaid()
+            val showAds = false
             val requestedStart = params.key
             val window = storage.loadPagingWindow(
                 projectId,
@@ -33,7 +33,7 @@ internal class SqliteChatPagingSource(
                 requestedStart ?: -1,
                 params.loadSize,
                 showAds,
-                ChatMessageAdapter.AD_EVERY
+                8 /* AD_EVERY */
             )
             val start = window.start
             val end = start + window.items.size

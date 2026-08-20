@@ -381,7 +381,6 @@
     <string name="chat_tool_get_file_alias_error">Impossible de résoudre l’alias du fichier.</string>
     <string name="chat_tool_unknown_error">Erreur inconnue dans %1$s.</string>
     <string name="chat_tool_working_directory_missing">Répertoire de travail introuvable : %1$s</string>
-    <string name="chat_token_usage_value">Disponible %1$s • Utilisé %2$s/%3$s%4$s</string>
     <string name="chat_wait_before_sending">Attendez %1$d s avant d’envoyer.</string>
     <string name="chat_wait_processing">Traitement…</string>
     <string name="chat_welcome_message">Bonjour ! Je suis prêt à vous aider avec votre projet %1$s.</string>
@@ -418,7 +417,6 @@
     <string name="github_sync_file_read_failed">Échec de la lecture de %1$s.</string>
     <string name="github_sync_token_required">Configurez un jeton dans les paramètres GitHub.</string>
     <string name="github_sync_api_error">GitHub %1$d : %2$s</string>
-    <string name="token_usage_title">Solde de crédits IA</string>
     <string name="searsh">rechercher des projets...</string>
     <string name="auth_app_tagline">Votre IDE Android avec intelligence artificielle</string>
     <string name="auth_login_title">Heureux de vous revoir</string>
@@ -433,7 +431,6 @@
     <string name="auth_confirm_password_hint">Confirmer le mot de passe</string>
     <string name="auth_enter">Se connecter à Axion</string>
     <string name="auth_create_account">Créer un compte gratuit</string>
-    <string name="auth_free_plan_note">Lorsque vous créez votre compte, vous commencez automatiquement avec le forfait Free.</string>
     <string name="auth_name_error">Saisissez votre nom.</string>
     <string name="auth_email_error">Saisissez une adresse e-mail valide.</string>
     <string name="auth_password_error">Le mot de passe doit contenir au moins 6 caractères.</string>
@@ -532,7 +529,6 @@
     <string name="project_resources_deleted">Fichier supprimé.</string>
     <string name="project_resources_delete_error">Impossible de supprimer le fichier.</string>
     <string name="plans_usage_summary">%1$s disponibles sur %2$s crédits • %3$s utilisés</string>
-    <string name="chat_wallet_title">Solde IA</string>
     <string name="chat_wallet_details">Forfait : %1$s\nDisponible : %2$s crédits\nUtilisés : %3$s crédits\nRéservés : %4$s crédits\nLimite : %5$s crédits\nRenouvellement : %6$s</string>
     <string name="chat_wallet_no_expiry">Sans renouvellement automatique</string>
     <string name="chat_wallet_refresh">Actualiser</string>

@@ -381,7 +381,6 @@
     <string name="chat_tool_get_file_alias_error">Could not resolve the file alias.</string>
     <string name="chat_tool_unknown_error">Unknown error in %1$s.</string>
     <string name="chat_tool_working_directory_missing">Working directory not found: %1$s</string>
-    <string name="chat_token_usage_value">Available %1$s • Used %2$s/%3$s%4$s</string>
     <string name="chat_wait_before_sending">Wait %1$d s before sending.</string>
     <string name="chat_wait_processing">Processing…</string>
     <string name="chat_welcome_message">Hello! I\'m ready to help with your project %1$s.</string>
@@ -418,7 +417,6 @@
     <string name="github_sync_file_read_failed">Failed to read %1$s.</string>
     <string name="github_sync_token_required">Configure a token in GitHub settings.</string>
     <string name="github_sync_api_error">GitHub %1$d: %2$s</string>
-    <string name="token_usage_title">AI credit balance</string>
     <string name="searsh">search projects...</string>
     <string name="auth_app_tagline">Your AI-powered Android IDE</string>
     <string name="auth_login_title">Welcome back</string>
@@ -433,7 +431,6 @@
     <string name="auth_confirm_password_hint">Confirm password</string>
     <string name="auth_enter">Sign in to Axion</string>
     <string name="auth_create_account">Create free account</string>
-    <string name="auth_free_plan_note">When you create your account, you automatically start on the Free plan.</string>
     <string name="auth_name_error">Enter your name.</string>
     <string name="auth_email_error">Enter a valid email address.</string>
     <string name="auth_password_error">The password must be at least 6 characters long.</string>
@@ -532,7 +529,6 @@
     <string name="project_resources_deleted">File deleted.</string>
     <string name="project_resources_delete_error">Could not delete the file.</string>
     <string name="plans_usage_summary">%1$s available out of %2$s credits • %3$s used</string>
-    <string name="chat_wallet_title">AI balance</string>
     <string name="chat_wallet_details">Plan: %1$s\nAvailable: %2$s credits\nUsed: %3$s credits\nReserved: %4$s credits\nLimit: %5$s credits\nRenewal: %6$s</string>
     <string name="chat_wallet_no_expiry">No automatic renewal</string>
     <string name="chat_wallet_refresh">Refresh</string>

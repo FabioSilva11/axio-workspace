@@ -41,7 +41,7 @@ public final class AiSettingsRepository {
         VoidPortSettings.ensureValidCurrentSelection(preferences);
         String providerId = preferences.getString(
                 VoidPortSettings.PREF_CURRENT_PROVIDER,
-                AxionManagedApi.PROVIDER_ID
+                "openai"
         );
         String modelName = preferences.getString(
                 VoidPortSettings.PREF_CURRENT_MODEL,

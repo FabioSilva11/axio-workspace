@@ -35,7 +35,6 @@ import com.saaspaymentsolutions.axion.ToolManager;
 import com.saaspaymentsolutions.axion.AiProviderService;
 import com.saaspaymentsolutions.axion.AiRequestHandle;
 import com.saaspaymentsolutions.axion.ProjectPathResolver;
-import com.saaspaymentsolutions.axion.account.PlanEntitlements;
 import com.saaspaymentsolutions.axion.toolcalling.ToolArgumentsValidator;
 
 /**
@@ -568,8 +567,7 @@ public class AgentManager {
                     ? new JSONArray()
                     : toolManager.getToolsAsMCP(chatMode);
             if (!finalOnlyForRequest
-                    && "agent".equalsIgnoreCase(chatMode)
-                    && PlanEntitlements.allowsPremiumTools(prefs)) {
+                    && "agent".equalsIgnoreCase(chatMode)) {
                 appendMcpTools(tools, VoidPortMcpChannel.getToolsAsMCP(prefs));
             }
             final int toolSchemaTokens = estimateInputTokens(tools == null ? "" : tools.toString());
@@ -1787,10 +1785,7 @@ public class AgentManager {
     private com.saaspaymentsolutions.axion.ToolExecResult executeToolCall(ChatMessage toolMsg) {
         String toolName = toolMsg.getToolName();
         if (toolName != null && toolName.startsWith("mcp_")) {
-            if (!PlanEntitlements.allowsPremiumTools(VoidPortSettings.prefs(context))) {
-                return com.saaspaymentsolutions.axion.ToolExecResult.error(
-                        "Esta ferramenta premium exige o Plano Pago."
-                );
+            if (false) {
             }
             return com.saaspaymentsolutions.axion.ToolExecResult.fromLegacyString(VoidPortMcpChannel.callTool(
                     VoidPortSettings.prefs(context),

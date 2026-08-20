@@ -11,7 +11,6 @@ import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
-import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.recyclerview.widget.LinearLayoutManager;
@@ -25,10 +24,10 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 
-/** Seletor em duas etapas: provedores do servidor -> modelos do provedor. */
+import com.saaspaymentsolutions.axion.port.VoidPortSettings;
+
+/** Seletor de modelo: lista provedores locais -> modelos do provedor. */
 public final class KelivoModelBottomSheet {
 
     public interface Callback {
@@ -42,15 +41,7 @@ public final class KelivoModelBottomSheet {
     }
 
     public static void show(@NonNull ChatActivity activity, @NonNull Callback callback) {
-        if (!AxionManagedApi.providersLoaded()) {
-            showLoadingThenOpen(activity, callback);
-            return;
-        }
-
-        List<AxionManagedApi.ProviderInfo> initialProviders = AxionManagedApi.availableProviders();
-
         SharedPreferences prefs = AiChatSettingsHelper.prefs(activity);
-        AxionManagedApi.ensureManagedSelection(prefs);
 
         BottomSheetDialog dialog = new BottomSheetDialog(activity);
         View content = LayoutInflater.from(activity).inflate(R.layout.bottom_sheet_kelivo_model, null);
@@ -68,9 +59,11 @@ public final class KelivoModelBottomSheet {
         list.setLayoutManager(new LinearLayoutManager(activity));
         list.setAdapter(adapter);
 
-        AtomicReference<String> openProviderId = new AtomicReference<>(null);
-        AtomicReference<List<AxionManagedApi.ProviderInfo>> providers =
-                new AtomicReference<>(initialProviders);
+        java.util.concurrent.atomic.AtomicReference<String> openProviderId =
+                new java.util.concurrent.atomic.AtomicReference<>(null);
+
+        // Build local provider list from VoidPortSettings
+        List<VoidPortSettings.ProviderCardSpec> allProviders = VoidPortSettings.getProviderCards(prefs);
 
         Runnable render = () -> {
             String query = search.getText() == null
@@ -82,49 +75,50 @@ public final class KelivoModelBottomSheet {
                 title.setText(R.string.axion_choose_provider);
                 search.setHint(R.string.axion_search_providers);
                 favoritesJump.setVisibility(View.GONE);
-                adapter.submit(buildProviderRows(activity, providers.get(), query, prefs));
+                adapter.submit(buildProviderRows(activity, allProviders, query, prefs));
                 return;
             }
 
-            AxionManagedApi.ProviderInfo provider = findProvider(providers.get(), providerId);
+            VoidPortSettings.ProviderCardSpec provider = findSpec(allProviders, providerId);
             if (provider == null) {
                 openProviderId.set(null);
-                renderProviderStage(activity, adapter, back, title, search, favoritesJump,
-                        providers.get(), query, prefs);
+                back.setVisibility(View.GONE);
+                title.setText(R.string.axion_choose_provider);
+                search.setHint(R.string.axion_search_providers);
+                favoritesJump.setVisibility(View.GONE);
+                adapter.submit(buildProviderRows(activity, allProviders, query, prefs));
                 return;
             }
             back.setVisibility(View.VISIBLE);
-            title.setText(provider.name);
+            title.setText(provider.title);
             search.setHint(R.string.axion_search_models);
-            favoritesJump.setVisibility(hasPinnedForProvider(activity, provider.id)
+            favoritesJump.setVisibility(hasPinnedForProvider(activity, provider.providerId)
                     ? View.VISIBLE : View.GONE);
             adapter.submit(buildModelRows(activity, provider, query, prefs));
         };
 
         adapter.setListener(new KelivoModelSheetAdapter.Listener() {
             @Override
-            public void onProviderSelected(String providerId) {
-                openProviderId.set(providerId);
+            public void onProviderSelected(String pid) {
+                openProviderId.set(pid);
                 search.setText("");
                 list.scrollToPosition(0);
                 render.run();
             }
 
             @Override
-            public void onModelSelected(String providerId, String modelId) {
-                if (!AxionManagedApi.isModelAvailable(providerId, modelId)) {
-                    Toast.makeText(activity, R.string.axion_no_models_in_provider, Toast.LENGTH_LONG).show();
-                    AxionManagedApi.refreshProviders(activity, null);
-                    return;
-                }
-                AxionManagedApi.saveManagedSelection(prefs, providerId, modelId);
-                callback.onModelSelected(AxionManagedApi.PROVIDER_ID, modelId);
+            public void onModelSelected(String pid, String modelId) {
+                prefs.edit()
+                        .putString(AiChatSettingsHelper.PREF_CURRENT_PROVIDER, pid)
+                        .putString(AiChatSettingsHelper.PREF_CURRENT_MODEL, modelId)
+                        .apply();
+                callback.onModelSelected(pid, modelId);
                 dialog.dismiss();
             }
 
             @Override
-            public void onFavoriteToggle(String providerId, String modelId) {
-                togglePinned(activity, providerId, modelId);
+            public void onFavoriteToggle(String pid, String modelId) {
+                togglePinned(activity, pid, modelId);
                 render.run();
             }
         });
@@ -137,10 +131,10 @@ public final class KelivoModelBottomSheet {
         });
 
         favoritesJump.setOnClickListener(v -> {
-            String providerId = openProviderId.get();
-            if (providerId == null) return;
+            String pid = openProviderId.get();
+            if (pid == null) return;
             if (search.getText() != null && search.getText().length() > 0) search.setText("");
-            AxionManagedApi.ProviderInfo provider = findProvider(providers.get(), providerId);
+            VoidPortSettings.ProviderCardSpec provider = findSpec(allProviders, pid);
             if (provider != null) {
                 adapter.submit(buildModelRows(activity, provider, "", prefs, true));
                 list.scrollToPosition(0);
@@ -152,17 +146,6 @@ public final class KelivoModelBottomSheet {
             @Override public void onTextChanged(CharSequence s, int start, int before, int count) { render.run(); }
             @Override public void afterTextChanged(Editable s) { }
         });
-
-        AxionManagedApi.ModelsListener modelsListener = () -> {
-            List<AxionManagedApi.ProviderInfo> updated = AxionManagedApi.availableProviders();
-            providers.set(updated);
-            String open = openProviderId.get();
-            if (open != null && findProvider(updated, open) == null) openProviderId.set(null);
-            AxionManagedApi.ensureManagedSelection(prefs);
-            render.run();
-        };
-        AxionManagedApi.addModelsListener(modelsListener);
-        dialog.setOnDismissListener(d -> AxionManagedApi.removeModelsListener(modelsListener));
 
         dialog.setOnShowListener(d -> {
             View sheet = dialog.findViewById(com.google.android.material.R.id.design_bottom_sheet);
@@ -180,89 +163,44 @@ public final class KelivoModelBottomSheet {
         dialog.show();
     }
 
-    private static void showLoadingThenOpen(ChatActivity activity, Callback callback) {
-        android.app.ProgressDialog progress = new android.app.ProgressDialog(activity);
-        progress.setMessage(activity.getString(R.string.chat_models_loading));
-        progress.setCancelable(true);
-        progress.show();
-
-        AtomicBoolean finished = new AtomicBoolean(false);
-        AxionManagedApi.ModelsListener[] listener = new AxionManagedApi.ModelsListener[1];
-        listener[0] = new AxionManagedApi.ModelsListener() {
-            @Override
-            public void onModelsUpdated() {
-                if (!AxionManagedApi.providersLoaded() || !finished.compareAndSet(false, true)) return;
-                AxionManagedApi.removeModelsListener(listener[0]);
-                try { progress.dismiss(); } catch (Exception ignored) { }
-                if (!activity.isFinishing() && !activity.isDestroyed()) show(activity, callback);
-            }
-        };
-        AxionManagedApi.addModelsListener(listener[0]);
-        progress.setOnCancelListener(d -> {
-            finished.set(true);
-            AxionManagedApi.removeModelsListener(listener[0]);
-        });
-        AxionManagedApi.refreshAccountAndProviders(activity, (changed, error) -> {
-            if (error == null || !finished.compareAndSet(false, true)) return;
-            AxionManagedApi.removeModelsListener(listener[0]);
-            try { progress.dismiss(); } catch (Exception ignored) { }
-            if (!activity.isFinishing() && !activity.isDestroyed()) {
-                if (AxionManagedApi.providersLoaded()) {
-                    show(activity, callback);
-                } else {
-                    Toast.makeText(activity, error, Toast.LENGTH_LONG).show();
-                }
-            }
-        });
-    }
-
-    private static void renderProviderStage(
-            Context context,
-            KelivoModelSheetAdapter adapter,
-            ImageView back,
-            TextView title,
-            EditText search,
-            ImageView favorites,
-            List<AxionManagedApi.ProviderInfo> providers,
-            String query,
-            SharedPreferences prefs) {
-        back.setVisibility(View.GONE);
-        title.setText(R.string.axion_choose_provider);
-        search.setHint(R.string.axion_search_providers);
-        favorites.setVisibility(View.GONE);
-        adapter.submit(buildProviderRows(context, providers, query, prefs));
+    private static VoidPortSettings.ProviderCardSpec findSpec(
+            List<VoidPortSettings.ProviderCardSpec> specs, String providerId) {
+        if (specs == null || providerId == null) return null;
+        for (VoidPortSettings.ProviderCardSpec spec : specs) {
+            if (spec.providerId.equals(providerId)) return spec;
+        }
+        return null;
     }
 
     private static List<KelivoModelSheetAdapter.Row> buildProviderRows(
             Context context,
-            List<AxionManagedApi.ProviderInfo> providers,
+            List<VoidPortSettings.ProviderCardSpec> providers,
             String query,
             SharedPreferences prefs) {
         List<KelivoModelSheetAdapter.Row> rows = new ArrayList<>();
-        String selected = AxionManagedApi.selectedServerProviderId(prefs);
-        for (AxionManagedApi.ProviderInfo provider : providers) {
-            if (!matches(provider.name, provider.id, query)) continue;
-            String planLabel = planLabel(context, provider.availablePlans);
-            String count = context.getString(R.string.axion_provider_models_count, provider.models.size());
+        String selected = prefs.getString(AiChatSettingsHelper.PREF_CURRENT_PROVIDER, "");
+        for (VoidPortSettings.ProviderCardSpec spec : providers) {
+            // Mostrar apenas provedores ativos/configurados
+            boolean enabled = VoidPortSettings.isProviderConfigured(prefs, spec.providerId);
+            if (!enabled) continue;
+            if (!matches(spec.title, spec.providerId, query)) continue;
             rows.add(KelivoModelSheetAdapter.Row.provider(
-                    provider.id,
-                    provider.name,
-                    count + " • " + planLabel,
-                    provider.id.equals(selected)));
+                    spec.providerId,
+                    spec.title,
+                    "Ativo",
+                    spec.providerId.equals(selected)));
         }
         if (rows.isEmpty()) {
-            String error = AxionManagedApi.lastProvidersError();
             rows.add(KelivoModelSheetAdapter.Row.empty(
-                    error.isEmpty()
-                            ? context.getString(R.string.axion_no_providers_available)
-                            : error));
+                    context.getString(R.string.axion_no_providers_available)));
         }
         return rows;
     }
 
+
     private static List<KelivoModelSheetAdapter.Row> buildModelRows(
             Context context,
-            AxionManagedApi.ProviderInfo provider,
+            VoidPortSettings.ProviderCardSpec provider,
             String query,
             SharedPreferences prefs) {
         return buildModelRows(context, provider, query, prefs, false);
@@ -270,22 +208,29 @@ public final class KelivoModelBottomSheet {
 
     private static List<KelivoModelSheetAdapter.Row> buildModelRows(
             Context context,
-            AxionManagedApi.ProviderInfo provider,
+            VoidPortSettings.ProviderCardSpec provider,
             String query,
             SharedPreferences prefs,
             boolean favoritesOnly) {
         List<KelivoModelSheetAdapter.Row> rows = new ArrayList<>();
         Set<String> pinned = getPinned(context);
-        String currentProvider = AxionManagedApi.selectedServerProviderId(prefs);
+        String currentProvider = prefs.getString(AiChatSettingsHelper.PREF_CURRENT_PROVIDER, "");
         String currentModel = prefs.getString(AiChatSettingsHelper.PREF_CURRENT_MODEL, "");
-        for (AxionManagedApi.ModelInfo model : provider.models) {
-            if (!matches(model.name, model.id, query)) continue;
-            boolean modelPinned = pinned.contains(pinnedKey(provider.id, model.id));
-            if (favoritesOnly && !modelPinned) continue;
-            boolean selected = provider.id.equals(currentProvider) && model.id.equals(currentModel);
-            rows.add(new KelivoModelSheetAdapter.Row(
-                    provider.id, provider.name, model.id, selected, modelPinned));
+
+        // For built-in providers, we don't have a model list locally
+        // Add the provider name as a single model option
+        String modelId = provider.providerId;
+        boolean modelPinned = pinned.contains(pinnedKey(provider.providerId, modelId));
+        if (favoritesOnly && !modelPinned) {
+            rows.add(KelivoModelSheetAdapter.Row.empty(
+                    context.getString(R.string.axion_no_models_in_provider)));
+            return rows;
         }
+        boolean selected = provider.providerId.equals(currentProvider)
+                && modelId.equals(currentModel);
+        rows.add(new KelivoModelSheetAdapter.Row(
+                provider.providerId, provider.title, modelId, selected, modelPinned));
+
         if (rows.isEmpty()) {
             rows.add(KelivoModelSheetAdapter.Row.empty(
                     context.getString(R.string.axion_no_models_in_provider)));
@@ -293,28 +238,11 @@ public final class KelivoModelBottomSheet {
         return rows;
     }
 
-    private static AxionManagedApi.ProviderInfo findProvider(
-            List<AxionManagedApi.ProviderInfo> providers,
-            String providerId) {
-        if (providers == null) return null;
-        for (AxionManagedApi.ProviderInfo provider : providers) {
-            if (provider.id.equals(providerId)) return provider;
-        }
-        return null;
-    }
-
     private static boolean matches(String name, String id, String query) {
         if (query == null || query.isEmpty()) return true;
         String normalized = query.toLowerCase(Locale.getDefault());
         return (name != null && name.toLowerCase(Locale.getDefault()).contains(normalized))
                 || (id != null && id.toLowerCase(Locale.getDefault()).contains(normalized));
-    }
-
-    private static String planLabel(Context context, String availablePlans) {
-        String plan = availablePlans == null ? "all" : availablePlans.trim().toLowerCase(Locale.US);
-        if ("free".equals(plan)) return context.getString(R.string.axion_provider_plan_free);
-        if ("paid".equals(plan)) return context.getString(R.string.axion_provider_plan_paid);
-        return context.getString(R.string.axion_provider_plan_all);
     }
 
     private static boolean hasPinnedForProvider(Context context, String providerId) {

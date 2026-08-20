@@ -381,7 +381,6 @@
     <string name="chat_tool_get_file_alias_error">Não foi possível resolver o alias do ficheiro.</string>
     <string name="chat_tool_unknown_error">Erro desconhecido em %1$s.</string>
     <string name="chat_tool_working_directory_missing">Diretório de trabalho não encontrado: %1$s</string>
-    <string name="chat_token_usage_value">Disponível %1$s • Consumido %2$s/%3$s%4$s</string>
     <string name="chat_wait_before_sending">Aguarde %1$d s antes de enviar.</string>
     <string name="chat_wait_processing">Processando…</string>
     <string name="chat_welcome_message">Olá! Estou pronto para ajudar com seu projeto %1$s.</string>
@@ -418,7 +417,6 @@
     <string name="github_sync_file_read_failed">Falha ao ler %1$s.</string>
     <string name="github_sync_token_required">Configure um token nas definições do GitHub.</string>
     <string name="github_sync_api_error">GitHub %1$d: %2$s</string>
-    <string name="token_usage_title">Saldo de créditos da IA</string>
     <string name="searsh">procurar projetos...</string>
     <string name="auth_app_tagline">Sua IDE Android com inteligência artificial</string>
     <string name="auth_login_title">Que bom ter você de volta</string>
@@ -433,7 +431,6 @@
     <string name="auth_confirm_password_hint">Confirmar palavra-passe</string>
     <string name="auth_enter">Entrar no Axion</string>
     <string name="auth_create_account">Criar conta gratuita</string>
-    <string name="auth_free_plan_note">Ao criar sua conta, você começa automaticamente no plano Free.</string>
     <string name="auth_name_error">Indique seu nome.</string>
     <string name="auth_email_error">Indique um e-mail válido.</string>
     <string name="auth_password_error">A palavra-passe deve ter pelo menos 6 caracteres.</string>
@@ -532,7 +529,6 @@
     <string name="project_resources_deleted">Ficheiro eliminado.</string>
     <string name="project_resources_delete_error">Não foi possível eliminar o ficheiro.</string>
     <string name="plans_usage_summary">%1$s disponíveis de %2$s créditos • %3$s consumidos</string>
-    <string name="chat_wallet_title">Saldo da IA</string>
     <string name="chat_wallet_details">Plano: %1$s\nDisponível: %2$s créditos\nConsumido: %3$s créditos\nReservado: %4$s créditos\nLimite: %5$s créditos\nRenovação: %6$s</string>
     <string name="chat_wallet_no_expiry">Sem renovação automática</string>
     <string name="chat_wallet_refresh">Atualizar</string>

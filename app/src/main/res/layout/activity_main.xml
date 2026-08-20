@@ -29,27 +29,7 @@
                 app:navigationIcon="@drawable/ic_kelivo_menu"
                 app:navigationIconTint="@color/chat_text_primary">
 
-                <com.google.android.material.card.MaterialCardView
-                    android:id="@+id/toolbar_profile_button"
-                    android:layout_width="36dp"
-                    android:layout_height="36dp"
-                    android:layout_gravity="end|center_vertical"
-                    android:layout_marginEnd="10dp"
-                    android:clickable="true"
-                    android:focusable="true"
-                    android:foreground="?attr/selectableItemBackground"
-                    app:cardBackgroundColor="@color/chat_accent_soft"
-                    app:cardCornerRadius="18dp"
-                    app:cardElevation="0dp">
 
-                    <ImageView
-                        android:layout_width="match_parent"
-                        android:layout_height="match_parent"
-                        android:contentDescription="@string/main_profile_description"
-                        android:padding="8dp"
-                        android:src="@drawable/ic_kelivo_user_round"
-                        app:tint="@color/chat_accent" />
-                </com.google.android.material.card.MaterialCardView>
             </com.google.android.material.appbar.MaterialToolbar>
 
         </com.google.android.material.appbar.AppBarLayout>
@@ -215,14 +195,7 @@
                 android:textSize="14sp"
                 android:textStyle="bold" />
 
-            <TextView
-                android:id="@+id/drawer_user_plan"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="2dp"
-                android:text="@string/account_plan_free"
-                android:textColor="#B0FFFFFF"
-                android:textSize="12sp" />
+
         </LinearLayout>
 
         <View
@@ -237,8 +210,7 @@
             android:background="?attr/selectableItemBackground"
             android:gravity="center_vertical"
             android:orientation="horizontal"
-            android:paddingHorizontal="20dp"
-            android:visibility="gone">
+            android:paddingHorizontal="20dp">
 
             <ImageView
                 android:layout_width="22dp"
@@ -256,7 +228,7 @@
         </LinearLayout>
 
         <LinearLayout
-            android:id="@+id/drawer_item_plans"
+            android:id="@+id/drawer_item_skills"
             android:layout_width="match_parent"
             android:layout_height="52dp"
             android:background="?attr/selectableItemBackground"
@@ -267,18 +239,21 @@
             <ImageView
                 android:layout_width="22dp"
                 android:layout_height="22dp"
-                android:contentDescription="@string/main_drawer_plans"
-                android:src="@drawable/ic_kelivo_plans"
+                android:contentDescription="@string/main_drawer_skills"
+                android:src="@drawable/ic_kelivo_skill"
                 app:tint="@color/chat_accent" />
 
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginStart="16dp"
-                android:text="@string/main_drawer_plans"
+                android:text="@string/main_drawer_skills"
                 android:textColor="@color/chat_text_primary"
                 android:textSize="15sp" />
         </LinearLayout>
+
+
+
 
         <View
             android:layout_width="match_parent"

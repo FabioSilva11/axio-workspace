@@ -46,7 +46,6 @@ import com.saaspaymentsolutions.axion.port.VoidPortLlmMessage;
 import com.saaspaymentsolutions.axion.port.VoidPortSettings;
 import com.saaspaymentsolutions.axion.port.VoidPortLlmMessage.ProviderConfig;
 import com.saaspaymentsolutions.axion.port.VoidPortLlmMessage.ProviderFamily;
-import com.saaspaymentsolutions.axion.account.PlanEntitlements;
 import com.saaspaymentsolutions.axion.provider.AiProviderAdapter;
 import com.saaspaymentsolutions.axion.provider.AiProviderAdapterRegistry;
 import com.saaspaymentsolutions.axion.toolcalling.DefaultToolCallDetector;
@@ -607,35 +606,11 @@ public class AiProviderService {
             AiSettingsRepository.Selection selection,
             boolean hasImages
     ) {
-        SharedPreferences prefs = settingsRepository.preferences();
-        String providerId = selection == null ? "" : selection.providerId;
-        if (!VoidPortSettings.isProviderAllowedByPlan(prefs, providerId)) {
-            return context.getString(R.string.ai_plan_provider_unavailable);
-        }
-        if (AxionManagedApi.PROVIDER_ID.equals(providerId)
-                && !PlanEntitlements.canUseManagedAi(prefs)) {
-            return context.getString(R.string.ai_plan_managed_tokens_exhausted);
-        }
-        if (hasImages && !PlanEntitlements.allowsImages(prefs)) {
-            return context.getString(R.string.ai_plan_images_paid_only);
-        }
         return "";
     }
 
     private JSONArray filterToolsForPlan(JSONArray tools) {
-        if (tools == null || PlanEntitlements.allowsPremiumTools(settingsRepository.preferences())) {
-            return tools;
-        }
-        JSONArray allowed = new JSONArray();
-        for (int i = 0; i < tools.length(); i++) {
-            JSONObject item = tools.optJSONObject(i);
-            JSONObject function = item == null ? null : item.optJSONObject("function");
-            String name = function == null ? "" : function.optString("name", "");
-            if (!PlanEntitlements.isPremiumTool(name)) {
-                allowed.put(item);
-            }
-        }
-        return allowed;
+        return tools;
     }
 
     private boolean containsImagePayload(Object value) {
@@ -861,14 +836,6 @@ public class AiProviderService {
                             : "application/json")
                     .post(RequestBody.create(jsonBody.toString(), JSON_MEDIA_TYPE));
             String resolvedManagedOperationId = managedOperationId;
-            if (AxionManagedApi.PROVIDER_ID.equals(providerId)) {
-                // Streaming -> JSON fallback continua sendo a MESMA chamada logica.
-                // Preserve o operation id para o gateway exatamente-uma-vez.
-                if (TextUtils.isEmpty(resolvedManagedOperationId)) {
-                    resolvedManagedOperationId = "axion-" + UUID.randomUUID();
-                }
-                requestBuilder.header("X-Axion-Operation-Id", resolvedManagedOperationId);
-            }
             final String stableManagedOperationId = resolvedManagedOperationId;
             Request request = requestBuilder.build();
             final String streamingKey = StreamingCapabilityRegistry.key(
@@ -1156,43 +1123,10 @@ public class AiProviderService {
                         return;
                     }
 
-                    // O gateway gerenciado exige ID token do Firebase. Em 401,
-                    // renove o token uma única vez e repita a mesma operação com um
-                    // novo X-Request-Id gerado por executeStreaming().
-                    if (statusCode == 401
-                            && AxionManagedApi.PROVIDER_ID.equals(providerId)
-                            && retryCount < 1) {
-                        emitOperationStatus(listener, operationContext, AiOperationState.SENDING_REQUEST,
-                                context.getString(R.string.ai_status_session_refreshed),
-                                attemptNumber, 0L, true, true, "firebase_token_refresh");
-                        AxionManagedApi.refreshFirebaseToken((freshToken, tokenError) -> {
-                            if (requestHandle.isCancelled()) return;
-                            if (tokenError != null || freshToken == null || freshToken.trim().isEmpty()) {
-                                UserFacingError authError = errorClassifier.classifyHttpError(
-                                        statusCode, errorBody, providerId);
-                                listener.onUserFacingError(authError, operationContext.getRequestId());
-                                return;
-                            }
-                            Request authenticatedRequest = request.newBuilder()
-                                    .header("Authorization", "Bearer " + freshToken.trim())
-                                    .build();
-                            executeStreaming(authenticatedRequest, retryCount + 1, providerId,
-                                    operationContext, listener, responseHandler,
-                                    streamingFallbackHandler, requestHandle);
-                        });
-                        return;
-                    }
-
                     // Apenas erros que nao foram recuperados silenciosamente chegam
                     // ao registro visual/protocolo e ao classificador de erro.
                     emitProtocolPayload(listener, "CABEÇALHOS RECEBIDOS", response.headers().toString());
                     emitProtocolPayload(listener, "RECEBIDO HTTP " + statusCode, errorBody);
-
-                    if (AxionManagedApi.PROVIDER_ID.equals(providerId)
-                            && (statusCode == 403 || statusCode == 404)) {
-                        // Plano/modelo pode ter mudado no painel enquanto a tela estava aberta.
-                        AxionManagedApi.refreshProviders(context, null);
-                    }
 
                     UserFacingError friendly = errorClassifier.classifyHttpError(
                             statusCode, errorBody, providerId);
@@ -1450,9 +1384,7 @@ public class AiProviderService {
         }
 
         android.util.Log.d("AiProviderService", "=== PARSING JSON RESPONSE ===");
-        if (!AxionManagedApi.applyWalletPayload(json)) {
-            recordOpenAiUsage(json.optJSONObject("usage"));
-        }
+        recordOpenAiUsage(json.optJSONObject("usage"));
 
         OpenAiResponseEnvelopeParser.ParsedResponse parsed =
                 OpenAiResponseEnvelopeParser.parse(json);
@@ -1467,9 +1399,7 @@ public class AiProviderService {
     }
 
     private void handleOpenAiChunk(JSONObject json, OpenAiStreamState state, StreamListener listener) {
-        if (!AxionManagedApi.applyWalletPayload(json)) {
-            recordOpenAiUsage(json.optJSONObject("usage"));
-        }
+        recordOpenAiUsage(json.optJSONObject("usage"));
 
         String eventType = json.optString("type", "");
         if (eventType.startsWith("response.") || "error".equals(eventType)) {
@@ -2121,9 +2051,7 @@ public class AiProviderService {
     private String parseOpenAiCompatibleTextResponse(String body) throws IOException {
         try {
             JSONObject json = new JSONObject(body);
-            if (!AxionManagedApi.applyWalletPayload(json)) {
-                recordOpenAiUsage(json.optJSONObject("usage"));
-            }
+            recordOpenAiUsage(json.optJSONObject("usage"));
             JSONArray choices = json.optJSONArray("choices");
             JSONObject firstChoice = choices != null && choices.length() > 0 ? choices.optJSONObject(0) : null;
             JSONObject message = firstChoice != null ? firstChoice.optJSONObject("message") : json.optJSONObject("message");

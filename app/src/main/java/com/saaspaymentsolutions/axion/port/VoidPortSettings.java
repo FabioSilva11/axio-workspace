@@ -12,9 +12,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
-import com.saaspaymentsolutions.axion.AxionManagedApi;
 import com.saaspaymentsolutions.axion.Tool;
-import com.saaspaymentsolutions.axion.account.PlanEntitlements;
 import com.saaspaymentsolutions.axion.agent.MultiAgentPolicy;
 
 public final class VoidPortSettings {
@@ -160,17 +158,34 @@ public final class VoidPortSettings {
 
     public static List<ModelOption> getVisibleModelOptions(SharedPreferences prefs) {
         List<ModelOption> options = new ArrayList<>();
-        // O chat gerenciado usa exclusivamente o catálogo autenticado retornado por
-        // GET /v1/ai/providers. O Firebase apenas publica o endpoint em config/api.
-        // Modelos customizados/antigos não entram no seletor principal do chat.
-        if (!AxionManagedApi.isConfigured()) {
-            return options;
+        // Collect models from all locally configured providers
+        List<ProviderCardSpec> cards = getProviderCards(prefs);
+        for (ProviderCardSpec card : cards) {
+            boolean enabled = isProviderConfigured(prefs, card.providerId);
+            if (!enabled) continue;
+            // For built-in providers with no custom models, add a placeholder
+            if (!card.custom && card.fields.isEmpty()) {
+                options.add(new ModelOption(card.providerId, card.title, card.title));
+            }
         }
-        for (String model : AxionManagedApi.visibleModelIds(prefs)) {
-            options.add(new ModelOption(
-                    AxionManagedApi.PROVIDER_ID,
-                    "Axion",
-                    model));
+        // Add models from custom provider configs
+        JSONArray configs = readProviderConfigs(prefs);
+        for (int i = 0; i < configs.length(); i++) {
+            JSONObject config = configs.optJSONObject(i);
+            if (config == null) continue;
+            String pid = config.optString("id", "");
+            String name = config.optString("name", pid);
+            boolean enabled = config.optBoolean("enabled", true);
+            if (!enabled || pid.isEmpty()) continue;
+            JSONArray models = config.optJSONArray("models");
+            if (models != null) {
+                for (int j = 0; j < models.length(); j++) {
+                    String model = models.optString(j, "").trim();
+                    if (!model.isEmpty()) {
+                        options.add(new ModelOption(pid, name, model));
+                    }
+                }
+            }
         }
         return options;
     }
@@ -179,38 +194,22 @@ public final class VoidPortSettings {
         String provider = prefs.getString(PREF_CURRENT_PROVIDER, "");
         String model = prefs.getString(PREF_CURRENT_MODEL, "");
         if (isCurrentSelectionValid(prefs, provider, model)) {
-            if (AxionManagedApi.PROVIDER_ID.equals(provider)) {
-                AxionManagedApi.ensureManagedSelection(prefs);
-            }
             return;
         }
 
         List<ModelOption> options = getVisibleModelOptions(prefs);
         if (options.isEmpty()) {
-            // Se há uma seleção existente mas a lista está vazia (ex: ainda carregando do Firebase),
-            // PRESERVE a seleção atual do usuário ao invés de removê-la.
-            // Isso evita que o modelo seja trocado ao sair e voltar para a activity.
             if (provider != null && !provider.trim().isEmpty() && model != null && !model.trim().isEmpty()) {
-                // Mantém a seleção atual - não faz nada
                 return;
             }
-            // Se não há seleção nenhuma, também não faz nada (aguarda o catálogo carregar)
             return;
         }
 
-        // Se a seleção atual é inválida E há opções disponíveis, seleciona a primeira
         ModelOption first = options.get(0);
-        if (AxionManagedApi.PROVIDER_ID.equals(first.providerId)) {
-            AxionManagedApi.saveManagedSelection(
-                    prefs,
-                    AxionManagedApi.providerIdForModel(first.model),
-                    first.model);
-        } else {
-            prefs.edit()
-                    .putString(PREF_CURRENT_PROVIDER, first.providerId)
-                    .putString(PREF_CURRENT_MODEL, first.model)
-                    .apply();
-        }
+        prefs.edit()
+                .putString(PREF_CURRENT_PROVIDER, first.providerId)
+                .putString(PREF_CURRENT_MODEL, first.model)
+                .apply();
     }
 
     public static boolean isCurrentSelectionValid(SharedPreferences prefs, String providerId, String model) {
@@ -226,8 +225,7 @@ public final class VoidPortSettings {
     }
 
     public static boolean isProviderSupportedInChat(String providerId) {
-        return AxionManagedApi.PROVIDER_ID.equals(providerId)
-                || "anthropic".equals(providerId)
+        return "anthropic".equals(providerId)
                 || "openai".equals(providerId)
                 || "gemini".equals(providerId)
                 || "groq".equals(providerId)
@@ -263,7 +261,6 @@ public final class VoidPortSettings {
             return !baseUrl.isEmpty();
         }
         return switch (providerId) {
-            case AxionManagedApi.PROVIDER_ID -> AxionManagedApi.isConfigured();
             case "ollama" -> !getPreferenceValue(prefs, "local_provider_ollama_url", "").isEmpty()
                     && !getPreferenceValue(prefs, "ollama_api_key", "").isEmpty();
             case "huggingface" -> !getPreferenceValue(prefs, "huggingface_api_key", "").isEmpty();
@@ -284,9 +281,7 @@ public final class VoidPortSettings {
     }
 
     public static boolean isProviderAllowedByPlan(SharedPreferences prefs, String providerId) {
-        JSONObject custom = getProviderConfigObject(prefs, providerId);
-        String family = custom == null ? providerId : providerType(custom);
-        return PlanEntitlements.isProviderAllowed(prefs, providerId, family);
+        return true;
     }
 
     public static boolean isLocalProvider(String providerId) {
@@ -295,13 +290,6 @@ public final class VoidPortSettings {
 
     public static List<ProviderGroup> getAllProviderGroups(SharedPreferences prefs) {
         List<ProviderGroup> groups = getCatalogProviderGroups();
-        groups.add(0, new ProviderGroup(
-                AxionManagedApi.PROVIDER_ID,
-                "axionManaged",
-                "Axion",
-                false,
-                new ArrayList<>(AxionManagedApi.visibleModelIds(prefs))
-        ));
         for (ProviderGroup providerConfigGroup : getProviderConfigGroups(prefs)) {
             groups.add(providerConfigGroup);
         }
@@ -650,9 +638,6 @@ public final class VoidPortSettings {
     private static boolean isBuiltInProviderId(String providerId) {
         if (providerId == null) {
             return false;
-        }
-        if (AxionManagedApi.PROVIDER_ID.equals(providerId)) {
-            return true;
         }
         for (ProviderCardSpec spec : getProviderCards()) {
             if (providerId.equals(spec.providerId)) {

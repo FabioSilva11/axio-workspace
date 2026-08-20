@@ -28,18 +28,12 @@ import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 
-import com.google.firebase.auth.FirebaseAuth;
-import com.google.firebase.auth.FirebaseUser;
 import com.google.android.material.bottomsheet.BottomSheetDialog;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton;
 
-import com.saaspaymentsolutions.axion.account.AxionAccount;
-import com.saaspaymentsolutions.axion.account.FirebaseAccountStore;
-import com.saaspaymentsolutions.axion.account.PlansActivity;
-import com.saaspaymentsolutions.axion.account.ProfileActivity;
 import com.saaspaymentsolutions.axion.analytics.AxionAnalytics;
-import com.saaspaymentsolutions.axion.auth.AuthActivity;
+
 
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -60,32 +54,27 @@ public class MainActivity extends AppCompatActivity {
     private FrameLayout loadingContainer;
     private TextView textEmpty;
     private ExtendedFloatingActionButton fabNewProject;
-    private View toolbarProfileButton;
-    private LinearLayout drawerItemPlans;
+    private LinearLayout drawerItemSkills;
+    private LinearLayout drawerItemAiSettings;
     private LinearLayout drawerItemLogout;
     private TextView drawerUserName;
-    private TextView drawerUserPlan;
+
     private final ExecutorService executorService = Executors.newSingleThreadExecutor();
     private WorkspaceListAdapter adapter;
     private PrefsManager preference;
     private String currentFilter = "";
-    private FirebaseAccountStore accountStore;
     private boolean accountLoadLogged;
     private List<com.saaspaymentsolutions.axion.workspace.Workspace> allWorkspaces = new ArrayList<>();
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        FirebaseUser currentUser = FirebaseAuth.getInstance().getCurrentUser();
-        if (currentUser == null) {
-            openAuthentication();
-            return;
+        {
         }
 
         setContentView(R.layout.activity_main);
 
         preference = new PrefsManager(this, "project");
-        accountStore = new FirebaseAccountStore(this);
 
         initViews();
         setupDrawer();
@@ -93,117 +82,29 @@ public class MainActivity extends AppCompatActivity {
         setupFab();
         setupDrawerItems();
         setupRecyclerView();
-        bindAuthenticatedUser(currentUser);
-        observeAuthenticatedUser(currentUser);
+        bindLocalUser();
 
         loadWorkspaces();
-
-        boolean showWelcome = getIntent().getBooleanExtra("show_welcome", false);
-        String welcomeName = getIntent().getStringExtra("user_name");
-        if (showWelcome) {
-            showWelcomeDialog(welcomeName);
-        } else {
-            loadRemoteAppConfiguration();
-        }
     }
 
-    private void openAuthentication() {
-        Intent intent = new Intent(this, AuthActivity.class);
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
-        startActivity(intent);
-        finish();
+    private void bindLocalUser() {
+        drawerUserName.setText(getString(R.string.auth_default_user_name));
     }
 
-    private void bindAuthenticatedUser(FirebaseUser user) {
-        String name = getIntent().getStringExtra("user_name");
-        if (name == null || name.trim().isEmpty()) {
-            name = user.getDisplayName();
-        }
-        if (name == null || name.trim().isEmpty()) {
-            String email = user.getEmail();
-            name = email != null && email.contains("@")
-                    ? email.substring(0, email.indexOf('@'))
-                    : getString(R.string.auth_default_user_name);
-        }
-        drawerUserName.setText(name.trim());
-        drawerUserPlan.setText(R.string.account_plan_loading);
-    }
-
-    private void observeAuthenticatedUser(FirebaseUser user) {
-        accountStore.start(user, true, new FirebaseAccountStore.Listener() {
-            @Override
-            public void onAccountChanged(@NonNull AxionAccount account) {
-                drawerUserName.setText(account.name);
-                drawerUserPlan.setText(account.isPaid()
-                        ? R.string.account_plan_paid
-                        : R.string.account_plan_free);
-                AxionAnalytics.setUser(MainActivity.this, account.uid, account.planId);
-            }
-
-            @Override
-            public void onError(@NonNull Exception error) {
-                drawerUserPlan.setText(R.string.account_load_error);
-            }
-        });
-    }
 
     private void showWelcomeDialog(@Nullable String requestedName) {
         String name = requestedName == null || requestedName.trim().isEmpty()
                 ? getString(R.string.auth_default_user_name)
                 : requestedName.trim();
-        FrameLayout root = findViewById(android.R.id.content);
-        com.saaspaymentsolutions.axion.auth.ConfettiView confetti = new com.saaspaymentsolutions.axion.auth.ConfettiView(this);
-        root.addView(confetti, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT));
 
-        AlertDialog dialog = new MaterialAlertDialogBuilder(this)
+        new MaterialAlertDialogBuilder(this)
                 .setTitle(getString(R.string.welcome_title, name))
                 .setMessage(R.string.welcome_message)
                 .setPositiveButton(R.string.welcome_action, null)
-                .setCancelable(false)
-                .create();
-        dialog.setOnDismissListener(ignored -> { });
-        dialog.show();
-        confetti.bringToFront();
-        confetti.start();
-        root.postDelayed(() -> {
-            if (confetti.getParent() == root) root.removeView(confetti);
-        }, 3200L);
+                .show();
     }
 
-    private void loadRemoteAppConfiguration() {
-        AxionRemoteAppConfig.load(this, new AxionRemoteAppConfig.Listener() {
-            @Override
-            public void onLoaded(@NonNull AxionRemoteAppConfig.Config config) {
-                if (isFinishing() || isDestroyed()) return;
-                if (config.dialogEnabled && config.dialogBody != null && !config.dialogBody.trim().isEmpty()) {
-                    SharedPreferences prefs = getSharedPreferences("axion_remote_config", MODE_PRIVATE);
-                    String today = new SimpleDateFormat("yyyy-MM-dd", Locale.US).format(new Date());
-                    boolean shouldShow = "always".equals(config.dialogFrequency)
-                            || ("once_per_day".equals(config.dialogFrequency) && !today.equals(prefs.getString("dialog_day", "")))
-                            || prefs.getLong("dialog_revision", -1L) != config.dialogRevision;
-                    if (shouldShow) {
-                        new MaterialAlertDialogBuilder(MainActivity.this)
-                                .setTitle(config.dialogTitle)
-                                .setMessage(config.dialogBody)
-                                .setCancelable(false)
-                                .setPositiveButton(config.dialogButtonLabel == null || config.dialogButtonLabel.trim().isEmpty()
-                                        ? getString(R.string.common_understood) : config.dialogButtonLabel, (d, w) -> {
-                                    prefs.edit().putLong("dialog_revision", config.dialogRevision).putString("dialog_day", today).apply();
-                                    if (config.dialogButtonUrl != null && !config.dialogButtonUrl.trim().isEmpty()) {
-                                        try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(config.dialogButtonUrl.trim()))); } catch (Exception ignored) {}
-                                    }
-                                    d.dismiss();
-                                }).show();
-                    }
-                }
-            }
 
-            @Override
-            public void onError(@NonNull com.google.firebase.database.DatabaseError error) { }
-        });
-    }
 
     // ============================================
     // INIT
@@ -217,12 +118,12 @@ public class MainActivity extends AppCompatActivity {
         loadingContainer = findViewById(R.id.loading_container);
         textEmpty = findViewById(R.id.text_empty);
         fabNewProject = findViewById(R.id.fab_new_project);
-        toolbarProfileButton = findViewById(R.id.toolbar_profile_button);
-        drawerItemPlans = findViewById(R.id.drawer_item_plans);
+        drawerItemSkills = findViewById(R.id.drawer_item_skills);
+        drawerItemAiSettings = findViewById(R.id.drawer_item_ai_settings);
         drawerItemLogout = findViewById(R.id.drawer_item_logout);
         drawerUserName = findViewById(R.id.drawer_user_name);
-        drawerUserPlan = findViewById(R.id.drawer_user_plan);
     }
+
 
     private void setupDrawer() {
         ActionBarDrawerToggle toggle = new ActionBarDrawerToggle(
@@ -262,11 +163,13 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void setupDrawerItems() {
-        toolbarProfileButton.setOnClickListener(v ->
-                startActivity(new Intent(this, ProfileActivity.class)));
-        drawerItemPlans.setOnClickListener(v -> {
+        drawerItemSkills.setOnClickListener(v -> {
             drawerLayout.closeDrawer(GravityCompat.START);
-            startActivity(new Intent(this, PlansActivity.class));
+            startActivity(new Intent(this, com.saaspaymentsolutions.axion.skills.SkillsActivity.class));
+        });
+        drawerItemAiSettings.setOnClickListener(v -> {
+            drawerLayout.closeDrawer(GravityCompat.START);
+            startActivity(new Intent(this, com.saaspaymentsolutions.axion.provider.IaSettingsActivity.class));
         });
         drawerItemLogout.setOnClickListener(v -> {
             drawerLayout.closeDrawer(GravityCompat.START);
@@ -276,13 +179,11 @@ public class MainActivity extends AppCompatActivity {
                     .setNegativeButton(R.string.common_word_cancel, null)
                     .setPositiveButton(R.string.account_logout, (dialog, which) -> {
                         AxionAnalytics.logEvent(this, AxionAnalytics.Events.LOGOUT);
-                        if (accountStore != null) accountStore.stop();
-                        FirebaseAuth.getInstance().signOut();
                         AxionAnalytics.clearUser(this);
-                        openAuthentication();
                     }).show();
         });
     }
+
 
     private void setupRecyclerView() {
         adapter = new WorkspaceListAdapter(
@@ -419,7 +320,6 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
-        if (accountStore != null) accountStore.stop();
         executorService.shutdown();
         super.onDestroy();
     }

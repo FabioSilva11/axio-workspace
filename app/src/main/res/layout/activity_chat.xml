@@ -155,59 +155,12 @@
             app:tabSelectedTextColor="@color/chat_accent"
             app:tabTextColor="@color/chat_text_secondary" />
 
-        <LinearLayout
-            android:id="@+id/token_usage_container"
-            android:layout_width="match_parent"
-            android:layout_height="32dp"
-            android:layout_below="@id/chat_page_tabs"
-            android:background="@color/chat_surface"
-            android:gravity="center_vertical"
-            android:orientation="horizontal"
-            android:paddingStart="14dp"
-            android:paddingEnd="14dp">
-
-            <ImageView
-                android:layout_width="16dp"
-                android:layout_height="16dp"
-                android:contentDescription="@string/token_usage_title"
-                android:src="@drawable/ic_kelivo_layers"
-                app:tint="@color/chat_accent" />
-
-            <TextView
-                android:id="@+id/text_token_usage"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="6dp"
-                android:textColor="@color/chat_text_secondary"
-                android:textSize="10sp" />
-
-            <ProgressBar
-                android:id="@+id/progress_token_usage"
-                style="?android:attr/progressBarStyleHorizontal"
-                android:layout_width="0dp"
-                android:layout_height="4dp"
-                android:layout_marginStart="10dp"
-                android:layout_marginEnd="10dp"
-                android:layout_weight="1"
-                android:max="10000"
-                android:progressBackgroundTint="@color/chat_divider"
-                android:progressTint="@color/chat_accent" />
-
-            <TextView
-                android:id="@+id/text_token_percent"
-                android:layout_width="36dp"
-                android:layout_height="wrap_content"
-                android:gravity="end"
-                android:textColor="@color/chat_text_hint"
-                android:textSize="10sp" />
-        </LinearLayout>
-
         <androidx.viewpager.widget.ViewPager
             android:id="@+id/chat_view_pager"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:layout_above="@id/inputContainer"
-            android:layout_below="@id/token_usage_container" />
+            android:layout_below="@id/chat_page_tabs" />
 
         <com.google.android.material.card.MaterialCardView
             android:id="@+id/inputContainer"

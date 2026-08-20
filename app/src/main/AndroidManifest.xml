@@ -36,14 +36,6 @@
             android:value="ca-app-pub-6598765502914364~5860680424" />
 
         <service
-            android:name=".AxionMessagingService"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="com.google.firebase.MESSAGING_EVENT" />
-            </intent-filter>
-        </service>
-
-        <service
             android:name=".ChatRunForegroundService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
@@ -59,40 +51,16 @@
         </provider>
 
         <activity
-            android:name=".auth.AuthActivity"
+            android:name="com.saaspaymentsolutions.axion.MainActivity"
             android:screenOrientation="portrait"
             android:exported="true"
             android:launchMode="singleTop"
-            android:theme="@style/Theme.Axion"
-            android:windowSoftInputMode="adjustResize">
+            android:theme="@style/Theme.Axion">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-
-        <activity
-            android:name=".AppBlockedActivity"
-            android:screenOrientation="portrait"
-            android:exported="false"
-            android:launchMode="singleTask"
-            android:theme="@style/Theme.Axion" />
-
-        <activity
-            android:name="com.saaspaymentsolutions.axion.MainActivity"
-            android:screenOrientation="portrait"
-            android:exported="false"
-            android:launchMode="singleTop"
-            android:theme="@style/Theme.Axion" />
-
-        <activity
-            android:name=".splash.SplashActivity"
-            android:screenOrientation="portrait"
-            android:exported="false"
-            android:launchMode="singleTop"
-            android:theme="@style/Theme.Axion" />
-
-
 
         <activity
             android:name=".resources.ProjectResourceManagerActivity"
@@ -113,19 +81,6 @@
             android:theme="@style/Theme.Axion" />
 
         <activity
-            android:name=".account.PlansActivity"
-            android:screenOrientation="portrait"
-            android:exported="false"
-            android:theme="@style/Theme.Axion" />
-
-        <activity
-            android:name=".account.ProfileActivity"
-            android:screenOrientation="portrait"
-            android:exported="false"
-            android:theme="@style/Theme.Axion" />
-
-
-        <activity
             android:name=".account.ProfileActivity"
             android:screenOrientation="portrait"
             android:exported="false"
@@ -142,6 +97,25 @@
             android:screenOrientation="portrait"
             android:exported="false"
             android:theme="@style/Theme.Axion" />
+
+        <activity
+            android:name=".skills.SkillsActivity"
+            android:screenOrientation="portrait"
+            android:exported="false"
+            android:theme="@style/Theme.Axion" />
+
+        <activity
+            android:name=".provider.IaSettingsActivity"
+            android:screenOrientation="portrait"
+            android:exported="false"
+            android:theme="@style/Theme.Axion" />
+
+        <activity
+            android:name=".provider.ProviderDetailActivity"
+            android:screenOrientation="portrait"
+            android:exported="false"
+            android:theme="@style/Theme.Axion"
+            android:windowSoftInputMode="adjustResize" />
 
     </application>
 

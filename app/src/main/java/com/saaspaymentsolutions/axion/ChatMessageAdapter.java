@@ -31,7 +31,6 @@ import androidx.recyclerview.widget.RecyclerView;
 import com.google.android.gms.ads.nativead.MediaView;
 import com.google.android.gms.ads.nativead.NativeAd;
 import com.google.android.gms.ads.nativead.NativeAdView;
-import com.saaspaymentsolutions.axion.account.AxionSession;
 
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -75,7 +74,7 @@ public class ChatMessageAdapter extends PagingDataAdapter<ChatPagingItem, Recycl
     private Markwon markwon;
     private MessageActionListener actionListener;
     private RecyclerView attachedRecyclerView;
-    private boolean lastPaidState = AxionSession.isPaid();
+    private boolean lastPaidState = false;
     private final Map<String, NativeAd> assignedAds = new HashMap<>();
 
     private final AdmobNativeAdManager.Listener adStateListener =
@@ -94,36 +93,12 @@ public class ChatMessageAdapter extends PagingDataAdapter<ChatPagingItem, Recycl
                 });
             };
 
-    /** Assinantes pagos não veem anúncios. */
+    /** Sem sessão Firebase, sempre mostra anúncios. */
     private static boolean shouldShowAds() {
-        return !AxionSession.isPaid();
+        return true;
     }
 
-    private final AxionSession.Listener sessionListener = () -> {
-        boolean paidNow = AxionSession.isPaid();
-        if (paidNow == lastPaidState) {
-            return;
-        }
-        lastPaidState = paidNow;
-        if (paidNow) {
-            clearAssignedAds();
-            Context appContext = SketchApplication.getContext();
-            if (appContext != null) {
-                AdmobNativeAdManager.getInstance(appContext).destroy();
-            }
-        } else {
-            Context appContext = SketchApplication.getContext();
-            if (appContext != null) {
-                AdmobNativeAdManager manager = AdmobNativeAdManager.getInstance(appContext);
-                manager.initialize();
-                manager.requestAdIfNeeded();
-            }
-        }
-        RecyclerView recyclerView = attachedRecyclerView;
-        if (recyclerView != null) {
-            recyclerView.post(this::refresh);
-        }
-    };
+
 
     public interface MessageActionListener {
         void onRegenerate(ChatMessage message);
@@ -873,8 +848,7 @@ public class ChatMessageAdapter extends PagingDataAdapter<ChatPagingItem, Recycl
     public void onAttachedToRecyclerView(@NonNull RecyclerView recyclerView) {
         super.onAttachedToRecyclerView(recyclerView);
         attachedRecyclerView = recyclerView;
-        lastPaidState = AxionSession.isPaid();
-        AxionSession.addListener(sessionListener);
+        lastPaidState = false;
         AdmobNativeAdManager manager = AdmobNativeAdManager.getInstance(recyclerView.getContext());
         manager.initialize();
         manager.addListener(adStateListener);
@@ -887,7 +861,7 @@ public class ChatMessageAdapter extends PagingDataAdapter<ChatPagingItem, Recycl
     public void onDetachedFromRecyclerView(@NonNull RecyclerView recyclerView) {
         super.onDetachedFromRecyclerView(recyclerView);
         attachedRecyclerView = null;
-        AxionSession.removeListener(sessionListener);
+
         AdmobNativeAdManager manager =
                 AdmobNativeAdManager.getInstance(recyclerView.getContext());
         manager.removeListener(adStateListener);

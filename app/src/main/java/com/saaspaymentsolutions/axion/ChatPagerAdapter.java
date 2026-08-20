@@ -16,22 +16,19 @@ public class ChatPagerAdapter extends FragmentStatePagerAdapter {
     private final ChatDiffFragment diffFragment;
     private final ChatArtifactsFragment artifactsFragment;
     private final ChatPlanFragment planFragment;
-    private final ChatLogsFragment logsFragment;
     private final boolean webProject;
 
     public ChatPagerAdapter(@NonNull ChatActivity activity,
                             @NonNull ChatMessagesFragment messagesFragment,
                             @NonNull ChatDiffFragment diffFragment,
                             @NonNull ChatArtifactsFragment artifactsFragment,
-                            @NonNull ChatPlanFragment planFragment,
-                            @NonNull ChatLogsFragment logsFragment) {
+                            @NonNull ChatPlanFragment planFragment) {
         super(activity.getSupportFragmentManager(), FragmentStatePagerAdapter.BEHAVIOR_RESUME_ONLY_CURRENT_FRAGMENT);
         this.activity = activity;
         this.messagesFragment = messagesFragment;
         this.diffFragment = diffFragment;
         this.artifactsFragment = artifactsFragment;
         this.planFragment = planFragment;
-        this.logsFragment = logsFragment;
         this.webProject = false;
     }
 
@@ -42,7 +39,6 @@ public class ChatPagerAdapter extends FragmentStatePagerAdapter {
             case 1 -> diffFragment;
             case 2 -> artifactsFragment;
             case 3 -> planFragment;
-            case 4 -> logsFragment;
             default -> messagesFragment;
         };
     }
@@ -59,7 +55,7 @@ public class ChatPagerAdapter extends FragmentStatePagerAdapter {
 
     @Override
     public int getCount() {
-        return 5;
+        return 4;
     }
 
     @Nullable
@@ -69,7 +65,6 @@ public class ChatPagerAdapter extends FragmentStatePagerAdapter {
             case 1 -> activity.getString(R.string.chat_page_diffs);
             case 2 -> activity.getString(R.string.chat_page_artifacts);
             case 3 -> activity.getString(R.string.chat_page_plan);
-            case 4 -> activity.getString(R.string.chat_page_logs);
             default -> activity.getString(R.string.chat_page_chat);
         };
     }
