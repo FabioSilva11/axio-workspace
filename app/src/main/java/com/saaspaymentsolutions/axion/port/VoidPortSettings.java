@@ -26,6 +26,7 @@ public final class VoidPortSettings {
     public static final String PREF_CHAT_MODE = "chat_mode";
     public static final String PREF_MULTI_AGENT_MODE = "multi_agent_mode";
     public static final String PREF_MCP_CONFIG = "mcp_config_json";
+    public static final String PREF_CHAT_WEB_SEARCH = "chat_web_search_enabled";
 
     public static final String PREF_AUTO_REFRESH_MODELS = "local_auto_detect_models";
     public static final String PREF_AI_INSTRUCTIONS = "void_ai_instructions";
@@ -158,25 +159,15 @@ public final class VoidPortSettings {
 
     public static List<ModelOption> getVisibleModelOptions(SharedPreferences prefs) {
         List<ModelOption> options = new ArrayList<>();
-        // Collect models from all locally configured providers
-        List<ProviderCardSpec> cards = getProviderCards(prefs);
-        for (ProviderCardSpec card : cards) {
-            boolean enabled = isProviderConfigured(prefs, card.providerId);
-            if (!enabled) continue;
-            // For built-in providers with no custom models, add a placeholder
-            if (!card.custom && card.fields.isEmpty()) {
-                options.add(new ModelOption(card.providerId, card.title, card.title));
-            }
-        }
-        // Add models from custom provider configs
+        // Kelivo keeps models inside the owning ProviderConfig. There is no
+        // second discovered-model catalog to merge.
         JSONArray configs = readProviderConfigs(prefs);
         for (int i = 0; i < configs.length(); i++) {
             JSONObject config = configs.optJSONObject(i);
             if (config == null) continue;
             String pid = config.optString("id", "");
             String name = config.optString("name", pid);
-            boolean enabled = config.optBoolean("enabled", true);
-            if (!enabled || pid.isEmpty()) continue;
+            if (pid.isEmpty() || "kelivoin".equals(pid) || !isProviderConfigured(prefs, pid)) continue;
             JSONArray models = config.optJSONArray("models");
             if (models != null) {
                 for (int j = 0; j < models.length(); j++) {
@@ -231,6 +222,13 @@ public final class VoidPortSettings {
                 || "groq".equals(providerId)
                 || "deepseek".equals(providerId)
                 || "openrouter".equals(providerId)
+                || "siliconflow".equals(providerId)
+                || "tensdaq".equals(providerId)
+                || "aihubmix".equals(providerId)
+                || "suixiang".equals(providerId)
+                || "aliyun".equals(providerId)
+                || "zhipu".equals(providerId)
+                || "bytedance".equals(providerId)
                 || "grok_xai".equals(providerId)
                 || "mistral".equals(providerId)
                 || "minimax".equals(providerId)
@@ -252,32 +250,32 @@ public final class VoidPortSettings {
             if (!custom.optBoolean("enabled", true)) {
                 return false;
             }
-            String type = providerType(custom);
             String baseUrl = custom.optString("baseUrl", "").trim();
-            String apiKey = custom.optString("apiKey", "").trim();
-            if ("openai".equals(type) || "anthropic".equals(type) || "gemini".equals(type)) {
-                return !apiKey.isEmpty() && !baseUrl.isEmpty();
-            }
-            return !baseUrl.isEmpty();
+            return !baseUrl.isEmpty()
+                    && (!providerRequiresApiKey(providerId, custom) || hasUsableApiKey(custom));
         }
-        return switch (providerId) {
-            case "ollama" -> !getPreferenceValue(prefs, "local_provider_ollama_url", "").isEmpty()
-                    && !getPreferenceValue(prefs, "ollama_api_key", "").isEmpty();
-            case "huggingface" -> !getPreferenceValue(prefs, "huggingface_api_key", "").isEmpty();
-            case "vllm" -> !getPreferenceValue(prefs, "local_provider_vllm_url", "").isEmpty();
-            case "lm_studio" -> !getPreferenceValue(prefs, "local_provider_lm_studio_url", "").isEmpty();
-            case "anthropic" -> !getPreferenceValue(prefs, "anthropic_api_key", "").isEmpty();
-            case "openai" -> !getPreferenceValue(prefs, "openai_api_key", "").isEmpty();
-            case "deepseek" -> !getPreferenceValue(prefs, "deepseek_api_key", "").isEmpty();
-            case "openrouter" -> !getPreferenceValue(prefs, "openrouter_api_key", "").isEmpty();
-            case "openai_compatible" -> !getPreferenceValue(prefs, "openai_compatible_base_url", "").isEmpty();
-            case "gemini" -> !getPreferenceValue(prefs, "gemini_api_key", "").isEmpty();
-            case "groq" -> !getPreferenceValue(prefs, "groq_api_key", "").isEmpty();
-            case "grok_xai" -> !getPreferenceValue(prefs, "grok_xai_api_key", "").isEmpty();
-            case "mistral" -> !getPreferenceValue(prefs, "mistral_api_key", "").isEmpty();
-            case "litellm" -> !getPreferenceValue(prefs, "litellm_base_url", "").isEmpty();
-            default -> false;
-        };
+        return false;
+    }
+
+    public static boolean hasUsableApiKey(JSONObject config) {
+        if (config == null) return false;
+        if (!config.optString("apiKey", "").trim().isEmpty()) return true;
+        if (!config.optBoolean("multiKeyEnabled", false)) return false;
+        JSONArray keys = config.optJSONArray("apiKeys");
+        for (int i = 0; keys != null && i < keys.length(); i++) {
+            JSONObject item = keys.optJSONObject(i);
+            if (item != null
+                    && item.optBoolean("enabled", true)
+                    && !item.optString("key", "").trim().isEmpty()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public static boolean providerRequiresApiKey(String providerId, JSONObject config) {
+        String id = providerId == null ? "" : providerId.trim().toLowerCase(Locale.US);
+        return !("ollama".equals(id) || "vllm".equals(id) || "lm_studio".equals(id));
     }
 
     public static boolean isProviderAllowedByPlan(SharedPreferences prefs, String providerId) {
@@ -342,40 +340,27 @@ public final class VoidPortSettings {
 
     public static List<ProviderCardSpec> getProviderCards() {
         List<ProviderCardSpec> providers = new ArrayList<>();
-        providers.add(new ProviderCardSpec("openai", "OpenAI", "Get your API key here.", "https://platform.openai.com/api-keys", false)
-                .addField("API Key", "openai_api_key", "", true, "openai_enabled"));
-        providers.add(new ProviderCardSpec("anthropic", "Anthropic", "Get your API key here.", "https://console.anthropic.com/settings/keys", false)
-                .addField("API Key", "anthropic_api_key", "", true, null));
-        providers.add(new ProviderCardSpec("gemini", "Gemini", "Google AI Studio OpenAI-compatible endpoint.", "https://aistudio.google.com/apikey", false)
-                .addField("API Key", "gemini_api_key", "", true, "gemini_enabled"));
-        providers.add(new ProviderCardSpec("ollama", "Ollama Cloud", "Remote Ollama API. Requires an Ollama API key.", "https://ollama.com/settings/keys", false)
-                .addField("API Key", "ollama_api_key", "", true, null)
-                .addField("Base URL", "local_provider_ollama_url", "https://ollama.com/api", false, null));
-        providers.add(new ProviderCardSpec("vllm", "vLLM", "OpenAI-compatible server. Use its /v1 base URL.", "https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html", false)
-                .addField("Base URL", "local_provider_vllm_url", "http://127.0.0.1:8000/v1", false, null));
-        providers.add(new ProviderCardSpec("lm_studio", "LM Studio", "OpenAI-compatible local server. Use its /v1 base URL.", "https://lmstudio.ai/docs/developer/openai-compat", false)
-                .addField("Base URL", "local_provider_lm_studio_url", "http://127.0.0.1:1234/v1", false, null));
-        providers.add(new ProviderCardSpec("openrouter", "OpenRouter", "Get your API key here. Rate limits depend on the selected model.", "https://openrouter.ai/keys", false)
-                .addField("API Key", "openrouter_api_key", "", true, null));
-        providers.add(new ProviderCardSpec("deepseek", "DeepSeek", "Get your API key here.", "https://platform.deepseek.com/api_keys", false)
-                .addField("API Key", "deepseek_api_key", "", true, null));
-        providers.add(new ProviderCardSpec("groq", "Groq", "Use Groq-hosted OpenAI-compatible models.", "https://console.groq.com/keys", false)
-                .addField("API Key", "groq_api_key", "", true, "groq_enabled"));
-        providers.add(new ProviderCardSpec("mistral", "Mistral", "Mistral API access.", "https://console.mistral.ai/api-keys/", false)
-                .addField("API Key", "mistral_api_key", "", true, null));
-        providers.add(new ProviderCardSpec("grok_xai", "Grok (xAI)", "xAI's OpenAI-compatible API.", "https://console.x.ai/", false)
-                .addField("API Key", "grok_xai_api_key", "", true, null));
-        providers.add(new ProviderCardSpec("minimax", "MiniMax", "MiniMax text models through its OpenAI-compatible API.", "https://platform.minimax.io/user-center/basic-information/interface-key", false)
-                .addField("API Key", "minimax_api_key", "", true, "minimax_enabled"));
-        providers.add(new ProviderCardSpec("openai_compatible", "OpenAI-Compatible", "Use any provider that exposes an OpenAI-compatible endpoint.", null, false)
-                .addField("Base URL", "openai_compatible_base_url", "https://my-endpoint.example/v1", false, null)
-                .addField("API Key", "openai_compatible_api_key", "", true, null)
-                .addField("Headers JSON", "openai_compatible_headers", "{}", false, null));
-        providers.add(new ProviderCardSpec("litellm", "LiteLLM", "Point this to a LiteLLM proxy if you use one.", null, false)
-                .addField("Base URL", "litellm_base_url", "http://localhost:4000", false, null));
-        providers.add(new ProviderCardSpec("huggingface", "Hugging Face", "Inference Providers API (OpenAI-compatible).", "https://huggingface.co/settings/tokens", false)
-                .addField("API Key", "huggingface_api_key", "", true, null));
+        // Keep the built-in catalog and order aligned with Kelivo v1.2.3.
+        providers.add(provider("openai", "OpenAI", "https://platform.openai.com/api-keys"));
+        providers.add(provider("siliconflow", "SiliconFlow", "https://cloud.siliconflow.cn/account/ak"));
+        providers.add(provider("gemini", "Gemini", "https://aistudio.google.com/apikey"));
+        providers.add(provider("openrouter", "OpenRouter", "https://openrouter.ai/keys"));
+        providers.add(provider("tensdaq", "Tensdaq", null));
+        providers.add(provider("deepseek", "DeepSeek", "https://platform.deepseek.com/api_keys"));
+        providers.add(provider("aihubmix", "AIhubmix", "https://aihubmix.com"));
+        providers.add(provider("suixiang", "随想AI中转站", "https://sui-xiang.com"));
+        providers.add(provider("aliyun", "Aliyun", "https://bailian.console.aliyun.com"));
+        providers.add(provider("zhipu", "Zhipu AI", "https://open.bigmodel.cn"));
+        providers.add(provider("anthropic", "Claude", "https://console.anthropic.com/settings/keys"));
+        providers.add(provider("grok_xai", "Grok", "https://console.x.ai"));
+        providers.add(provider("bytedance", "ByteDance", "https://console.volcengine.com/ark"));
         return providers;
+    }
+
+    private static ProviderCardSpec provider(String id, String name, String helpUrl) {
+        return new ProviderCardSpec(id, name, "", helpUrl, false)
+                .addField("API Key", providerPrefKey(id, "api_key"), "", true, providerPrefKey(id, "enabled"))
+                .addField("Base URL", providerPrefKey(id, "base_url"), defaultBaseForProviderType(id), false, null);
     }
 
     public static List<ProviderCardSpec> getProviderCards(SharedPreferences prefs) {
@@ -388,7 +373,10 @@ public final class VoidPortSettings {
             }
             String providerId = config.optString("id", "").trim();
             String name = config.optString("name", providerId).trim();
-            if (providerId.isEmpty() || name.isEmpty()) {
+            if (providerId.isEmpty() || "kelivoin".equals(providerId) || name.isEmpty()) {
+                continue;
+            }
+            if (isBuiltInProviderId(providerId)) {
                 continue;
             }
             ProviderCardSpec spec = new ProviderCardSpec(providerId, name, "Custom provider", null, true)
@@ -495,8 +483,41 @@ public final class VoidPortSettings {
         if (!updated) {
             next.put(config);
         }
-        writeProviderConfigPrefs(prefs, config);
         prefs.edit().putString(PREF_PROVIDER_CONFIGS, next.toString()).apply();
+    }
+
+    /** Kelivo-style provider-owned model list. */
+    public static List<String> getProviderModels(SharedPreferences prefs, String providerId) {
+        List<String> result = new ArrayList<>();
+        JSONObject config = getProviderConfigObject(prefs, providerId);
+        JSONArray models = config == null ? null : config.optJSONArray("models");
+        for (int i = 0; models != null && i < models.length(); i++) {
+            String model = models.optString(i, "").trim();
+            if (!model.isEmpty() && !result.contains(model)) result.add(model);
+        }
+        return result;
+    }
+
+    public static void setProviderModels(SharedPreferences prefs, String providerId, List<String> modelIds) {
+        if (prefs == null || providerId == null || providerId.trim().isEmpty()) return;
+        JSONObject config = getProviderConfigObject(prefs, providerId);
+        if (config == null) {
+            config = defaultProviderConfig(providerId, providerId);
+        }
+        try {
+            config.put("id", providerId);
+            if (!config.has("name")) config.put("name", providerId);
+            if (!config.has("providerType")) config.put("providerType", providerTypeForId(providerId));
+            JSONArray models = new JSONArray();
+            if (modelIds != null) {
+                for (String model : modelIds) {
+                    if (model != null && !model.trim().isEmpty()) models.put(model.trim());
+                }
+            }
+            config.put("models", models);
+            saveProviderConfig(prefs, config);
+        } catch (Exception ignored) {
+        }
     }
 
     public static void updateProviderConfigValue(SharedPreferences prefs, String providerId, String key, Object value) {
@@ -571,18 +592,88 @@ public final class VoidPortSettings {
     }
 
     public static String defaultBaseForProviderType(String type) {
-        String normalized = type == null ? "openai" : type;
+        String normalized = type == null ? "openai" : type.trim().toLowerCase(Locale.US);
         return switch (normalized) {
             case "gemini" -> "https://generativelanguage.googleapis.com/v1beta";
             case "anthropic" -> "https://api.anthropic.com/v1";
+            case "siliconflow" -> "https://api.siliconflow.cn/v1";
+            case "tensdaq" -> "https://tensdaq-api.x-aio.com/v1";
+            case "aihubmix" -> "https://aihubmix.com/v1";
+            case "suixiang" -> "https://sui-xiang.com/v1";
+            case "aliyun" -> "https://dashscope.aliyuncs.com/compatible-mode/v1";
+            case "zhipu" -> "https://open.bigmodel.cn/api/paas/v4";
+            case "bytedance" -> "https://ark.cn-beijing.volces.com/api/v3";
+            case "groq" -> "https://api.groq.com/openai/v1";
+            case "deepseek" -> "https://api.deepseek.com/v1";
+            case "openrouter" -> "https://openrouter.ai/api/v1";
+            case "grok_xai" -> "https://api.x.ai/v1";
+            case "mistral" -> "https://api.mistral.ai/v1";
             case "minimax" -> "https://api.minimax.io/v1";
+            case "huggingface" -> "https://router.huggingface.co/v1";
             case "ollama" -> "https://ollama.com/api";
             case "vllm" -> "http://127.0.0.1:8000/v1";
             case "lm_studio" -> "http://127.0.0.1:1234/v1";
             case "litellm" -> "http://127.0.0.1:4000/v1";
-            case "openai_compatible" -> "";
+            // A useful default keeps new/custom providers usable for beginners.
+            // Users can still replace this with any other OpenAI-compatible API.
+            case "openai_compatible" -> "https://openrouter.ai/api/v1";
             default -> "https://api.openai.com/v1";
         };
+    }
+
+    public static boolean defaultEnabledForProvider(String providerId) {
+        return false;
+    }
+
+    public static String providerTypeForId(String providerId) {
+        if (providerId == null) return "openai";
+        String id = providerId.trim().toLowerCase(Locale.US);
+        if (id.contains("gemini") || id.contains("google")) return "gemini";
+        if (id.contains("claude") || id.contains("anthropic")) return "anthropic";
+        return "openai";
+    }
+
+    public static JSONObject defaultProviderConfig(String providerId, String displayName) {
+        JSONObject config = new JSONObject();
+        try {
+            String id = providerId == null ? "" : providerId.trim();
+            String type = providerTypeForId(id);
+            config.put("id", id);
+            config.put("enabled", defaultEnabledForProvider(id));
+            config.put("name", displayName == null || displayName.trim().isEmpty() ? id : displayName.trim());
+            config.put("apiKey", "");
+            config.put("baseUrl", defaultBaseForProviderType(id));
+            config.put("providerType", type);
+            config.put("chatPath", "openai".equals(type) ? "/chat/completions" : "");
+            config.put("useResponseApi", false);
+            config.put("vertexAI", false);
+            config.put("models", new JSONArray());
+            config.put("modelOverrides", new JSONObject());
+            config.put("customHeaders", new JSONArray());
+            config.put("customBody", new JSONArray());
+            config.put("proxyEnabled", false);
+            config.put("proxyType", "http");
+            config.put("proxyHost", "");
+            config.put("proxyPort", "8080");
+            config.put("proxyUsername", "");
+            config.put("proxyPassword", "");
+            config.put("multiKeyEnabled", false);
+            config.put("apiKeys", new JSONArray());
+            config.put("group", "other");
+            if ("siliconflow".equals(id)) {
+                config.put("models", new JSONArray().put("THUDM/GLM-4-9B-0414").put("Qwen/Qwen3-8B"));
+            }
+        } catch (Exception ignored) {
+        }
+        return config;
+    }
+
+    public static JSONObject getOrCreateProviderConfig(SharedPreferences prefs, String providerId, String displayName) {
+        JSONObject existing = getProviderConfigObject(prefs, providerId);
+        if (existing != null) return existing;
+        JSONObject created = defaultProviderConfig(providerId, displayName);
+        saveProviderConfig(prefs, created);
+        return created;
     }
 
     public static String defaultChatPathForProviderType(String type) {
@@ -603,7 +694,7 @@ public final class VoidPortSettings {
             }
             String providerId = config.optString("id", "").trim();
             String label = config.optString("name", providerId).trim();
-            if (providerId.isEmpty() || label.isEmpty()) {
+            if (providerId.isEmpty() || "kelivoin".equals(providerId) || label.isEmpty()) {
                 continue;
             }
             List<String> models = new ArrayList<>();
@@ -629,10 +720,15 @@ public final class VoidPortSettings {
         prefs.edit()
                 .putBoolean(providerPrefKey(providerId, "enabled"), config.optBoolean("enabled", true))
                 .putString(providerPrefKey(providerId, "api_key"), config.optString("apiKey", ""))
-                .putString(providerPrefKey(providerId, "base_url"), config.optString("baseUrl", defaultBaseForProviderType(providerType(config))))
+                .putString(providerPrefKey(providerId, "base_url"), nonEmptyOrDefault(
+                        config.optString("baseUrl", ""), defaultBaseForProviderType(providerType(config))))
                 .putString(providerPrefKey(providerId, "headers"), config.optString("headers", "{}"))
                 .putString(providerPrefKey(providerId, "api_path"), config.optString("chatPath", defaultChatPathForProviderType(providerType(config))))
                 .apply();
+    }
+
+    private static String nonEmptyOrDefault(String value, String fallback) {
+        return value == null || value.trim().isEmpty() ? fallback : value.trim();
     }
 
     private static boolean isBuiltInProviderId(String providerId) {
@@ -779,6 +875,52 @@ public final class VoidPortSettings {
             }
         }
         return count;
+    }
+
+    public static boolean isChatWebSearchEnabled(SharedPreferences prefs) {
+        return prefs != null && prefs.getBoolean(PREF_CHAT_WEB_SEARCH, false);
+    }
+
+    public static void setChatWebSearchEnabled(SharedPreferences prefs, boolean enabled) {
+        if (prefs != null) {
+            prefs.edit().putBoolean(PREF_CHAT_WEB_SEARCH, enabled).apply();
+        }
+    }
+
+    public static boolean setMcpServerEnabled(SharedPreferences prefs, String serverName,
+                                              boolean enabled) {
+        if (prefs == null || serverName == null || serverName.trim().isEmpty()) {
+            return false;
+        }
+        try {
+            JSONObject config = readMcpConfigObject(prefs);
+            JSONObject servers = config.optJSONObject("mcpServers");
+            JSONObject server = servers == null ? null : servers.optJSONObject(serverName);
+            if (server == null) {
+                return false;
+            }
+            server.put("enabled", enabled);
+            prefs.edit().putString(PREF_MCP_CONFIG, config.toString()).apply();
+            return true;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    public static boolean saveMcpConfig(SharedPreferences prefs, String rawJson) {
+        if (prefs == null || rawJson == null) {
+            return false;
+        }
+        try {
+            JSONObject config = new JSONObject(rawJson);
+            if (config.optJSONObject("mcpServers") == null) {
+                return false;
+            }
+            prefs.edit().putString(PREF_MCP_CONFIG, config.toString()).apply();
+            return true;
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     private static JSONObject readMcpServersObject(SharedPreferences prefs) {

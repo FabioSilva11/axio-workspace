@@ -43,7 +43,7 @@
       android:layout_height="wrap_content"
       android:layout_marginHorizontal="16dp"
       android:layout_marginTop="12dp"
-      android:layout_marginBottom="18dp"
+      android:layout_marginBottom="8dp"
       app:boxBackgroundColor="@color/chat_surface_soft"
       app:boxCornerRadiusTopStart="16dp"
       app:boxCornerRadiusTopEnd="16dp"
@@ -78,9 +78,10 @@
       android:layout_width="match_parent"
       android:layout_height="0dp"
       android:layout_weight="1"
+      android:layout_marginHorizontal="16dp"
+      android:background="@drawable/bg_provider_list_card"
       android:clipToPadding="false"
       android:overScrollMode="never"
-      android:paddingHorizontal="16dp"
       android:paddingBottom="16dp" />
 
   </LinearLayout>

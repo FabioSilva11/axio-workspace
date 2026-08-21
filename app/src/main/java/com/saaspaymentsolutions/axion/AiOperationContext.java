@@ -26,12 +26,15 @@ public class AiOperationContext {
     @Nullable
     private final String chatMode;
 
+    private final boolean webSearchEnabled;
+
     private AiOperationContext(@NonNull Builder builder) {
         this.requestId = builder.requestId;
         this.providerId = builder.providerId;
         this.modelName = builder.modelName;
         this.createdAtMillis = builder.createdAtMillis;
         this.chatMode = builder.chatMode;
+        this.webSearchEnabled = builder.webSearchEnabled;
     }
 
     /**
@@ -87,6 +90,10 @@ public class AiOperationContext {
         return chatMode;
     }
 
+    public boolean isWebSearchEnabled() {
+        return webSearchEnabled;
+    }
+
     /**
      * Valida que o modelo/provedor atual ainda corresponde ao contexto original.
      * 
@@ -114,6 +121,7 @@ public class AiOperationContext {
         private long createdAtMillis = System.currentTimeMillis();
         @Nullable
         private String chatMode = null;
+        private boolean webSearchEnabled = false;
 
         @NonNull
         public Builder requestId(@NonNull String requestId) {
@@ -136,6 +144,12 @@ public class AiOperationContext {
         @NonNull
         public Builder chatMode(@Nullable String chatMode) {
             this.chatMode = chatMode;
+            return this;
+        }
+
+        @NonNull
+        public Builder webSearchEnabled(boolean enabled) {
+            this.webSearchEnabled = enabled;
             return this;
         }
 
@@ -163,6 +177,7 @@ public class AiOperationContext {
                 ", provider='" + providerId + '\'' +
                 ", model='" + modelName + '\'' +
                 ", chatMode='" + chatMode + '\'' +
+                ", webSearchEnabled=" + webSearchEnabled +
                 '}';
     }
 }

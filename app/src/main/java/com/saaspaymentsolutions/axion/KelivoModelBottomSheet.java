@@ -217,19 +217,16 @@ public final class KelivoModelBottomSheet {
         String currentProvider = prefs.getString(AiChatSettingsHelper.PREF_CURRENT_PROVIDER, "");
         String currentModel = prefs.getString(AiChatSettingsHelper.PREF_CURRENT_MODEL, "");
 
-        // For built-in providers, we don't have a model list locally
-        // Add the provider name as a single model option
-        String modelId = provider.providerId;
-        boolean modelPinned = pinned.contains(pinnedKey(provider.providerId, modelId));
-        if (favoritesOnly && !modelPinned) {
-            rows.add(KelivoModelSheetAdapter.Row.empty(
-                    context.getString(R.string.axion_no_models_in_provider)));
-            return rows;
+        for (VoidPortSettings.ModelOption option : VoidPortSettings.getVisibleModelOptions(prefs)) {
+            if (!provider.providerId.equals(option.providerId)) continue;
+            if (!matches(option.model, option.model, query)) continue;
+            boolean modelPinned = pinned.contains(pinnedKey(option.providerId, option.model));
+            if (favoritesOnly && !modelPinned) continue;
+            boolean selected = option.providerId.equals(currentProvider)
+                    && option.model.equals(currentModel);
+            rows.add(new KelivoModelSheetAdapter.Row(
+                    option.providerId, option.providerLabel, option.model, selected, modelPinned));
         }
-        boolean selected = provider.providerId.equals(currentProvider)
-                && modelId.equals(currentModel);
-        rows.add(new KelivoModelSheetAdapter.Row(
-                provider.providerId, provider.title, modelId, selected, modelPinned));
 
         if (rows.isEmpty()) {
             rows.add(KelivoModelSheetAdapter.Row.empty(

@@ -72,136 +72,19 @@ public final class VoidPortLlmMessage {
     }
 
     public static ProviderConfig resolveProviderConfig(SharedPreferences prefs, String providerId) {
-        if (providerId == null) {
-            return null;
+        if (providerId == null || providerId.trim().isEmpty()) return null;
+        JSONObject config = VoidPortSettings.getProviderConfigObject(prefs, providerId);
+        if (config == null) {
+            String displayName = providerId;
+            for (VoidPortSettings.ProviderCardSpec spec : VoidPortSettings.getProviderCards()) {
+                if (providerId.equals(spec.providerId)) {
+                    displayName = spec.title;
+                    break;
+                }
+            }
+            config = VoidPortSettings.defaultProviderConfig(providerId, displayName);
         }
-        JSONObject customProvider = VoidPortSettings.getProviderConfigObject(prefs, providerId);
-        if (customProvider != null) {
-            return resolveCustomProviderConfig(prefs, customProvider);
-        }
-        return switch (providerId) {
-            case "anthropic" -> new ProviderConfig(
-                    "anthropic",
-                    ProviderFamily.ANTHROPIC,
-                    configuredRequestUrl(prefs, "anthropic", "https://api.anthropic.com/v1", "/messages"),
-                    activeApiKey(prefs, "anthropic", prefs.getString("anthropic_api_key", "")),
-                    readHeadersJson(null),
-                    true
-            );
-            case "openai" -> new ProviderConfig(
-                    "openai",
-                    ProviderFamily.OPENAI_COMPATIBLE,
-                    configuredRequestUrl(prefs, "openai", "https://api.openai.com/v1", "/chat/completions"),
-                    activeApiKey(prefs, "openai", prefs.getString("openai_api_key", "")),
-                    readHeadersJson(null),
-                    true
-            );
-            case "gemini" -> new ProviderConfig(
-                    "gemini",
-                    ProviderFamily.GEMINI,
-                    configuredBaseUrl(prefs, "gemini", "https://generativelanguage.googleapis.com/v1beta"),
-                    activeApiKey(prefs, "gemini", prefs.getString("gemini_api_key", "")),
-                    readHeadersJson(null),
-                    true
-            );
-            case "groq" -> new ProviderConfig(
-                    "groq",
-                    ProviderFamily.OPENAI_COMPATIBLE,
-                    configuredRequestUrl(prefs, "groq", "https://api.groq.com/openai/v1", "/chat/completions"),
-                    activeApiKey(prefs, "groq", prefs.getString("groq_api_key", "")),
-                    readHeadersJson(null),
-                    true
-            );
-            case "deepseek" -> new ProviderConfig(
-                    "deepseek",
-                    ProviderFamily.OPENAI_COMPATIBLE,
-                    configuredRequestUrl(prefs, "deepseek", "https://api.deepseek.com", "/chat/completions"),
-                    activeApiKey(prefs, "deepseek", prefs.getString("deepseek_api_key", "")),
-                    readHeadersJson(null),
-                    true
-            );
-            case "openrouter" -> new ProviderConfig(
-                    "openrouter",
-                    ProviderFamily.OPENAI_COMPATIBLE,
-                    configuredRequestUrl(prefs, "openrouter", "https://openrouter.ai/api/v1", "/chat/completions"),
-                    activeApiKey(prefs, "openrouter", prefs.getString("openrouter_api_key", "")),
-                    readHeadersJson("{\"HTTP-Referer\":\"https://github.com/FabioSilva11/Axion\",\"X-Title\":\"Sketchware IA\"}"),
-                    true
-            );
-            case "openai_compatible" -> new ProviderConfig(
-                    "openai_compatible",
-                    ProviderFamily.OPENAI_COMPATIBLE,
-                    configuredRequestUrl(prefs, "openai_compatible", prefs.getString("openai_compatible_base_url", ""), "/chat/completions"),
-                    activeApiKey(prefs, "openai_compatible", prefs.getString("openai_compatible_api_key", "")),
-                    readHeadersJson(prefs.getString("openai_compatible_headers", "{}")),
-                    true
-            );
-            case "grok_xai" -> new ProviderConfig(
-                    "grok_xai",
-                    ProviderFamily.OPENAI_COMPATIBLE,
-                    configuredRequestUrl(prefs, "grok_xai", "https://api.x.ai/v1", "/chat/completions"),
-                    activeApiKey(prefs, "grok_xai", prefs.getString("grok_xai_api_key", "")),
-                    readHeadersJson(null),
-                    true
-            );
-            case "mistral" -> new ProviderConfig(
-                    "mistral",
-                    ProviderFamily.OPENAI_COMPATIBLE,
-                    configuredRequestUrl(prefs, "mistral", "https://api.mistral.ai/v1", "/chat/completions"),
-                    activeApiKey(prefs, "mistral", prefs.getString("mistral_api_key", "")),
-                    readHeadersJson(null),
-                    true
-            );
-            case "minimax" -> new ProviderConfig(
-                    "minimax",
-                    ProviderFamily.OPENAI_COMPATIBLE,
-                    configuredRequestUrl(prefs, "minimax", "https://api.minimax.io/v1", "/chat/completions"),
-                    activeApiKey(prefs, "minimax", prefs.getString("minimax_api_key", "")),
-                    readHeadersJson(null),
-                    true
-            );
-            case "litellm" -> new ProviderConfig(
-                    "litellm",
-                    ProviderFamily.OPENAI_COMPATIBLE,
-                    configuredRequestUrl(prefs, "litellm", prefs.getString("litellm_base_url", ""), "/chat/completions"),
-                    "",
-                    readHeadersJson(null),
-                    true
-            );
-            case "ollama" -> new ProviderConfig(
-                    "ollama",
-                    ProviderFamily.OPENAI_COMPATIBLE,
-                    normalizeOllamaUrl(prefs.getString("local_provider_ollama_url", "https://ollama.com/api")),
-                    activeApiKey(prefs, "ollama", prefs.getString("ollama_api_key", "")),
-                    readHeadersJson(null),
-                    true
-            );
-            case "huggingface" -> new ProviderConfig(
-                    "huggingface",
-                    ProviderFamily.OPENAI_COMPATIBLE,
-                    configuredRequestUrl(prefs, "huggingface", "https://router.huggingface.co/v1", "/chat/completions"),
-                    activeApiKey(prefs, "huggingface", prefs.getString("huggingface_api_key", "")),
-                    readHeadersJson(null),
-                    true
-            );
-            case "vllm" -> new ProviderConfig(
-                    "vllm",
-                    ProviderFamily.OPENAI_COMPATIBLE,
-                    normalizeOpenAiLocalUrl(prefs.getString("local_provider_vllm_url", "http://localhost:8000")),
-                    "",
-                    readHeadersJson(null),
-                    true
-            );
-            case "lm_studio" -> new ProviderConfig(
-                    "lm_studio",
-                    ProviderFamily.OPENAI_COMPATIBLE,
-                    normalizeOpenAiLocalUrl(prefs.getString("local_provider_lm_studio_url", "http://localhost:1234")),
-                    "",
-                    readHeadersJson(null),
-                    true
-            );
-            default -> null;
-        };
+        return resolveCustomProviderConfig(prefs, config);
     }
 
     public static int maxOutputTokens(String providerId, String modelName) {
@@ -231,22 +114,13 @@ public final class VoidPortLlmMessage {
     private static ProviderConfig resolveCustomProviderConfig(SharedPreferences prefs, JSONObject config) {
         String providerId = config.optString("id", "");
         String type = VoidPortSettings.providerType(config);
-        String baseUrl = prefs.getString(
-                VoidPortSettings.providerPrefKey(providerId, "base_url"),
-                config.optString("baseUrl", VoidPortSettings.defaultBaseForProviderType(type))
-        );
-        String chatPath = prefs.getString(
-                VoidPortSettings.providerPrefKey(providerId, "api_path"),
-                config.optString("chatPath", VoidPortSettings.defaultChatPathForProviderType(type))
-        );
-        String apiKey = activeApiKey(prefs, providerId, prefs.getString(
-                VoidPortSettings.providerPrefKey(providerId, "api_key"),
-                config.optString("apiKey", "")
-        ));
-        JSONObject headers = readHeadersJson(prefs.getString(
-                VoidPortSettings.providerPrefKey(providerId, "headers"),
-                config.optString("headers", "{}")
-        ));
+        String baseUrl = config.optString("baseUrl", "");
+        if (baseUrl == null || baseUrl.trim().isEmpty()) {
+            baseUrl = VoidPortSettings.defaultBaseForProviderType(providerId);
+        }
+        String chatPath = config.optString("chatPath", VoidPortSettings.defaultChatPathForProviderType(type));
+        String apiKey = activeApiKey(prefs, providerId, config.optString("apiKey", ""));
+        JSONObject headers = readHeadersJson(config.optString("headers", "{}"));
 
         if ("gemini".equals(type)) {
             return new ProviderConfig(
@@ -301,6 +175,11 @@ public final class VoidPortLlmMessage {
     private static String configuredBaseUrl(SharedPreferences prefs, String providerId, String defaultBaseUrl) {
         String override = prefs.getString("base_url_override_" + slugify(providerId), "");
         return trimTrailingSlash(override == null || override.trim().isEmpty() ? defaultBaseUrl : override);
+    }
+
+    private static String nonEmptyPreference(SharedPreferences prefs, String key, String fallback) {
+        String value = prefs.getString(key, "");
+        return value == null || value.trim().isEmpty() ? fallback : value;
     }
 
     private static String configuredRequestUrl(SharedPreferences prefs, String providerId, String defaultBaseUrl, String defaultPath) {

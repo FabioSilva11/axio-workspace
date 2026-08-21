@@ -86,6 +86,20 @@
     <string name="kelivo_input_hint">Digite uma mensagem…</string>
     <string name="chat_model_selector_content_description">Selecionar modelo</string>
     <string name="chat_mode_agent">Agente</string>
+    <string name="chat_online_search">Busca online</string>
+    <string name="chat_online_search_description">Permite que o Gemini consulte a Pesquisa Google antes de responder. A pesquisa pode gerar cobrança pela API.</string>
+    <string name="chat_online_search_requires_gemini">A busca online integrada está disponível quando um modelo Gemini compatível está selecionado.</string>
+    <string name="chat_online_search_enabled">Busca online ativada</string>
+    <string name="chat_online_search_disabled">Busca online desativada</string>
+    <string name="chat_mcp_servers">Servidores MCP</string>
+    <string name="chat_mcp_servers_description">Escolha os servidores MCP que poderão fornecer ferramentas ao modo Agente.</string>
+    <string name="chat_mcp_servers_empty">Nenhum servidor MCP configurado.</string>
+    <string name="chat_mcp_agent_only">As ferramentas MCP são usadas no modo Agente.</string>
+    <string name="chat_mcp_advanced_config">Configuração avançada (JSON)</string>
+    <string name="chat_mcp_json_title">Configurar servidores MCP</string>
+    <string name="chat_mcp_json_hint">Cole um objeto JSON com mcpServers. No Android, use servidores com URL HTTP.</string>
+    <string name="chat_mcp_json_invalid">JSON MCP inválido. Verifique o objeto mcpServers.</string>
+    <string name="chat_mcp_saved">Configuração MCP salva</string>
     <string name="chat_multi_agent_section">Equipe multiagente</string>
     <string name="chat_multi_agent_auto">Multiagente: automático</string>
     <string name="chat_multi_agent_always">Multiagente: sempre</string>
@@ -162,7 +176,7 @@
     <string name="chat_menu_export_chat">Exportar conversa</string>
 
     <!-- IA Configurações -->
-    <string name="ia_settings_title">Configurações de IA</string>
+    <string name="ia_settings_title">Provedores</string>
 
     <!-- Provider Management -->
     <string name="ia_search_providers_hint">Pesquisar provedores ou grupos</string>
@@ -174,12 +188,33 @@
     <string name="ia_group_label">Grupo</string>
     <string name="ia_enabled_label">Ativado</string>
     <string name="ia_multi_key_mode_label">Modo de múltiplas chaves</string>
+    <string name="ia_group_other">Outro</string>
+    <string name="ia_manage_keys_label">Gerenciar chaves</string>
+    <string name="ia_vertex_ai_label">Vertex AI</string>
+    <string name="ia_custom_request_label">Requisição personalizada</string>
+    <string name="ia_vertex_location_label">Localização</string>
+    <string name="ia_vertex_project_label">ID do projeto</string>
+    <string name="ia_vertex_service_account_label">JSON da conta de serviço</string>
+    <string name="ia_filter_models_hint">Digite o nome do modelo para filtrar</string>
+    <string name="ia_action_multi_select">Seleção múltipla</string>
+    <string name="ia_export_selected">Exportar</string>
+    <string name="ia_delete_custom_selected">Excluir</string>
+    <string name="ia_no_provider_selected">Selecione pelo menos um provedor</string>
+    <string name="ia_no_custom_provider_selected">Nenhum provedor personalizado foi selecionado</string>
+    <string name="ia_delete_selected_confirm">Excluir %1$d provedor(es) personalizado(s)? Esta ação não pode ser desfeita.</string>
+    <string name="ia_model_group_embeddings">Embeddings</string>
+    <string name="ia_model_group_chat">Chat</string>
+    <string name="ia_multi_key_dialog_hint">Uma chave por linha</string>
+    <string name="ia_network_dialog_hint">proxyHost:proxyPort (opcional)</string>
+    <string name="ia_custom_headers_hint">Cabeçalhos JSON</string>
+    <string name="ia_custom_body_hint">Corpo JSON adicional</string>
     <string name="ia_response_api_label">API de respostas (/responses)</string>
     <string name="ia_get_account_balance_label">Consultar saldo da conta</string>
     <string name="ia_network_label">Rede</string>
     <string name="ia_name_label">Nome</string>
     <string name="ia_api_key_label">Chave da API</string>
     <string name="ia_api_key_empty_hint">Deixe em branco para usar o padrão</string>
+    <string name="ia_api_key_required_to_enable">Configure uma chave de API antes de ativar o provedor</string>
     <string name="ia_api_base_url_label">URL base da API</string>
     <string name="ia_api_path_label">Caminho da API</string>
     <string name="ia_api_path_default_hint">/chat/completions</string>
@@ -220,8 +255,8 @@
     <string name="ia_code_interpreter_desc">Permite que o modelo escreva e execute código para resolver problemas.</string>
     <string name="ia_image_generation_title">Geração de imagens</string>
     <string name="ia_image_generation_desc">Permite que o modelo gere imagens como parte da resposta.</string>
-    <string name="ia_status_on">ATIVADO</string>
-    <string name="ia_status_off">DESATIVADO</string>
+    <string name="ia_status_on">ON</string>
+    <string name="ia_status_off">OFF</string>
     <string name="ia_delete_model">Excluir modelo</string>
     <string name="ia_provider_name_required">O nome do provedor é obrigatório.</string>
     <string name="ia_import_provider_hint">Cole o código ai-provider:v1 ou o JSON do provedor.</string>

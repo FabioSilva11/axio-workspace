@@ -145,6 +145,8 @@
     <color name="kelivo_avatar_text">#5B4FCF</color>
     <color name="kelivo_selected_row">#F0EDFA</color>
     <color name="kelivo_send_bg">#8E8E93</color>
+    <color name="kelivo_send_disabled">#1F1C1C1E</color>
+    <color name="kelivo_send_icon_disabled">#611C1C1E</color>
 
     <!-- Provider Status Colors -->
     <color name="provider_status_on_bg">#DCF5E3</color>

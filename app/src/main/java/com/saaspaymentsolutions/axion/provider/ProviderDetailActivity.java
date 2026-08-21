@@ -27,6 +27,7 @@ import com.google.android.material.button.MaterialButton;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.google.android.material.materialswitch.MaterialSwitch;
 import com.google.android.material.textfield.TextInputEditText;
+import com.google.android.material.textfield.TextInputLayout;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -38,6 +39,7 @@ import java.util.Locale;
 import com.saaspaymentsolutions.axion.AiChatSettingsHelper;
 import com.saaspaymentsolutions.axion.R;
 import com.saaspaymentsolutions.axion.port.VoidPortSettings;
+import com.saaspaymentsolutions.axion.port.VoidPortRefreshModelService;
 
 /**
  * Full-screen activity for managing a single AI provider.
@@ -52,15 +54,28 @@ public final class ProviderDetailActivity extends AppCompatActivity {
 
     // Views
     private TextView tvProviderType;
-    private TextView tvGroupValue;
+    private TextView tvProviderGroup;
+    private TextView labelApiKey;
+    private TextView labelBaseUrl;
     private MaterialSwitch switchEnabled;
     private MaterialSwitch switchMultiKey;
-    private MaterialSwitch switchResponseApi;
+    private MaterialSwitch switchVertexAi;
     private EditText etProviderName;
     private EditText etApiKey;
     private EditText etBaseUrl;
-    private EditText etApiPath;
-    private LinearLayout extraFieldsContainer;
+    private EditText etVertexLocation;
+    private EditText etVertexProject;
+    private EditText etVertexServiceAccount;
+    private TextInputLayout tilApiKey;
+    private TextInputLayout tilBaseUrl;
+    private LinearLayout rowManageKeys;
+    private View dividerManageKeys;
+    private LinearLayout rowVertexAi;
+    private View dividerVertexAi;
+    private LinearLayout vertexFields;
+    private String providerType = "openai";
+    private String providerGroup = "other";
+    private boolean loadingProvider;
 
     // Models tab
     private LinearLayout tabConfigContent;
@@ -106,6 +121,11 @@ public final class ProviderDetailActivity extends AppCompatActivity {
     }
 
     @Override
+    public void onBackPressed() {
+        saveAndFinish();
+    }
+
+    @Override
     public boolean onCreateOptionsMenu(Menu menu) {
         getMenuInflater().inflate(R.menu.menu_provider_detail, menu);
         return true;
@@ -146,15 +166,25 @@ public final class ProviderDetailActivity extends AppCompatActivity {
 
     private void setupViews() {
         tvProviderType = findViewById(R.id.tv_provider_type_value);
-        tvGroupValue = findViewById(R.id.tv_group_value);
+        tvProviderGroup = findViewById(R.id.tv_provider_group_value);
+        labelApiKey = findViewById(R.id.label_api_key);
+        labelBaseUrl = findViewById(R.id.label_api_base_url);
         switchEnabled = findViewById(R.id.switch_enabled);
         switchMultiKey = findViewById(R.id.switch_multi_key);
-        switchResponseApi = findViewById(R.id.switch_response_api);
+        switchVertexAi = findViewById(R.id.switch_vertex_ai);
         etProviderName = findViewById(R.id.et_provider_name);
         etApiKey = findViewById(R.id.et_api_key);
         etBaseUrl = findViewById(R.id.et_api_base_url);
-        etApiPath = findViewById(R.id.et_api_path);
-        extraFieldsContainer = findViewById(R.id.extra_fields_container);
+        etVertexLocation = findViewById(R.id.et_vertex_location);
+        etVertexProject = findViewById(R.id.et_vertex_project);
+        etVertexServiceAccount = findViewById(R.id.et_vertex_service_account);
+        tilApiKey = findViewById(R.id.til_api_key);
+        tilBaseUrl = findViewById(R.id.til_api_base_url);
+        rowManageKeys = findViewById(R.id.row_manage_keys);
+        dividerManageKeys = findViewById(R.id.divider_manage_keys);
+        rowVertexAi = findViewById(R.id.row_vertex_ai);
+        dividerVertexAi = findViewById(R.id.divider_vertex_ai);
+        vertexFields = findViewById(R.id.vertex_fields_container);
 
         tabConfigContent = findViewById(R.id.tab_config_content);
         tabModelsContent = findViewById(R.id.tab_models_content);
@@ -177,6 +207,52 @@ public final class ProviderDetailActivity extends AppCompatActivity {
 
         btnFetchModels.setOnClickListener(v -> fetchModelsFromApi());
         btnAddModel.setOnClickListener(v -> showAddModelDialog());
+        findViewById(R.id.row_provider_type).setOnClickListener(v -> showProviderTypePicker());
+        findViewById(R.id.row_provider_group).setOnClickListener(v -> showProviderGroupPicker());
+        rowManageKeys.setOnClickListener(v -> showMultiKeyManager());
+        findViewById(R.id.row_network).setOnClickListener(v -> showNetworkSettings());
+        findViewById(R.id.row_custom_request).setOnClickListener(v -> showCustomRequestSettings());
+
+        switchEnabled.setOnCheckedChangeListener((button, checked) -> {
+            if (loadingProvider) return;
+            if (checked && !hasCurrentCredential()) {
+                switchEnabled.setChecked(false);
+                Toast.makeText(this, R.string.ia_api_key_required_to_enable, Toast.LENGTH_SHORT).show();
+                return;
+            }
+            autoSave();
+        });
+        switchMultiKey.setOnCheckedChangeListener((button, checked) -> {
+            updateConditionalFields();
+            autoSave();
+        });
+        switchVertexAi.setOnCheckedChangeListener((button, checked) -> {
+            updateConditionalFields();
+            autoSave();
+        });
+
+        TextWatcher autoSaveWatcher = new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) { autoSave(); }
+            @Override public void afterTextChanged(Editable s) {}
+        };
+        etProviderName.addTextChangedListener(autoSaveWatcher);
+        etApiKey.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                if (loadingProvider) return;
+                if (!hasCurrentCredential() && switchEnabled.isChecked()) {
+                    switchEnabled.setChecked(false);
+                } else {
+                    autoSave();
+                }
+            }
+            @Override public void afterTextChanged(Editable s) {}
+        });
+        etBaseUrl.addTextChangedListener(autoSaveWatcher);
+        etVertexLocation.addTextChangedListener(autoSaveWatcher);
+        etVertexProject.addTextChangedListener(autoSaveWatcher);
+        etVertexServiceAccount.addTextChangedListener(autoSaveWatcher);
     }
 
     private void setupTabs() {
@@ -212,61 +288,32 @@ public final class ProviderDetailActivity extends AppCompatActivity {
     // ────────────────────────────────────────
 
     private void loadProviderData() {
-        // Determine provider type and group
-        String providerType = getProviderTypeDisplay();
-        tvProviderType.setText(providerType);
-        tvGroupValue.setText(providerName);
+        loadingProvider = true;
+        JSONObject config = VoidPortSettings.getOrCreateProviderConfig(prefs, providerId, providerName);
+        providerType = VoidPortSettings.providerType(config);
+        providerGroup = config.optString("group", "other");
+        String configuredName = config.optString("name", providerName).trim();
+        String configuredBaseUrl = config.optString("baseUrl", "").trim();
 
-        // Load fields from ProviderCardSpec
-        VoidPortSettings.ProviderCardSpec spec = findSpec();
-
-        if (spec != null) {
-            // Set up fields from spec
-            for (VoidPortSettings.FieldSpec field : spec.fields) {
-                if (field.password && field.prefKey.contains("api_key")) {
-                    etApiKey.setText(prefs.getString(field.prefKey, field.defaultValue));
-                    etApiKey.setSelection(etApiKey.getText().length());
-                } else if (field.prefKey.contains("base_url") || field.prefKey.contains("url")) {
-                    etBaseUrl.setText(prefs.getString(field.prefKey, field.defaultValue));
-                } else if (field.prefKey.contains("path")) {
-                    etApiPath.setText(prefs.getString(field.prefKey, field.defaultValue));
-                }
-            }
-
-            // Check enabled state
-            boolean enabled = false;
-            for (VoidPortSettings.FieldSpec field : spec.fields) {
-                if (field.enabledKey != null) {
-                    enabled = prefs.getBoolean(field.enabledKey, false);
-                    break;
-                }
-            }
-            // Also check if API key is set
-            if (!enabled) {
-                for (VoidPortSettings.FieldSpec field : spec.fields) {
-                    if (field.password) {
-                        String val = prefs.getString(field.prefKey, field.defaultValue);
-                        enabled = val != null && !val.trim().isEmpty();
-                        break;
-                    }
-                }
-            }
-            switchEnabled.setChecked(enabled);
-        } else {
-            // Custom provider - load from config JSON
-            JSONObject config = VoidPortSettings.getProviderConfigObject(prefs, providerId);
-            if (config != null) {
-                etProviderName.setText(config.optString("name", providerName));
-                etApiKey.setText(config.optString("apiKey", ""));
-                etBaseUrl.setText(config.optString("baseUrl", ""));
-                etApiPath.setText(config.optString("chatPath", ""));
-                switchEnabled.setChecked(config.optBoolean("enabled", true));
-                switchMultiKey.setChecked(config.optBoolean("multiKey", false));
-                switchResponseApi.setChecked(config.optBoolean("responseApi", false));
-            } else {
-                etProviderName.setText(providerName);
-            }
-        }
+        etProviderName.setText(configuredName.isEmpty() ? providerName : configuredName);
+        etApiKey.setText(config.optString("apiKey", ""));
+        etApiKey.setSelection(etApiKey.getText().length());
+        etBaseUrl.setText(configuredBaseUrl.isEmpty()
+                ? VoidPortSettings.defaultBaseForProviderType(providerId)
+                : configuredBaseUrl);
+        switchEnabled.setChecked(config.optBoolean(
+                "enabled", VoidPortSettings.defaultEnabledForProvider(providerId)));
+        switchMultiKey.setChecked(config.optBoolean("multiKeyEnabled", false));
+        switchVertexAi.setChecked(config.optBoolean("vertexAI", false));
+        etVertexLocation.setText(config.optString("location", ""));
+        etVertexProject.setText(config.optString("projectId", ""));
+        etVertexServiceAccount.setText(config.optString("serviceAccountJson", ""));
+        updateProviderTypeLabel();
+        tvProviderGroup.setText("other".equals(providerGroup)
+                ? getString(R.string.ia_group_other)
+                : providerGroup);
+        updateConditionalFields();
+        loadingProvider = false;
 
         // Load models
         loadModels();
@@ -311,59 +358,242 @@ public final class ProviderDetailActivity extends AppCompatActivity {
     }
 
     private void saveProviderData() {
-        VoidPortSettings.ProviderCardSpec spec = findSpec();
-
-        if (spec != null) {
-            // Built-in provider: save to individual pref keys
-            SharedPreferences.Editor editor = prefs.edit();
-            for (VoidPortSettings.FieldSpec field : spec.fields) {
-                if (field.password && etApiKey != null && etApiKey.getText() != null) {
-                    editor.putString(field.prefKey, etApiKey.getText().toString().trim());
-                    if (field.enabledKey != null) {
-                        editor.putBoolean(field.enabledKey, switchEnabled.isChecked());
-                    }
-                } else if (field.prefKey.contains("base_url") || field.prefKey.contains("url")) {
-                    if (etBaseUrl != null && etBaseUrl.getText() != null) {
-                        editor.putString(field.prefKey, etBaseUrl.getText().toString().trim());
-                    }
-                } else if (field.prefKey.contains("path")) {
-                    if (etApiPath != null && etApiPath.getText() != null) {
-                        editor.putString(field.prefKey, etApiPath.getText().toString().trim());
-                    }
-                }
-            }
-            editor.apply();
-        } else {
-            // Custom provider: save to JSON config
-            JSONObject config = VoidPortSettings.getProviderConfigObject(prefs, providerId);
-            if (config == null) {
-                config = new JSONObject();
-                try {
-                    config.put("id", providerId);
-                } catch (Exception ignored) {}
-            }
-            try {
-                if (etProviderName != null && etProviderName.getText() != null) {
-                    config.put("name", etProviderName.getText().toString().trim());
-                }
-                config.put("enabled", switchEnabled.isChecked());
-                config.put("multiKey", switchMultiKey.isChecked());
-                config.put("responseApi", switchResponseApi.isChecked());
-                if (etApiKey != null && etApiKey.getText() != null) {
-                    config.put("apiKey", etApiKey.getText().toString().trim());
-                }
-                if (etBaseUrl != null && etBaseUrl.getText() != null) {
-                    config.put("baseUrl", etBaseUrl.getText().toString().trim());
-                }
-                if (etApiPath != null && etApiPath.getText() != null) {
-                    config.put("chatPath", etApiPath.getText().toString().trim());
-                }
-            } catch (Exception ignored) {}
+        if (loadingProvider) return;
+        JSONObject config = VoidPortSettings.getProviderConfigObject(prefs, providerId);
+        if (config == null) config = VoidPortSettings.defaultProviderConfig(providerId, providerName);
+        try {
+            String editedName = textOf(etProviderName);
+            config.put("id", providerId);
+            config.put("name", editedName.isEmpty() ? providerName : editedName);
+            config.put("providerType", providerType);
+            boolean credentialReady = !VoidPortSettings.providerRequiresApiKey(providerId, config)
+                    || hasCurrentCredential();
+            config.put("enabled", switchEnabled.isChecked() && credentialReady);
+            config.put("apiKey", textOf(etApiKey));
+            config.put("baseUrl", textOf(etBaseUrl));
+            config.put("chatPath", "openai".equals(providerType) ? "/chat/completions" : "");
+            config.put("multiKeyEnabled", switchMultiKey.isChecked());
+            config.put("vertexAI", "gemini".equals(providerType) && switchVertexAi.isChecked());
+            config.put("location", textOf(etVertexLocation));
+            config.put("projectId", textOf(etVertexProject));
+            config.put("serviceAccountJson", textOf(etVertexServiceAccount));
+            config.put("group", providerGroup);
+            if (!config.has("models")) config.put("models", new JSONArray());
             VoidPortSettings.saveProviderConfig(prefs, config);
+            providerName = config.optString("name", providerName);
+            if (getSupportActionBar() != null) getSupportActionBar().setTitle(providerName);
+        } catch (Exception ignored) {
         }
+    }
 
-        // Save models
-        saveModels();
+    private void autoSave() {
+        if (!loadingProvider) saveProviderData();
+    }
+
+    private static String textOf(EditText editText) {
+        return editText == null || editText.getText() == null
+                ? ""
+                : editText.getText().toString().trim();
+    }
+
+    private boolean hasCurrentCredential() {
+        if (!textOf(etApiKey).isEmpty()) return true;
+        JSONObject config = VoidPortSettings.getProviderConfigObject(prefs, providerId);
+        return VoidPortSettings.hasUsableApiKey(config);
+    }
+
+    private String providerTypeForId(String id) {
+        return VoidPortSettings.providerTypeForId(id);
+    }
+
+    private void updateProviderTypeLabel() {
+        tvProviderType.setText(switch (providerType) {
+            case "gemini" -> "Gemini";
+            case "anthropic" -> "Claude";
+            default -> "OpenAI";
+        });
+    }
+
+    private void updateConditionalFields() {
+        if (rowManageKeys == null) return;
+        boolean multiKey = switchMultiKey.isChecked();
+        boolean google = "gemini".equals(providerType);
+        boolean vertex = google && switchVertexAi.isChecked();
+        rowManageKeys.setVisibility(multiKey ? View.VISIBLE : View.GONE);
+        dividerManageKeys.setVisibility(multiKey ? View.VISIBLE : View.GONE);
+        rowVertexAi.setVisibility(google ? View.VISIBLE : View.GONE);
+        dividerVertexAi.setVisibility(google ? View.VISIBLE : View.GONE);
+        vertexFields.setVisibility(vertex ? View.VISIBLE : View.GONE);
+        int keyVisibility = (!multiKey && !vertex) ? View.VISIBLE : View.GONE;
+        labelApiKey.setVisibility(keyVisibility);
+        tilApiKey.setVisibility(keyVisibility);
+        int baseVisibility = vertex ? View.GONE : View.VISIBLE;
+        labelBaseUrl.setVisibility(baseVisibility);
+        tilBaseUrl.setVisibility(baseVisibility);
+    }
+
+    private void showProviderTypePicker() {
+        String[] labels = {"OpenAI", "Gemini", "Claude"};
+        String[] values = {"openai", "gemini", "anthropic"};
+        int checked = "gemini".equals(providerType) ? 1 : ("anthropic".equals(providerType) ? 2 : 0);
+        new MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.ia_provider_type_label)
+                .setSingleChoiceItems(labels, checked, (dialog, which) -> {
+                    providerType = values[which];
+                    updateProviderTypeLabel();
+                    if (textOf(etBaseUrl).isEmpty()) {
+                        etBaseUrl.setText(VoidPortSettings.defaultBaseForProviderType(providerType));
+                    }
+                    updateConditionalFields();
+                    autoSave();
+                    dialog.dismiss();
+                })
+                .show();
+    }
+
+    private void showProviderGroupPicker() {
+        View dialogView = getLayoutInflater().inflate(R.layout.dialog_text_input, null);
+        TextInputEditText input = dialogView.findViewById(R.id.dialog_edit_text);
+        input.setHint(R.string.ia_group_label);
+        input.setText("other".equals(providerGroup) ? "" : providerGroup);
+        new MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.ia_group_label)
+                .setView(dialogView)
+                .setNegativeButton(R.string.common_word_cancel, null)
+                .setNeutralButton(R.string.ia_group_other, (dialog, which) -> {
+                    providerGroup = "other";
+                    tvProviderGroup.setText(R.string.ia_group_other);
+                    autoSave();
+                })
+                .setPositiveButton(R.string.common_word_ok, (dialog, which) -> {
+                    String group = input.getText() == null ? "" : input.getText().toString().trim();
+                    providerGroup = group.isEmpty() ? "other" : group;
+                    tvProviderGroup.setText(group.isEmpty() ? getString(R.string.ia_group_other) : group);
+                    autoSave();
+                })
+                .show();
+    }
+
+    private void showMultiKeyManager() {
+        View dialogView = getLayoutInflater().inflate(R.layout.dialog_text_input, null);
+        TextInputEditText input = dialogView.findViewById(R.id.dialog_edit_text);
+        input.setHint(R.string.ia_multi_key_dialog_hint);
+        input.setSingleLine(false);
+        input.setMinLines(5);
+        JSONObject config = VoidPortSettings.getProviderConfigObject(prefs, providerId);
+        JSONArray keys = config == null ? null : config.optJSONArray("apiKeys");
+        StringBuilder existing = new StringBuilder();
+        for (int i = 0; keys != null && i < keys.length(); i++) {
+            JSONObject item = keys.optJSONObject(i);
+            String key = item == null ? "" : item.optString("key", "").trim();
+            if (key.isEmpty()) continue;
+            if (existing.length() > 0) existing.append('\n');
+            existing.append(key);
+        }
+        input.setText(existing.toString());
+        new MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.ia_manage_keys_label)
+                .setView(dialogView)
+                .setNegativeButton(R.string.common_word_cancel, null)
+                .setPositiveButton(R.string.common_word_ok, (dialog, which) -> {
+                    JSONObject current = VoidPortSettings.getProviderConfigObject(prefs, providerId);
+                    if (current == null) current = VoidPortSettings.defaultProviderConfig(providerId, providerName);
+                    JSONArray next = new JSONArray();
+                    String raw = input.getText() == null ? "" : input.getText().toString();
+                    int position = 1;
+                    for (String line : raw.split("\\r?\\n")) {
+                        String key = line.trim();
+                        if (key.isEmpty()) continue;
+                        JSONObject item = new JSONObject();
+                        try {
+                            item.put("id", "key_" + position);
+                            item.put("name", "Key " + position);
+                            item.put("key", key);
+                            item.put("enabled", true);
+                            next.put(item);
+                            position++;
+                        } catch (Exception ignored) {
+                        }
+                    }
+                    try {
+                        current.put("apiKeys", next);
+                        current.put("multiKeyEnabled", true);
+                    } catch (Exception ignored) {
+                    }
+                    VoidPortSettings.saveProviderConfig(prefs, current);
+                })
+                .show();
+    }
+
+    private void showNetworkSettings() {
+        View dialogView = getLayoutInflater().inflate(R.layout.dialog_text_input, null);
+        TextInputEditText input = dialogView.findViewById(R.id.dialog_edit_text);
+        input.setHint(R.string.ia_network_dialog_hint);
+        JSONObject config = VoidPortSettings.getProviderConfigObject(prefs, providerId);
+        String host = config == null ? "" : config.optString("proxyHost", "");
+        String port = config == null ? "8080" : config.optString("proxyPort", "8080");
+        input.setText(host.isEmpty() ? "" : host + ":" + port);
+        new MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.ia_network_label)
+                .setView(dialogView)
+                .setNegativeButton(R.string.common_word_cancel, null)
+                .setPositiveButton(R.string.common_word_ok, (dialog, which) -> {
+                    String value = input.getText() == null ? "" : input.getText().toString().trim();
+                    String proxyHost = value;
+                    String proxyPort = "8080";
+                    int colon = value.lastIndexOf(':');
+                    if (colon > 0) {
+                        proxyHost = value.substring(0, colon).trim();
+                        proxyPort = value.substring(colon + 1).trim();
+                    }
+                    JSONObject current = VoidPortSettings.getProviderConfigObject(prefs, providerId);
+                    if (current == null) current = VoidPortSettings.defaultProviderConfig(providerId, providerName);
+                    try {
+                        current.put("proxyEnabled", !proxyHost.isEmpty());
+                        current.put("proxyType", "http");
+                        current.put("proxyHost", proxyHost);
+                        current.put("proxyPort", proxyPort.isEmpty() ? "8080" : proxyPort);
+                    } catch (Exception ignored) {
+                    }
+                    VoidPortSettings.saveProviderConfig(prefs, current);
+                })
+                .show();
+    }
+
+    private void showCustomRequestSettings() {
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        int padding = Math.round(20 * getResources().getDisplayMetrics().density);
+        content.setPadding(padding, 0, padding, 0);
+        TextInputEditText headers = new TextInputEditText(this);
+        headers.setHint(R.string.ia_custom_headers_hint);
+        TextInputEditText body = new TextInputEditText(this);
+        body.setHint(R.string.ia_custom_body_hint);
+        body.setMinLines(3);
+        JSONObject config = VoidPortSettings.getProviderConfigObject(prefs, providerId);
+        headers.setText(config == null ? "{}" : config.optString("headers", "{}"));
+        body.setText(config == null ? "{}" : config.optString("customBodyJson", "{}"));
+        content.addView(headers, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        content.addView(body, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        new MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.ia_custom_request_label)
+                .setView(content)
+                .setNegativeButton(R.string.common_word_cancel, null)
+                .setPositiveButton(R.string.common_word_ok, (dialog, which) -> {
+                    try {
+                        // Validate both values before replacing the stored request overrides.
+                        new JSONObject(textOf(headers));
+                        new JSONObject(textOf(body));
+                        JSONObject current = VoidPortSettings.getProviderConfigObject(prefs, providerId);
+                        if (current == null) current = VoidPortSettings.defaultProviderConfig(providerId, providerName);
+                        current.put("headers", textOf(headers));
+                        current.put("customBodyJson", textOf(body));
+                        VoidPortSettings.saveProviderConfig(prefs, current);
+                    } catch (Exception e) {
+                        Toast.makeText(this, e.getMessage(), Toast.LENGTH_LONG).show();
+                    }
+                })
+                .show();
     }
 
     // ────────────────────────────────────────
@@ -372,23 +602,12 @@ public final class ProviderDetailActivity extends AppCompatActivity {
 
     private void loadModels() {
         modelList.clear();
-        JSONArray models = prefs.getString("ia_settings", "[]").isEmpty()
-                ? new JSONArray()
-                : readModelsArray();
-        for (int i = 0; i < models.length(); i++) {
-            JSONObject model = models.optJSONObject(i);
-            if (model != null && providerId.equals(model.optString("providerId", ""))) {
-                String modelId = model.optString("model", "");
-                if (!modelId.isEmpty() && !modelList.contains(modelId)) {
-                    modelList.add(modelId);
-                }
-            }
-        }
+        modelList.addAll(VoidPortSettings.getProviderModels(prefs, providerId));
         updateModelsList();
     }
 
     private JSONArray readModelsArray() {
-        String raw = prefs.getString("custom_models", "[]");
+        String raw = prefs.getString(VoidPortSettings.PREF_CUSTOM_MODELS, "[]");
         try {
             return new JSONArray(raw);
         } catch (Exception e) {
@@ -434,17 +653,7 @@ public final class ProviderDetailActivity extends AppCompatActivity {
     private void addModel(String modelId) {
         if (modelList.contains(modelId)) return;
         modelList.add(modelId);
-
-        // Persist to custom_models pref
-        try {
-            JSONArray models = readModelsArray();
-            JSONObject newModel = new JSONObject();
-            newModel.put("providerId", providerId);
-            newModel.put("providerLabel", providerName);
-            newModel.put("model", modelId);
-            models.put(newModel);
-            prefs.edit().putString("custom_models", models.toString()).apply();
-        } catch (Exception ignored) {}
+        VoidPortSettings.setProviderModels(prefs, providerId, modelList);
 
         updateModelsList();
         Toast.makeText(this, getString(R.string.ia_models_fetched, 1), Toast.LENGTH_SHORT).show();
@@ -452,29 +661,31 @@ public final class ProviderDetailActivity extends AppCompatActivity {
 
     private void removeModel(String modelId) {
         modelList.remove(modelId);
-
-        // Remove from custom_models pref
-        try {
-            JSONArray models = readModelsArray();
-            JSONArray next = new JSONArray();
-            for (int i = 0; i < models.length(); i++) {
-                JSONObject m = models.optJSONObject(i);
-                if (m != null && !(providerId.equals(m.optString("providerId", ""))
-                        && modelId.equals(m.optString("model", "")))) {
-                    next.put(m);
-                }
-            }
-            prefs.edit().putString("custom_models", next.toString()).apply();
-        } catch (Exception ignored) {}
+        VoidPortSettings.setProviderModels(prefs, providerId, modelList);
 
         updateModelsList();
     }
 
     private void fetchModelsFromApi() {
+        saveProviderData();
         Toast.makeText(this, R.string.ia_fetching_models, Toast.LENGTH_SHORT).show();
-        // Placeholder: In a full implementation, this would make an HTTP request
-        // to the provider's /v1/models endpoint using the configured API key.
-        Toast.makeText(this, R.string.ia_fetch_models_failed, Toast.LENGTH_SHORT).show();
+        VoidPortRefreshModelService.refreshProviderAsync(this, providerId, false, result -> {
+            if (result.state == VoidPortRefreshModelService.RefreshState.FINISHED) {
+                if (result.models.isEmpty()) {
+                    Toast.makeText(this, getString(R.string.ia_models_fetched, 0), Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                ProviderModelFetchSheet.show(this, providerId, providerName,
+                        result.models, modelList, selected -> {
+                    modelList.clear();
+                    modelList.addAll(selected);
+                    VoidPortSettings.setProviderModels(prefs, providerId, modelList);
+                    updateModelsList();
+                });
+            } else {
+                Toast.makeText(this, getString(R.string.ia_fetch_models_failed, result.error), Toast.LENGTH_LONG).show();
+            }
+        });
     }
 
     // ────────────────────────────────────────
@@ -482,9 +693,15 @@ public final class ProviderDetailActivity extends AppCompatActivity {
     // ────────────────────────────────────────
 
     private void testProvider() {
+        saveProviderData();
         Toast.makeText(this, R.string.ia_testing_provider, Toast.LENGTH_SHORT).show();
-        // Placeholder: In a full implementation, this would send a test request.
-        Toast.makeText(this, R.string.ia_provider_test_ok, Toast.LENGTH_SHORT).show();
+        VoidPortRefreshModelService.refreshProviderAsync(this, providerId, false, result -> {
+            if (result.state == VoidPortRefreshModelService.RefreshState.FINISHED) {
+                Toast.makeText(this, getString(R.string.ia_provider_test_ok), Toast.LENGTH_SHORT).show();
+            } else {
+                Toast.makeText(this, getString(R.string.ia_fetch_models_failed, result.error), Toast.LENGTH_LONG).show();
+            }
+        });
     }
 
     private void shareProvider() {
@@ -493,18 +710,12 @@ public final class ProviderDetailActivity extends AppCompatActivity {
             config.put("id", providerId);
             config.put("name", etProviderName != null && etProviderName.getText() != null
                     ? etProviderName.getText().toString() : providerName);
-            if (etApiKey != null && etApiKey.getText() != null) {
-                String key = etApiKey.getText().toString().trim();
-                if (!key.isEmpty()) {
-                    config.put("apiKey", key);
-                }
-            }
+            // Provider sharing intentionally excludes credentials.
+            config.put("apiKey", "");
             if (etBaseUrl != null && etBaseUrl.getText() != null) {
                 config.put("baseUrl", etBaseUrl.getText().toString().trim());
             }
-            if (etApiPath != null && etApiPath.getText() != null) {
-                config.put("chatPath", etApiPath.getText().toString().trim());
-            }
+            config.put("chatPath", VoidPortSettings.defaultChatPathForProviderType(providerTypeForId(providerId)));
 
             android.content.Intent shareIntent = new android.content.Intent(android.content.Intent.ACTION_SEND);
             shareIntent.setType("text/plain");

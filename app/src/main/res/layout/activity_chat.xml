@@ -299,37 +299,51 @@
 
                 <ImageView
                     android:id="@+id/btn_model_selector"
-                    android:layout_width="34dp"
-                    android:layout_height="34dp"
+                    android:layout_width="30dp"
+                    android:layout_height="30dp"
                     android:background="?attr/selectableItemBackgroundBorderless"
                     android:contentDescription="@string/chat_model_selector_content_description"
-                    android:padding="6dp"
+                    android:padding="1dp"
                     android:src="@drawable/kelivo_icon_codex" />
 
                 <ImageView
+                    android:id="@+id/btn_online_search"
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
+                    android:layout_marginStart="8dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/chat_online_search"
+                    android:padding="6dp"
+                    android:src="@drawable/ic_kelivo_globe"
+                    app:tint="@color/chat_text_secondary" />
+
+                <ImageView
                     android:id="@+id/btn_chat_mode"
-                    android:layout_width="34dp"
-                    android:layout_height="34dp"
-                    android:layout_marginStart="2dp"
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
+                    android:layout_marginStart="8dp"
                     android:background="?attr/selectableItemBackgroundBorderless"
                     android:contentDescription="@string/chat_mode_agent"
-                    android:padding="7dp"
+                    android:padding="6dp"
                     android:src="@drawable/kelivo_icon_idea_01_stroke_rounded"
                     app:tint="@color/chat_text_primary" />
 
+                <ImageView
+                    android:id="@+id/btn_mcp_servers"
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
+                    android:layout_marginStart="8dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/chat_mcp_servers"
+                    android:padding="6dp"
+                    android:src="@drawable/ic_kelivo_hammer"
+                    app:tint="@color/chat_text_secondary" />
+
                 <TextView
                     android:id="@+id/text_chat_mode"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="2dp"
-                    android:background="@drawable/bg_chat_thread_badge"
-                    android:paddingStart="8dp"
-                    android:paddingTop="3dp"
-                    android:paddingEnd="8dp"
-                    android:paddingBottom="3dp"
-                    android:textColor="@color/chat_accent"
-                    android:textSize="11sp"
-                    android:textStyle="bold" />
+                    android:layout_width="0dp"
+                    android:layout_height="0dp"
+                    android:visibility="gone" />
 
                 <View
                     android:layout_width="0dp"
@@ -344,8 +358,8 @@
 
                 <ImageView
                     android:id="@+id/btn_attach"
-                    android:layout_width="34dp"
-                    android:layout_height="34dp"
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
                     android:background="?attr/selectableItemBackgroundBorderless"
                     android:contentDescription="@string/chat_attach_content_description"
                     android:padding="6dp"
@@ -354,20 +368,20 @@
 
                 <ImageView
                     android:id="@+id/btn_microphone"
-                    android:layout_width="34dp"
-                    android:layout_height="34dp"
-                    android:layout_marginStart="4dp"
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
+                    android:layout_marginStart="8dp"
                     android:background="?attr/selectableItemBackgroundBorderless"
                     android:contentDescription="@string/chat_voice_content_description"
-                    android:padding="7dp"
+                    android:padding="6dp"
                     android:src="@drawable/kelivo_lucide_mic"
                     app:tint="@color/chat_text_primary" />
 
                 <ImageView
                     android:id="@+id/btn_cancel_run"
-                    android:layout_width="34dp"
-                    android:layout_height="34dp"
-                    android:layout_marginStart="6dp"
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
+                    android:layout_marginStart="8dp"
                     android:background="?attr/selectableItemBackgroundBorderless"
                     android:contentDescription="@string/chat_cancel_current_run_content_description"
                     android:padding="7dp"
@@ -377,15 +391,15 @@
 
                 <ImageView
                     android:id="@+id/btn_send"
-                    android:layout_width="33dp"
-                    android:layout_height="33dp"
-                    android:layout_marginStart="4dp"
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
+                    android:layout_marginStart="8dp"
                     android:background="@drawable/bg_kelivo_send"
                     android:contentDescription="@string/chat_send_content_description"
-                    android:padding="9dp"
+                    android:padding="7dp"
                     android:scaleType="centerInside"
                     android:src="@drawable/kelivo_lucide_arrow_up"
-                    app:tint="@android:color/white" />
+                    app:tint="@color/chat_text_secondary" />
             </LinearLayout>
         </LinearLayout>
 

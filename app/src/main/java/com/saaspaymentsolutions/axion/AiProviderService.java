@@ -24,6 +24,8 @@ import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import okhttp3.Call;
 import okhttp3.Callback;
@@ -60,6 +62,8 @@ import com.saaspaymentsolutions.axion.toolcalling.ToolCallResponse;
  */
 public class AiProviderService {
     private static final String TAG = "AiProviderService";
+    private static final Pattern GEMINI_REPLACEMENT_PATTERN = Pattern.compile(
+            "(?i)(?:use|using)\\s+models/([a-z0-9._-]+)");
     /** Política única de retry usada por chamadas streaming e bloqueantes. */
     private static final MediaType JSON_MEDIA_TYPE = MediaType.parse("application/json");
 
@@ -552,6 +556,7 @@ public class AiProviderService {
                 : buildOpenAiCompatibleTextRequest(providerConfig, currentProvider, currentModel, systemPrompt, userPrompt, imageDataUrls);
 
         IOException lastException = null;
+        boolean geminiModelFallbackUsed = false;
         for (int attemptNumber = 1; attemptNumber <= AiRetryController.MAX_ATTEMPTS; attemptNumber++) {
             OkHttpClient requestClient = clientForProvider(currentProvider);
             if (callTimeoutMs > 0L) {
@@ -562,6 +567,18 @@ public class AiProviderService {
             try (Response response = requestClient.newCall(request).execute()) {
                 String responseBody = response.body() != null ? response.body().string() : "";
                 if (!response.isSuccessful()) {
+                    if (providerConfig.family == ProviderFamily.GEMINI && !geminiModelFallbackUsed) {
+                        String replacement = suggestedGeminiReplacement(
+                                response.code(), responseBody, currentModel);
+                        if (!replacement.isEmpty()) {
+                            geminiModelFallbackUsed = true;
+                            persistGeminiModelReplacement(currentProvider, currentModel, replacement);
+                            currentModel = replacement;
+                            request = buildGeminiTextRequest(providerConfig, currentModel,
+                                    systemPrompt, userPrompt, imageDataUrls);
+                            continue;
+                        }
+                    }
                     long retryAfterSeconds = AiRetryController.parseRetryAfter(response.header("Retry-After"));
                     AiRetryController.RetryDecision decision = retryController.shouldRetry(
                             attemptNumber, response.code(), responseBody,
@@ -669,6 +686,17 @@ public class AiProviderService {
                                             AiOperationContext operationContext,
                                             int retryCount, AiRequestHandle requestHandle,
                                             boolean useStreaming) {
+        sendGeminiStreamingRequest(providerConfig, modelName, requestContext, tools, chatMode,
+                listener, providerId, operationContext, retryCount, requestHandle,
+                useStreaming, true);
+    }
+
+    private void sendGeminiStreamingRequest(ProviderConfig providerConfig, String modelName,
+                                            ContextBuilder.Result requestContext, JSONArray tools, String chatMode,
+                                            StreamListener listener, String providerId,
+                                            AiOperationContext operationContext,
+                                            int retryCount, AiRequestHandle requestHandle,
+                                            boolean useStreaming, boolean allowModelFallback) {
         try {
             JSONObject jsonBody = new JSONObject();
             jsonBody.put("contents", requestContext.getMessages());
@@ -685,8 +713,23 @@ public class AiProviderService {
                     && tools != null
                     && tools.length() > 0
                     && !"normal".equals(chatMode);
+            JSONArray geminiTools = new JSONArray();
             if (useNativeTools) {
-                jsonBody.put("tools", convertToolsToGemini(tools));
+                JSONArray convertedTools = convertToolsToGemini(tools);
+                for (int i = 0; i < convertedTools.length(); i++) {
+                    JSONObject converted = convertedTools.optJSONObject(i);
+                    if (converted != null) {
+                        geminiTools.put(converted);
+                    }
+                }
+            }
+            if (operationContext != null && operationContext.isWebSearchEnabled()) {
+                // GenerateContent built-in Google Search grounding. Gemini 3 models
+                // can combine it with the custom function declarations above.
+                geminiTools.put(new JSONObject().put("google_search", new JSONObject()));
+            }
+            if (geminiTools.length() > 0) {
+                jsonBody.put("tools", geminiTools);
             }
 
             // API key is sent via the x-goog-api-key header (see buildGeminiHeaders)
@@ -711,8 +754,21 @@ public class AiProviderService {
 
             final String streamingKey = StreamingCapabilityRegistry.key(
                     providerId, providerConfig.baseUrl, modelName);
-            StreamingFallbackHandler fallbackHandler = useStreaming
-                    ? (statusCode, errorBody) -> {
+            StreamingFallbackHandler fallbackHandler = (statusCode, errorBody) -> {
+                        if (allowModelFallback) {
+                            String replacement = suggestedGeminiReplacement(
+                                    statusCode, errorBody, modelName);
+                            if (!replacement.isEmpty()) {
+                                persistGeminiModelReplacement(providerId, modelName, replacement);
+                                android.util.Log.i(TAG, "Gemini model retired; retrying with " + replacement);
+                                sendGeminiStreamingRequest(providerConfig, replacement,
+                                        requestContext, tools, chatMode, listener, providerId,
+                                        operationContext, retryCount, requestHandle,
+                                        useStreaming, false);
+                                return true;
+                            }
+                        }
+                        if (!useStreaming) return false;
                         if (!StreamingCapabilityRegistry.shouldAttemptFallback(
                                 providerConfig.family, statusCode, errorBody)) {
                             return false;
@@ -724,10 +780,10 @@ public class AiProviderService {
                         android.util.Log.i("AiProviderService",
                                 "Streaming unsupported for current model; retrying Gemini silently without stream.");
                         sendGeminiStreamingRequest(providerConfig, modelName, requestContext, tools, chatMode,
-                                listener, providerId, operationContext, retryCount, requestHandle, false);
+                                listener, providerId, operationContext, retryCount, requestHandle,
+                                false, allowModelFallback);
                         return true;
-                    }
-                    : null;
+                    };
 
             executeStreaming(request, retryCount, providerId, operationContext, listener, (call, response) -> {
                 if (shouldParseAsJson(response, useStreaming)) {
@@ -2110,6 +2166,39 @@ public class AiProviderService {
         } catch (Exception e) {
             throw new IOException("Failed to parse Gemini response", e);
         }
+    }
+
+    private static String suggestedGeminiReplacement(int statusCode, String errorBody,
+                                                     String currentModel) {
+        if (statusCode != 404 || errorBody == null || errorBody.isEmpty()) return "";
+        String normalized = errorBody.toLowerCase(java.util.Locale.US);
+        if (!normalized.contains("no longer available")
+                && !normalized.contains("not found")) return "";
+        // Although listModels still advertises 2.5 Flash, generation is denied
+        // for newer API accounts. This replacement was verified with the same
+        // credential and keeps the user on the low-latency Flash family.
+        if ("gemini-2.5-flash".equalsIgnoreCase(currentModel)) {
+            return "gemini-3.5-flash-lite";
+        }
+        Matcher matcher = GEMINI_REPLACEMENT_PATTERN.matcher(errorBody);
+        if (!matcher.find()) return "";
+        String replacement = matcher.group(1) == null ? "" : matcher.group(1).trim();
+        return replacement.equalsIgnoreCase(currentModel) ? "" : replacement;
+    }
+
+    private void persistGeminiModelReplacement(String providerId, String oldModel,
+                                               String replacement) {
+        SharedPreferences prefs = settingsRepository.preferences();
+        List<String> models = new ArrayList<>(
+                VoidPortSettings.getProviderModels(prefs, providerId));
+        int oldIndex = models.indexOf(oldModel);
+        models.remove(oldModel);
+        if (!models.contains(replacement)) {
+            if (oldIndex >= 0 && oldIndex <= models.size()) models.add(oldIndex, replacement);
+            else models.add(replacement);
+        }
+        VoidPortSettings.setProviderModels(prefs, providerId, models);
+        settingsRepository.select(providerId, replacement);
     }
 
     private void sleepBeforeBlockingRetry(long delayMillis) {

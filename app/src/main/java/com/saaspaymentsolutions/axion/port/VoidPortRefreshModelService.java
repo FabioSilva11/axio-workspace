@@ -102,13 +102,7 @@ public final class VoidPortRefreshModelService {
         }
         try {
             SharedPreferences prefs = VoidPortSettings.prefs(context);
-            List<String> models = switch (normalizedProvider) {
-                case "ollama" -> fetchOllamaModels(endpoint(prefs, "local_provider_ollama_url", "http://127.0.0.1:11434"));
-                case "vllm" -> fetchOpenAiCompatibleModels(endpoint(prefs, "local_provider_vllm_url", "http://localhost:8000"));
-                case "lm_studio" -> fetchOpenAiCompatibleModels(endpoint(prefs, "local_provider_lm_studio_url", "http://localhost:1234"));
-                default -> new ArrayList<>();
-            };
-            saveAutodetectedModels(prefs, normalizedProvider, providerLabel(normalizedProvider), models);
+            List<String> models = fetchModelsForProvider(prefs, normalizedProvider);
             if (enableProviderOnSuccess && !models.isEmpty()) {
                 prefs.edit().putString(VoidPortSettings.PREF_CURRENT_PROVIDER, normalizedProvider).apply();
             }
@@ -168,54 +162,97 @@ public final class VoidPortRefreshModelService {
         return new ArrayList<>(names);
     }
 
+    private static List<String> fetchGeminiModels(SharedPreferences prefs) throws Exception {
+        VoidPortLlmMessage.ProviderConfig config = VoidPortLlmMessage.resolveProviderConfig(prefs, "gemini");
+        if (config == null || config.apiKey.isEmpty()) {
+            throw new Exception("Chave da API Gemini não configurada");
+        }
+        String base = trimTrailingSlash(config.baseUrl);
+        Request request = new Request.Builder()
+                .url(base + "/models")
+                .header("x-goog-api-key", config.apiKey.trim())
+                .get()
+                .build();
+        JSONObject json = fetchJson(request);
+        JSONArray models = json.optJSONArray("models");
+        Set<String> names = new LinkedHashSet<>();
+        for (int i = 0; models != null && i < models.length(); i++) {
+            JSONObject model = models.optJSONObject(i);
+            JSONArray methods = model == null ? null : model.optJSONArray("supportedGenerationMethods");
+            boolean supported = methods == null;
+            for (int j = 0; methods != null && j < methods.length(); j++) {
+                String method = methods.optString(j, "");
+                if ("generateContent".equals(method) || "embedContent".equals(method)) {
+                    supported = true;
+                    break;
+                }
+            }
+            if (!supported) continue;
+            String name = model == null ? "" : model.optString("name", "");
+            if (name.startsWith("models/")) name = name.substring("models/".length());
+            if (!name.isEmpty()) names.add(name);
+        }
+        return new ArrayList<>(names);
+    }
+
+    private static List<String> fetchModelsForProvider(SharedPreferences prefs, String providerId) throws Exception {
+        if ("ollama".equals(providerId)) {
+            return fetchOllamaModels(endpoint(prefs, "local_provider_ollama_url", "http://127.0.0.1:11434"));
+        }
+        if ("gemini".equals(providerId)) {
+            return fetchGeminiModels(prefs);
+        }
+        VoidPortLlmMessage.ProviderConfig config = VoidPortLlmMessage.resolveProviderConfig(prefs, providerId);
+        if (config == null || config.baseUrl.isEmpty()) {
+            throw new Exception("URL base não configurada para " + providerId);
+        }
+        Request.Builder request = new Request.Builder().url(modelListUrl(config.baseUrl)).get();
+        if (!config.apiKey.isEmpty() && config.family == VoidPortLlmMessage.ProviderFamily.ANTHROPIC) {
+            request.header("x-api-key", config.apiKey);
+            request.header("anthropic-version", "2023-06-01");
+        } else if (!config.apiKey.isEmpty()) {
+            request.header("Authorization", "Bearer " + config.apiKey);
+        }
+        return fetchOpenAiCompatibleModels(request.build());
+    }
+
+    private static List<String> fetchOpenAiCompatibleModels(Request request) throws Exception {
+        JSONObject json;
+        try (Response response = CLIENT.newCall(request).execute()) {
+            String body = response.body() != null ? response.body().string() : "";
+            if (!response.isSuccessful()) throw new Exception("HTTP " + response.code() + " from models endpoint");
+            json = new JSONObject(body);
+        }
+        JSONArray data = json.optJSONArray("data");
+        Set<String> names = new LinkedHashSet<>();
+        for (int i = 0; data != null && i < data.length(); i++) {
+            JSONObject model = data.optJSONObject(i);
+            String id = model == null ? "" : model.optString("id", "");
+            if (!id.isEmpty()) names.add(id);
+        }
+        return new ArrayList<>(names);
+    }
+
     private static JSONObject fetchJson(String url) throws Exception {
         Request request = new Request.Builder().url(url).get().build();
+        return fetchJson(request);
+    }
+
+    private static JSONObject fetchJson(Request request) throws Exception {
         try (Response response = CLIENT.newCall(request).execute()) {
             String body = response.body() != null ? response.body().string() : "";
             if (!response.isSuccessful()) {
-                throw new Exception("HTTP " + response.code() + " from " + url + ": " + body);
+                String detail = "";
+                try {
+                    JSONObject parsed = new JSONObject(body);
+                    JSONObject error = parsed.optJSONObject("error");
+                    detail = error == null ? "" : error.optString("message", "").trim();
+                } catch (Exception ignored) {
+                }
+                throw new Exception("HTTP " + response.code()
+                        + (detail.isEmpty() ? "" : ": " + detail));
             }
             return new JSONObject(body);
-        }
-    }
-
-    private static void saveAutodetectedModels(SharedPreferences prefs, String providerId,
-                                               String providerLabel, List<String> models) {
-        JSONArray existing = readArray(prefs.getString(VoidPortSettings.PREF_CUSTOM_MODELS, "[]"));
-        JSONArray next = new JSONArray();
-        for (int i = 0; i < existing.length(); i++) {
-            JSONObject item = existing.optJSONObject(i);
-            if (item == null) {
-                continue;
-            }
-            boolean sameProvider = providerId.equals(item.optString("providerId", ""));
-            boolean autodetected = item.optBoolean("autodetected", false);
-            if (!(sameProvider && autodetected)) {
-                next.put(item);
-            }
-        }
-        for (String model : models) {
-            if (model == null || model.trim().isEmpty()) {
-                continue;
-            }
-            JSONObject item = new JSONObject();
-            try {
-                item.put("providerId", providerId);
-                item.put("providerLabel", providerLabel);
-                item.put("model", model.trim());
-                item.put("autodetected", true);
-                next.put(item);
-            } catch (Exception ignored) {
-            }
-        }
-        prefs.edit().putString(VoidPortSettings.PREF_CUSTOM_MODELS, next.toString()).apply();
-    }
-
-    private static JSONArray readArray(String raw) {
-        try {
-            return new JSONArray(raw == null ? "[]" : raw);
-        } catch (Exception ignored) {
-            return new JSONArray();
         }
     }
 
@@ -225,16 +262,10 @@ public final class VoidPortRefreshModelService {
 
     private static String modelListUrl(String baseUrl) {
         String trimmed = trimTrailingSlash(baseUrl);
-        if (trimmed.endsWith("/v1/chat/completions")) {
-            return trimmed.substring(0, trimmed.length() - "/chat/completions".length()) + "/models";
-        }
         if (trimmed.endsWith("/chat/completions")) {
             return trimmed.substring(0, trimmed.length() - "/chat/completions".length()) + "/models";
         }
-        if (trimmed.endsWith("/v1")) {
-            return trimmed + "/models";
-        }
-        return trimmed + "/v1/models";
+        return trimmed + "/models";
     }
 
     private static String trimTrailingSlash(String value) {
@@ -250,19 +281,10 @@ public final class VoidPortRefreshModelService {
             return "";
         }
         return switch (providerId) {
-            case "ollama" -> "ollama";
-            case "vllm", "vLLM" -> "vllm";
-            case "lm_studio", "lmStudio" -> "lm_studio";
-            default -> "";
-        };
-    }
-
-    private static String providerLabel(String providerId) {
-        return switch (providerId) {
-            case "ollama" -> "Ollama";
-            case "vllm" -> "vLLM";
-            case "lm_studio" -> "LM Studio";
+            case "vLLM" -> "vllm";
+            case "lmStudio" -> "lm_studio";
             default -> providerId;
         };
     }
+
 }

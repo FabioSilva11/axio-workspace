@@ -29,8 +29,10 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 import com.saaspaymentsolutions.axion.AiChatSettingsHelper;
 import com.saaspaymentsolutions.axion.KelivoModelIconResolver;
@@ -59,7 +61,8 @@ public final class IaSettingsActivity extends AppCompatActivity {
         setSupportActionBar(toolbar);
         if (getSupportActionBar() != null) {
             getSupportActionBar().setDisplayHomeAsUpEnabled(true);
-            getSupportActionBar().setDisplayShowTitleEnabled(false);
+            getSupportActionBar().setDisplayShowTitleEnabled(true);
+            getSupportActionBar().setTitle(R.string.ia_settings_title);
         }
         toolbar.setNavigationOnClickListener(v -> finish());
 
@@ -97,7 +100,7 @@ public final class IaSettingsActivity extends AppCompatActivity {
     public boolean onOptionsItemSelected(@NonNull MenuItem item) {
         int id = item.getItemId();
         if (id == R.id.action_check_providers) {
-            Toast.makeText(this, R.string.ia_providers_checked, Toast.LENGTH_SHORT).show();
+            showMultiSelectDialog();
             return true;
         } else if (id == R.id.action_import_provider) {
             showImportDialog();
@@ -109,12 +112,121 @@ public final class IaSettingsActivity extends AppCompatActivity {
         return super.onOptionsItemSelected(item);
     }
 
+    private void showMultiSelectDialog() {
+        List<VoidPortSettings.ProviderCardSpec> providers = VoidPortSettings.getProviderCards(prefs);
+        String[] names = new String[providers.size()];
+        boolean[] checked = new boolean[providers.size()];
+        for (int i = 0; i < providers.size(); i++) {
+            VoidPortSettings.ProviderCardSpec spec = providers.get(i);
+            JSONObject config = VoidPortSettings.getProviderConfigObject(prefs, spec.providerId);
+            names[i] = config == null ? spec.title : config.optString("name", spec.title);
+        }
+
+        AlertDialog dialog = new MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.ia_action_multi_select)
+                .setMultiChoiceItems(names, checked, (d, which, selected) -> checked[which] = selected)
+                .setNegativeButton(R.string.common_word_cancel, null)
+                .setNeutralButton(R.string.ia_delete_custom_selected, null)
+                .setPositiveButton(R.string.ia_export_selected, null)
+                .create();
+        dialog.setOnShowListener(ignored -> {
+            ViewGroup.LayoutParams listParams = dialog.getListView().getLayoutParams();
+            listParams.height = Math.round(500 * getResources().getDisplayMetrics().density);
+            dialog.getListView().setLayoutParams(listParams);
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                Set<String> selectedIds = selectedProviderIds(providers, checked, false);
+                if (selectedIds.isEmpty()) {
+                    Toast.makeText(this, R.string.ia_no_provider_selected, Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                dialog.dismiss();
+                shareSelectedProviders(selectedIds);
+            });
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
+                Set<String> selectedIds = selectedProviderIds(providers, checked, true);
+                if (selectedIds.isEmpty()) {
+                    Toast.makeText(this, R.string.ia_no_custom_provider_selected, Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                dialog.dismiss();
+                confirmDeleteSelectedProviders(selectedIds);
+            });
+        });
+        dialog.show();
+    }
+
+    private Set<String> selectedProviderIds(List<VoidPortSettings.ProviderCardSpec> providers,
+                                            boolean[] checked,
+                                            boolean customOnly) {
+        Set<String> selected = new HashSet<>();
+        for (int i = 0; i < providers.size() && i < checked.length; i++) {
+            VoidPortSettings.ProviderCardSpec spec = providers.get(i);
+            if (checked[i] && (!customOnly || spec.custom)) {
+                selected.add(spec.providerId);
+            }
+        }
+        return selected;
+    }
+
+    private void shareSelectedProviders(Set<String> selectedIds) {
+        JSONArray exported = new JSONArray();
+        for (String providerId : selectedIds) {
+            JSONObject stored = VoidPortSettings.getProviderConfigObject(prefs, providerId);
+            if (stored == null) continue;
+            try {
+                JSONObject safe = new JSONObject(stored.toString());
+                safe.put("apiKey", "");
+                safe.put("apiKeys", new JSONArray());
+                safe.put("serviceAccountJson", "");
+                exported.put(safe);
+            } catch (Exception ignored) {
+            }
+        }
+        Intent shareIntent = new Intent(Intent.ACTION_SEND);
+        shareIntent.setType("application/json");
+        shareIntent.putExtra(Intent.EXTRA_TEXT, exported.toString());
+        startActivity(Intent.createChooser(shareIntent, getString(R.string.ia_export_selected)));
+    }
+
+    private void confirmDeleteSelectedProviders(Set<String> selectedIds) {
+        new MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.ia_delete_custom_selected)
+                .setMessage(getString(R.string.ia_delete_selected_confirm, selectedIds.size()))
+                .setNegativeButton(R.string.common_word_cancel, null)
+                .setPositiveButton(R.string.ia_delete_provider, (dialog, which) -> {
+                    for (String providerId : selectedIds) {
+                        VoidPortSettings.removeProviderConfig(prefs, providerId);
+                    }
+                    loadProviders();
+                })
+                .show();
+    }
+
     // ────────────────────────────────────────
     // Load providers
     // ────────────────────────────────────────
 
     private void loadProviders() {
+        // KelivoIN was intentionally removed from Axion. Purge its old seeded
+        // configuration so it cannot return as a dynamic/custom provider.
+        VoidPortSettings.removeProviderConfig(prefs, "kelivoin");
         List<VoidPortSettings.ProviderCardSpec> allProviders = VoidPortSettings.getProviderCards(prefs);
+        for (VoidPortSettings.ProviderCardSpec spec : allProviders) {
+            if (!spec.custom) {
+                JSONObject config = VoidPortSettings.getOrCreateProviderConfig(
+                        prefs, spec.providerId, spec.title);
+                if (config.optBoolean("enabled", false)
+                        && VoidPortSettings.providerRequiresApiKey(spec.providerId, config)
+                        && !VoidPortSettings.hasUsableApiKey(config)) {
+                    try {
+                        config.put("enabled", false);
+                        VoidPortSettings.saveProviderConfig(prefs, config);
+                    } catch (Exception ignored) {
+                    }
+                }
+            }
+        }
+        VoidPortSettings.ensureValidCurrentSelection(prefs);
         adapter.setData(allProviders);
     }
 
@@ -192,9 +304,11 @@ public final class IaSettingsActivity extends AppCompatActivity {
             config.put("name", name);
             config.put("enabled", true);
             config.put("apiKey", "");
-            config.put("baseUrl", VoidPortSettings.defaultBaseForProviderType("openai_compatible"));
+            config.put("baseUrl", VoidPortSettings.defaultBaseForProviderType("openai"));
             config.put("chatPath", "/chat/completions");
-            config.put("providerType", "openai_compatible");
+            config.put("providerType", "openai");
+            config.put("multiKeyEnabled", false);
+            config.put("models", new JSONArray());
             VoidPortSettings.saveProviderConfig(prefs, config);
 
             loadProviders();
@@ -249,16 +363,21 @@ public final class IaSettingsActivity extends AppCompatActivity {
         @Override
         public void onBindViewHolder(@NonNull VH holder, int position) {
             VoidPortSettings.ProviderCardSpec spec = displayed.get(position);
-            holder.name.setText(spec.title);
+            JSONObject config = VoidPortSettings.getProviderConfigObject(prefs, spec.providerId);
+            String displayName = config == null ? spec.title : config.optString("name", spec.title);
+            holder.name.setText(displayName);
 
             // Resolve icon — show colored icons (no tint override)
             int iconRes = KelivoModelIconResolver.resolveProvider(spec.providerId, spec.title);
             holder.icon.clearColorFilter();
             if (iconRes != 0) {
                 holder.icon.setImageResource(iconRes);
+                holder.icon.setVisibility(View.VISIBLE);
+                holder.initial.setVisibility(View.GONE);
             } else {
-                holder.icon.setImageResource(R.drawable.kelivo_icon_openai);
-                holder.icon.clearColorFilter();
+                holder.icon.setVisibility(View.GONE);
+                holder.initial.setText(displayName.isEmpty() ? "?" : displayName.substring(0, 1));
+                holder.initial.setVisibility(View.VISIBLE);
             }
 
             // Status badge
@@ -288,34 +407,19 @@ public final class IaSettingsActivity extends AppCompatActivity {
         }
 
         private boolean isProviderEnabled(VoidPortSettings.ProviderCardSpec spec) {
-            if (spec.custom) {
-                JSONObject config = VoidPortSettings.getProviderConfigObject(prefs, spec.providerId);
-                return config != null && config.optBoolean("enabled", true);
-            }
-            // For built-in providers, check if any API key or enabled pref is set
-            for (VoidPortSettings.FieldSpec field : spec.fields) {
-                if (field.enabledKey != null) {
-                    return prefs.getBoolean(field.enabledKey, false);
-                }
-            }
-            // If there's an API key field, check if it has a value
-            for (VoidPortSettings.FieldSpec field : spec.fields) {
-                if (field.password) {
-                    String val = prefs.getString(field.prefKey, field.defaultValue);
-                    return val != null && !val.trim().isEmpty();
-                }
-            }
-            return false;
+            return VoidPortSettings.isProviderConfigured(prefs, spec.providerId);
         }
 
         final class VH extends RecyclerView.ViewHolder {
             final ImageView icon;
+            final TextView initial;
             final TextView name;
             final TextView badge;
 
             VH(@NonNull View itemView) {
                 super(itemView);
                 icon = itemView.findViewById(R.id.provider_icon);
+                initial = itemView.findViewById(R.id.provider_initial);
                 name = itemView.findViewById(R.id.provider_name);
                 badge = itemView.findViewById(R.id.provider_status_badge);
             }

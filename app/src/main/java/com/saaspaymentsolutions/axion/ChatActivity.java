@@ -45,6 +45,12 @@ import androidx.recyclerview.widget.RecyclerView;
 import androidx.viewpager.widget.ViewPager;
 
 import com.google.android.material.tabs.TabLayout;
+import com.google.android.material.imageview.ShapeableImageView;
+import com.google.android.material.shape.ShapeAppearanceModel;
+import com.google.android.material.switchmaterial.SwitchMaterial;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 import android.util.DisplayMetrics;
 import android.util.Log;
@@ -77,6 +83,7 @@ import com.saaspaymentsolutions.axion.TranslationFunction;
 import com.saaspaymentsolutions.axion.port.VoidPortChatThreadService;
 import com.saaspaymentsolutions.axion.port.VoidPortConvertToLlmMessageService;
 import com.saaspaymentsolutions.axion.port.VoidPortModelCapabilities;
+import com.saaspaymentsolutions.axion.port.VoidPortLlmMessage;
 import com.saaspaymentsolutions.axion.port.VoidPortRefreshModelService;
 import com.saaspaymentsolutions.axion.port.VoidPortScmService;
 import com.saaspaymentsolutions.axion.port.VoidPortSettings;
@@ -105,6 +112,8 @@ public class ChatActivity extends AppCompatActivity {
     private View btnAttach;
     private View btnChatMode;
     private View btnModelSelector;
+    private ImageView btnOnlineSearch;
+    private ImageView btnMcpServers;
     private ImageView btnCancelRun;
     private ImageView btnMicrophone;
     private TextView textChatMode;
@@ -480,6 +489,7 @@ public class ChatActivity extends AppCompatActivity {
 
             @Override
             public void afterTextChanged(Editable editable) {
+                updateSendButtonState();
                 if (suppressMentionWatcher || isProcessing || editable == null) {
                     return;
                 }
@@ -494,6 +504,8 @@ public class ChatActivity extends AppCompatActivity {
         // ConfiguraÃ§Ã£o do Seletor de Modelo
         btnChatMode = findViewById(R.id.btn_chat_mode);
         btnModelSelector = findViewById(R.id.btn_model_selector);
+        btnOnlineSearch = findViewById(R.id.btn_online_search);
+        btnMcpServers = findViewById(R.id.btn_mcp_servers);
         textChatMode = findViewById(R.id.text_chat_mode);
         textCurrentModel = findViewById(R.id.text_current_model);
 
@@ -505,6 +517,7 @@ public class ChatActivity extends AppCompatActivity {
         updateChangedFilesSummary();
         updateThreadSummary();
         updatePendingReferencesUi();
+        updateSendButtonState();
 
         if (btnChatMode != null) {
             btnChatMode.setOnClickListener(v -> showChatModeMenu(prefs));
@@ -513,12 +526,19 @@ public class ChatActivity extends AppCompatActivity {
             // The mode label is now a visible pill; tapping it opens the selector too.
             textChatMode.setOnClickListener(v -> showChatModeMenu(prefs));
         }
+        if (btnOnlineSearch != null) {
+            btnOnlineSearch.setOnClickListener(v -> showOnlineSearchSheet());
+        }
+        if (btnMcpServers != null) {
+            btnMcpServers.setOnClickListener(v -> showMcpServersSheet());
+        }
 
         layoutRunStatus = findViewById(R.id.layout_run_status);
         runStatusDots = findViewById(R.id.run_status_dots);
         textRunStatus = findViewById(R.id.text_run_status);
 
         btnModelSelector.setOnClickListener(v -> showModelSelectorMenu(prefs));
+        updateComposerToolUi();
     }
 
     private void setupKelivoUi() {
@@ -836,6 +856,7 @@ public class ChatActivity extends AppCompatActivity {
                         "", "", true);
             }
         }
+        updateComposerToolUi();
         updateKelivoHeader();
     }
 
@@ -868,6 +889,7 @@ public class ChatActivity extends AppCompatActivity {
         } else {
             textChatMode.setText(R.string.chat_mode_agent);
         }
+        updateComposerToolUi();
     }
 
     private void showModelSelectorMenu(SharedPreferences prefs) {
@@ -915,6 +937,256 @@ public class ChatActivity extends AppCompatActivity {
                 pickReferenceFile();
             }
         });
+    }
+
+    private void showOnlineSearchSheet() {
+        SharedPreferences prefs = AiChatSettingsHelper.prefs(this);
+        boolean supported = isGeminiSelection(prefs);
+        boolean checked = supported && VoidPortSettings.isChatWebSearchEnabled(prefs);
+
+        BottomSheetDialog dialog = new BottomSheetDialog(this);
+        LinearLayout root = createSheetRoot();
+        root.addView(createSheetTitle(R.string.chat_online_search));
+        root.addView(createSheetDescription(
+                supported
+                        ? R.string.chat_online_search_description
+                        : R.string.chat_online_search_requires_gemini));
+
+        View toggleRow = createSheetToggleRow(
+                R.drawable.ic_kelivo_globe,
+                getString(R.string.chat_online_search),
+                getString(R.string.chat_online_search_description),
+                checked,
+                supported,
+                (button, enabled) -> {
+                    VoidPortSettings.setChatWebSearchEnabled(prefs, enabled);
+                    updateComposerToolUi();
+                    Toast.makeText(this,
+                            enabled
+                                    ? R.string.chat_online_search_enabled
+                                    : R.string.chat_online_search_disabled,
+                            Toast.LENGTH_SHORT).show();
+                });
+        root.addView(toggleRow);
+
+        dialog.setContentView(root);
+        expandSheet(dialog, 0.34f);
+        dialog.show();
+    }
+
+    private void showMcpServersSheet() {
+        SharedPreferences prefs = AiChatSettingsHelper.prefs(this);
+        JSONObject config = VoidPortSettings.readMcpConfigObject(prefs);
+        JSONObject servers = config.optJSONObject("mcpServers");
+        JSONArray names = servers == null ? null : servers.names();
+
+        BottomSheetDialog dialog = new BottomSheetDialog(this);
+        LinearLayout root = createSheetRoot();
+        root.addView(createSheetTitle(R.string.chat_mcp_servers));
+        root.addView(createSheetDescription(R.string.chat_mcp_servers_description));
+
+        android.widget.ScrollView scroll = new android.widget.ScrollView(this);
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        scroll.addView(list, new android.widget.ScrollView.LayoutParams(
+                android.widget.ScrollView.LayoutParams.MATCH_PARENT,
+                android.widget.ScrollView.LayoutParams.WRAP_CONTENT));
+
+        List<String> serverNames = new ArrayList<>();
+        for (int i = 0; names != null && i < names.length(); i++) {
+            String name = names.optString(i, "").trim();
+            if (!name.isEmpty()) {
+                serverNames.add(name);
+            }
+        }
+        java.util.Collections.sort(serverNames, String.CASE_INSENSITIVE_ORDER);
+
+        if (serverNames.isEmpty()) {
+            list.addView(createSheetDescription(R.string.chat_mcp_servers_empty));
+        } else {
+            for (String serverName : serverNames) {
+                JSONObject server = servers == null ? null : servers.optJSONObject(serverName);
+                boolean enabled = server != null && server.optBoolean("enabled", true);
+                String endpoint = server == null ? "" : server.optString("url", "").trim();
+                if (endpoint.isEmpty() && server != null) {
+                    endpoint = server.optString("command", "").trim();
+                }
+                if (endpoint.isEmpty()) {
+                    endpoint = getString(R.string.chat_mcp_agent_only);
+                }
+                list.addView(createSheetToggleRow(
+                        R.drawable.ic_kelivo_hammer,
+                        serverName,
+                        endpoint,
+                        enabled,
+                        true,
+                        (button, value) -> {
+                            VoidPortSettings.setMcpServerEnabled(prefs, serverName, value);
+                            updateComposerToolUi();
+                        }));
+            }
+        }
+
+        root.addView(scroll, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        root.addView(createSheetAction(
+                R.drawable.ic_kelivo_hammer,
+                R.string.chat_mcp_advanced_config,
+                v -> {
+                    dialog.dismiss();
+                    showMcpJsonEditor();
+                }));
+        root.addView(createSheetDescription(R.string.chat_mcp_agent_only));
+
+        dialog.setContentView(root);
+        expandSheet(dialog, 0.68f);
+        dialog.show();
+    }
+
+    private void showMcpJsonEditor() {
+        SharedPreferences prefs = AiChatSettingsHelper.prefs(this);
+        EditText input = new EditText(this);
+        input.setGravity(Gravity.TOP | Gravity.START);
+        input.setMinLines(9);
+        input.setMaxLines(16);
+        input.setHorizontallyScrolling(true);
+        input.setTextSize(13f);
+        input.setInputType(InputType.TYPE_CLASS_TEXT
+                | InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        try {
+            input.setText(VoidPortSettings.readMcpConfigObject(prefs).toString(2));
+        } catch (Exception ignored) {
+            input.setText(VoidPortSettings.DEFAULT_MCP_CONFIG);
+        }
+
+        FrameLayout frame = new FrameLayout(this);
+        int margin = dp(20);
+        frame.setPadding(margin, 0, margin, 0);
+        frame.addView(input, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT));
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.chat_mcp_json_title)
+                .setMessage(R.string.chat_mcp_json_hint)
+                .setView(frame)
+                .setNegativeButton(android.R.string.cancel, null)
+                .setPositiveButton(android.R.string.ok, null)
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(v -> {
+                    String raw = input.getText() == null ? "" : input.getText().toString();
+                    if (!VoidPortSettings.saveMcpConfig(prefs, raw)) {
+                        input.setError(getString(R.string.chat_mcp_json_invalid));
+                        return;
+                    }
+                    updateComposerToolUi();
+                    Toast.makeText(this, R.string.chat_mcp_saved, Toast.LENGTH_SHORT).show();
+                    dialog.dismiss();
+                }));
+        dialog.show();
+    }
+
+    private TextView createSheetDescription(int textRes) {
+        TextView text = new TextView(this);
+        text.setText(textRes);
+        text.setTextColor(getColor(R.color.chat_text_secondary));
+        text.setTextSize(13f);
+        text.setLineSpacing(0f, 1.08f);
+        text.setPadding(dp(4), 0, dp(4), dp(12));
+        return text;
+    }
+
+    private View createSheetToggleRow(int iconRes, String title, String subtitle,
+                                      boolean checked, boolean enabled,
+                                      android.widget.CompoundButton.OnCheckedChangeListener listener) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(10), dp(9), dp(8), dp(9));
+        row.setMinimumHeight(dp(62));
+        row.setBackgroundResource(R.drawable.bg_kelivo_tool_tile);
+
+        ImageView icon = new ImageView(this);
+        icon.setImageResource(iconRes);
+        icon.setImageTintList(ColorStateList.valueOf(getColor(
+                checked ? R.color.chat_accent : R.color.chat_text_secondary)));
+        row.addView(icon, new LinearLayout.LayoutParams(dp(28), dp(28)));
+
+        LinearLayout labels = new LinearLayout(this);
+        labels.setOrientation(LinearLayout.VERTICAL);
+        labels.setPadding(dp(10), 0, dp(8), 0);
+        TextView titleView = new TextView(this);
+        titleView.setText(title);
+        titleView.setTextColor(getColor(R.color.chat_text_primary));
+        titleView.setTextSize(15f);
+        titleView.setTypeface(null, android.graphics.Typeface.BOLD);
+        labels.addView(titleView);
+        TextView subtitleView = new TextView(this);
+        subtitleView.setText(subtitle);
+        subtitleView.setTextColor(getColor(R.color.chat_text_secondary));
+        subtitleView.setTextSize(11f);
+        subtitleView.setMaxLines(2);
+        subtitleView.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        labels.addView(subtitleView);
+        row.addView(labels, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        SwitchMaterial toggle = new SwitchMaterial(this);
+        toggle.setChecked(checked);
+        toggle.setEnabled(enabled);
+        toggle.setOnCheckedChangeListener(listener);
+        row.addView(toggle);
+        row.setEnabled(enabled);
+        row.setAlpha(enabled ? 1f : 0.55f);
+        row.setOnClickListener(enabled ? v -> toggle.setChecked(!toggle.isChecked()) : null);
+        return row;
+    }
+
+    private boolean isGeminiSelection(SharedPreferences prefs) {
+        String providerId = prefs.getString(AiChatSettingsHelper.PREF_CURRENT_PROVIDER, "");
+        VoidPortLlmMessage.ProviderConfig config =
+                VoidPortLlmMessage.resolveProviderConfig(prefs, providerId);
+        return config != null
+                && config.family == VoidPortLlmMessage.ProviderFamily.GEMINI;
+    }
+
+    private void updateComposerToolUi() {
+        SharedPreferences prefs = AiChatSettingsHelper.prefs(this);
+        boolean gemini = isGeminiSelection(prefs);
+        boolean webSearch = gemini && VoidPortSettings.isChatWebSearchEnabled(prefs);
+        if (btnOnlineSearch != null) {
+            btnOnlineSearch.setAlpha(gemini ? 1f : 0.55f);
+            btnOnlineSearch.setImageTintList(ColorStateList.valueOf(getColor(
+                    webSearch ? R.color.chat_accent : R.color.chat_text_secondary)));
+        }
+        if (btnMcpServers != null) {
+            boolean active = VoidPortSettings.countEnabledMcpServers(prefs) > 0;
+            btnMcpServers.setImageTintList(ColorStateList.valueOf(getColor(
+                    active ? R.color.chat_accent : R.color.chat_text_secondary)));
+        }
+        if (btnChatMode instanceof ImageView) {
+            boolean agentMode = "agent".equalsIgnoreCase(AiChatSettingsHelper.getChatMode(prefs));
+            ((ImageView) btnChatMode).setImageTintList(ColorStateList.valueOf(getColor(
+                    agentMode ? R.color.chat_accent : R.color.chat_text_secondary)));
+        }
+    }
+
+    private void updateSendButtonState() {
+        if (btnSend == null || editTextMessage == null) {
+            return;
+        }
+        boolean hasText = !editTextMessage.getText().toString().trim().isEmpty();
+        boolean canSend = !isProcessing && (hasText || !pendingReferences.isEmpty());
+        btnSend.setEnabled(canSend);
+        btnSend.setAlpha(1f);
+        btnSend.setBackgroundTintList(ColorStateList.valueOf(getColor(
+                canSend ? R.color.chat_accent : R.color.kelivo_send_disabled)));
+        if (btnSend instanceof ImageView) {
+            ((ImageView) btnSend).setImageTintList(ColorStateList.valueOf(getColor(
+                    canSend ? android.R.color.white : R.color.kelivo_send_icon_disabled)));
+        }
     }
 
     private void pickReferenceImageFromCamera() {
@@ -1629,8 +1901,7 @@ public class ChatActivity extends AppCompatActivity {
 
     private void setInputEnabled(boolean enabled) {
         editTextMessage.setEnabled(enabled);
-        if (btnSend != null) btnSend.setEnabled(enabled);
-        if (btnSend != null) btnSend.setAlpha(enabled ? 1f : 0.55f);
+        updateSendButtonState();
         if (btnAttach != null) btnAttach.setEnabled(enabled);
         if (btnAttach != null) btnAttach.setAlpha(enabled ? 1f : 0.55f);
     }
@@ -1847,10 +2118,13 @@ public class ChatActivity extends AppCompatActivity {
 
     private void updatePendingReferencesUi() {
         updateImagePreviewUi();
+        updateSendButtonState();
         if (textSelectedContext == null) {
             return;
         }
-        if (pendingReferences.isEmpty()) {
+        List<ChatReference> imageReferences =
+                ChatReferenceManager.getImageReferences(pendingReferences);
+        if (pendingReferences.isEmpty() || imageReferences.size() == pendingReferences.size()) {
             textSelectedContext.setVisibility(View.GONE);
             textSelectedContext.setText("");
             return;
@@ -1884,11 +2158,14 @@ public class ChatActivity extends AppCompatActivity {
         LinearLayout.LayoutParams frameParams = new LinearLayout.LayoutParams(dp(64), dp(64));
         frameParams.setMarginEnd(dp(8));
         frame.setLayoutParams(frameParams);
-        frame.setPadding(dp(2), dp(2), dp(2), dp(2));
-        frame.setBackgroundResource(R.drawable.bg_round_outline);
 
-        ImageView image = new ImageView(this);
+        ShapeableImageView image = new ShapeableImageView(this);
         image.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        image.setShapeAppearanceModel(ShapeAppearanceModel.builder()
+                .setAllCornerSizes(dp(10))
+                .build());
+        image.setStrokeColor(ColorStateList.valueOf(getColor(R.color.chat_divider)));
+        image.setStrokeWidth(dp(1));
         ChatImageThumbnailLoader.load(
                 image,
                 reference == null ? null : reference.getUri(),
@@ -1902,12 +2179,14 @@ public class ChatActivity extends AppCompatActivity {
         TextView remove = new TextView(this);
         remove.setText(R.string.chat_remove_reference_button);
         remove.setTextColor(0xFFFFFFFF);
-        remove.setTextSize(10);
+        remove.setTextSize(11);
         remove.setGravity(Gravity.CENTER);
         remove.setContentDescription(getString(R.string.chat_remove_reference_image));
-        remove.setBackgroundResource(R.drawable.bg_error_box);
+        remove.setBackgroundResource(R.drawable.bg_kelivo_image_remove);
         remove.setOnClickListener(v -> removePendingReference(reference));
-        FrameLayout.LayoutParams removeParams = new FrameLayout.LayoutParams(dp(22), dp(22), Gravity.TOP | Gravity.END);
+        FrameLayout.LayoutParams removeParams = new FrameLayout.LayoutParams(
+                dp(20), dp(20), Gravity.TOP | Gravity.END);
+        removeParams.setMargins(0, dp(3), dp(3), 0);
         frame.addView(remove, removeParams);
         return frame;
     }
@@ -3002,10 +3281,9 @@ public class ChatActivity extends AppCompatActivity {
         if (btnAttach != null) {
             btnAttach.setVisibility(View.VISIBLE);
         }
-        if (!pendingReferences.isEmpty()) {
-            clearPendingReferences();
-        }
         updateModelUI();
+        updatePendingReferencesUi();
+        updateComposerToolUi();
     }
 
     @Override

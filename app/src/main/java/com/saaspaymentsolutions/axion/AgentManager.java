@@ -2128,6 +2128,7 @@ public class AgentManager {
                 .providerId(providerId)
                 .modelName(modelName)
                 .chatMode(chatMode)
+                .webSearchEnabled(VoidPortSettings.isChatWebSearchEnabled(prefs))
                 .build();
         multiAgentOrchestrator.beginOperation(providerId, modelName);
         SecureLogger.d("AgentManager", "Operação iniciada: "
