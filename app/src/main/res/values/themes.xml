@@ -1,0 +1,65 @@
+<resources>
+    <style name="Base.Theme.Axion" parent="Scheme.Axion.DayNight" />
+    <style name="Platform.V21.Theme.Axion" parent="Base.Theme.Axion" />
+    <style name="Platform.V23.Theme.Axion" parent="Platform.V21.Theme.Axion" />
+    <style name="Platform.V27.Theme.Axion" parent="Platform.V23.Theme.Axion" />
+    <style name="Platform.Theme.Axion" parent="Platform.V27.Theme.Axion" />
+    <style name="Theme.Axion" parent="Platform.Theme.Axion">
+        <item name="bottomNavigationStyle">@style/Widget.Axion.BottomNavigationView</item>
+        <item name="chipStyle">@style/Widget.Axion.Chip</item>
+        <item name="collapsingToolbarLayoutStyle">?attr/collapsingToolbarLayoutLargeStyle</item>
+        <item name="collapsingToolbarLayoutLargeSize">@dimen/collapsing_toolbar_large_size</item>
+        <item name="collapsingToolbarLayoutLargeStyle">@style/Widget.Axion.CollapsingToolbar</item>
+        <item name="homeAsUpIndicator">@drawable/abc_ic_ab_back_material</item>
+        <item name="materialSwitchStyle">@style/Widget.Axion.CompoundButton.MaterialSwitch</item>
+        <item name="textInputStyle">@style/Widget.Axion.TextInputLayout</item>
+        <item name="switchStyle">@style/Widget.Axion.CompoundButton.Switch</item>
+        <item name="switchPreferenceCompatStyle">
+            @style/Preference.Axion.SwitchPreferenceCompat
+        </item>
+        <item name="tabStyle">@style/Widget.Axion.TabLayout</item>
+        <item name="alertDialogTheme">@style/ThemeOverlay.Axion.AlertDialog</item>
+        <item name="materialAlertDialogTheme">@style/ThemeOverlay.Axion.AlertDialog</item>
+        <item name="popupMenuStyle">@style/Widget.Material3.PopupMenu</item>
+        <item name="android:popupMenuStyle">@style/Widget.Material3.PopupMenu</item>
+        <item name="materialCardViewStyle">?attr/materialCardViewFilledStyle</item>
+        <item name="materialCardViewFilledStyle">@style/Widget.Axion.CardView</item>
+        <!-- Type styles -->
+        <item name="textAppearanceDisplayLarge">@style/TextAppearance.Axion.DisplayLarge</item>
+        <item name="textAppearanceDisplayMedium">@style/TextAppearance.Axion.DisplayMedium</item>
+        <item name="textAppearanceDisplaySmall">@style/TextAppearance.Axion.DisplaySmall</item>
+        <item name="textAppearanceHeadlineLarge">@style/TextAppearance.Axion.HeadlineLarge</item>
+        <item name="textAppearanceHeadlineMedium">@style/TextAppearance.Axion.HeadlineMedium</item>
+        <item name="textAppearanceHeadlineSmall">@style/TextAppearance.Axion.HeadlineSmall</item>
+        <item name="textAppearanceTitleLarge">@style/TextAppearance.Axion.TitleLarge</item>
+        <item name="textAppearanceTitleMedium">@style/TextAppearance.Axion.TitleMedium</item>
+        <item name="textAppearanceTitleSmall">@style/TextAppearance.Axion.TitleSmall</item>
+        <item name="textAppearanceBodyLarge">@style/TextAppearance.Axion.BodyLarge</item>
+        <item name="textAppearanceBodyMedium">@style/TextAppearance.Axion.BodyMedium</item>
+        <item name="textAppearanceBodySmall">@style/TextAppearance.Axion.BodySmall</item>
+        <item name="textAppearanceLabelLarge">@style/TextAppearance.Axion.LabelLarge</item>
+        <item name="textAppearanceLabelMedium">@style/TextAppearance.Axion.LabelMedium</item>
+        <item name="textAppearanceLabelSmall">@style/TextAppearance.Axion.LabelSmall</item>
+        <item name="textAppearanceBodyLargeEmphasized">@style/TextAppearance.Axion.BodyLargeEmphasized</item>
+    </style>
+
+    <style name="Theme.Axion.Main">
+        <item name="navigationViewStyle">@style/Widget.Axion.NavigationView.Main</item>
+    </style>
+
+    <style name="Theme.Axion.ProjectPreview">
+        <item name="bottomSheetDialogTheme">@style/ThemeOverlay.Axion.BottomSheetDialog
+        </item>
+    </style>
+
+    <style name="Theme.Axion.SmallToolbar">
+        <item name="actionBarSize">@dimen/mtrl_toolbar_default_height</item>
+        <item name="toolbarStyle">@style/Widget.Axion.Toolbar.SmallText</item>
+    </style>
+
+    <style name="ShapeAppearanceOverlay.Axion.Circle" parent="">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">50%</item>
+    </style>
+
+</resources>

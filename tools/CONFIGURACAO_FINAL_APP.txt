@@ -1,0 +1,205 @@
+================================================================================
+                    CONFIGURAÇÃO PARA O APP AXION
+================================================================================
+
+✅ SERVIDOR PROXY PRONTO E AGUARDANDO CONEXÕES!
+
+================================================================================
+                        CONFIGURAÇÃO NO APP
+================================================================================
+
+📱 CONFIGURAR NO APP AXION:
+
+   Endpoint Base URL:
+   - Dispositivo físico:  http://192.168.1.68:8090/v1
+   - Emulador Android:    http://10.0.2.2:8090/v1
+   - Teste local:         http://127.0.0.1:8090/v1
+
+   API Key:
+   test-key-123
+
+================================================================================
+                        EXEMPLO DE CONFIGURAÇÃO
+================================================================================
+
+No código do app (se necessário):
+
+   String BASE_URL = "http://192.168.1.68:8090/v1";
+   String API_KEY = "test-key-123";
+
+Ou nas configurações do app:
+   - URL da API: http://192.168.1.68:8090/v1
+   - Chave de API: test-key-123
+
+================================================================================
+                        TESTADO E FUNCIONANDO
+================================================================================
+
+✅ Teste 1: GET /v1/models
+   Status: 200 OK
+   Modelos: 18 disponíveis
+   
+✅ Teste 2: POST /v1/chat/completions  
+   Status: 200 OK
+   Resposta: Recebida com sucesso
+   
+✅ Teste 3: Validação de API Key
+   Status: 401 Unauthorized (quando usa chave errada)
+   Status: 200 OK (quando usa test-key-123)
+
+================================================================================
+                        MODELOS DISPONÍVEIS
+================================================================================
+
+Recomendados para teste:
+   ⭐ gemini-3-flash
+   ⭐ claude-sonnet-4-6
+   ⭐ gpt-5.6-luna
+   ⭐ gpt-5.6-terra
+
+Total de modelos: 18
+
+================================================================================
+                        CAPTURA DE LOGS
+================================================================================
+
+📝 LOGS SENDO SALVOS EM:
+
+   traffic_log.txt  ⭐ (formato legível)
+   traffic_log.json    (formato estruturado)
+
+O que está sendo capturado:
+   ✅ Endpoint acessado
+   ✅ Método HTTP (GET/POST)
+   ✅ Headers da requisição
+   ✅ Body da requisição (mensagens, parâmetros)
+   ✅ Resposta da API
+   ✅ Status code
+   ✅ Timestamp de cada operação
+   ✅ Erros (se houver)
+
+================================================================================
+                        COMO TESTAR NO APP
+================================================================================
+
+1. Abra o app Axion no celular/emulador
+
+2. Configure a URL base:
+   http://192.168.1.68:8090/v1
+   (ou http://10.0.2.2:8090/v1 para emulador)
+
+3. Configure a API Key:
+   test-key-123
+
+4. Teste estas funcionalidades:
+   a) Buscar modelos disponíveis
+   b) Enviar uma mensagem simples
+   c) Usar ferramentas/tools do agente
+   d) Testar streaming
+   e) Testar multi-agent orchestration
+
+5. Monitore os logs:
+   - Veja em tempo real na janela do servidor
+   - Abra traffic_log.txt para ver histórico
+
+================================================================================
+                        EXEMPLO DE REQUEST
+================================================================================
+
+GET /v1/models
+Headers:
+   Authorization: Bearer test-key-123
+
+POST /v1/chat/completions
+Headers:
+   Authorization: Bearer test-key-123
+   Content-Type: application/json
+Body:
+   {
+     "model": "gemini-3-flash",
+     "messages": [
+       {"role": "user", "content": "Olá!"}
+     ],
+     "max_tokens": 100
+   }
+
+================================================================================
+                        ENDEREÇOS IMPORTANTES
+================================================================================
+
+Servidor Local:      http://127.0.0.1:8090/v1
+Servidor Rede:       http://192.168.1.68:8090/v1
+Emulador Android:    http://10.0.2.2:8090/v1
+
+API Externa (proxy): https://api-ia.axion-ide.online/v1
+API Key Externa:     sk-***REDACTED***-ROTACIONE-ESTA-CHAVE
+
+API Key do App:      test-key-123 ⭐
+
+================================================================================
+                        TROUBLESHOOTING
+================================================================================
+
+❌ Problema: "Invalid API key"
+   Solução: Verifique se está usando: test-key-123
+
+❌ Problema: "Connection refused"
+   Solução: 
+   1. Servidor está rodando?
+   2. URL correta? (incluir /v1 no final)
+   3. Celular na mesma WiFi?
+
+❌ Problema: "404 Not Found"
+   Solução: Certifique-se de incluir /v1 na URL base
+   Correto:   http://192.168.1.68:8090/v1
+   Incorreto: http://192.168.1.68:8090
+
+❌ Problema: Logs não aparecem
+   Solução: Verifique se o app está fazendo requisições
+   Tente "Buscar modelos" primeiro
+
+================================================================================
+                        FIREWALL (SE NECESSÁRIO)
+================================================================================
+
+Se o celular não conseguir conectar:
+
+1. Execute como administrador: tools/abrir_firewall.bat
+
+   Ou manualmente:
+   netsh advfirewall firewall add rule name="Axion Proxy Server" ^
+   dir=in action=allow protocol=TCP localport=8090
+
+================================================================================
+                        STATUS ATUAL
+================================================================================
+
+🟢 Servidor: RODANDO
+🟢 API Externa: CONECTADA
+🟢 Captura de Logs: ATIVA
+🟢 Validação de API Key: ATIVA
+🟢 Endpoints: /v1/models e /v1/chat/completions
+
+================================================================================
+                        PRÓXIMOS PASSOS
+================================================================================
+
+1. ✅ Configure no app:
+   URL: http://192.168.1.68:8090/v1
+   Key: test-key-123
+
+2. ✅ Teste "Buscar modelos" no app
+
+3. ✅ Envie algumas mensagens de teste
+
+4. ✅ Use ferramentas/tools do agente
+
+5. ✅ Verifique os logs em traffic_log.txt
+
+6. ✅ Envie o arquivo traffic_log.txt para análise
+
+================================================================================
+
+🚀 TUDO CONFIGURADO! PODE COMEÇAR OS TESTES NO APP!
+
+================================================================================

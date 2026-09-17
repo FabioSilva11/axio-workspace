@@ -1,0 +1,167 @@
+================================================================================
+                        INICIO RAPIDO - TESTES NO APP
+================================================================================
+
+✅ SERVIDOR PROXY: RODANDO
+✅ CAPTURA DE LOGS: ATIVA
+✅ SCRIPTS ADB: CRIADOS
+
+================================================================================
+                        OPCAO 1: CONFIGURACAO VIA ADB
+================================================================================
+
+1. Conecte o celular via USB
+
+2. Ative "Depuracao USB" no celular:
+   - Configuracoes > Sobre o telefone
+   - Toque 7x em "Numero da compilacao"
+   - Volte e entre em "Opcoes do desenvolvedor"
+   - Ative "Depuracao USB"
+
+3. Execute o script:
+   tools\configurar_app_adb.bat
+
+4. Aceite a solicitacao de depuracao no celular
+
+5. Aguarde a configuracao automatica
+
+================================================================================
+                     OPCAO 2: CONFIGURACAO MANUAL
+================================================================================
+
+1. Abra o app Axion no celular
+
+2. Va em Configuracoes / Settings
+
+3. Configure:
+   URL Base: http://192.168.1.68:8090/v1
+   API Key:  test-key-123
+
+4. Salve e teste "Buscar Modelos"
+
+================================================================================
+                     PARA EMULADOR ANDROID
+================================================================================
+
+Use este endpoint:
+   URL Base: http://10.0.2.2:8090/v1
+   API Key:  test-key-123
+
+================================================================================
+                        TESTAR NO APP
+================================================================================
+
+1. Buscar modelos disponiveis
+2. Enviar mensagem: "Ola, voce esta funcionando?"
+3. Testar ferramentas/tools do agente
+4. Testar multi-agent orchestration
+
+================================================================================
+                        MONITORAR LOGS
+================================================================================
+
+TEMPO REAL:
+   - Veja a janela do servidor (console)
+   - Deve aparecer "REQUEST" e "RESPONSE"
+
+ARQUIVO:
+   - Abra: traffic_log.txt
+   - Formato legivel e facil de analisar
+
+================================================================================
+                        MODELOS RECOMENDADOS
+================================================================================
+
+   gemini-3-flash          (rapido)
+   claude-sonnet-4-6        (qualidade)
+   gpt-5.6-luna            (GPT-5)
+
+Total: 18 modelos disponiveis
+
+================================================================================
+                        ARQUIVOS IMPORTANTES
+================================================================================
+
+CONFIGURACAO:
+   - CONFIGURACAO_FINAL_APP.txt    (instrucoes detalhadas)
+   - GUIA_ADB.md                   (guia completo ADB)
+
+SCRIPTS:
+   - configurar_app_adb.bat        (config automatica)
+   - configurar_adb_avancado.ps1   (config avancada)
+   - verificar_config_app.bat      (verifica config)
+
+LOGS:
+   - traffic_log.txt               (logs legíveis)
+   - traffic_log.json              (logs estruturados)
+
+SERVIDOR:
+   - mock_axion_server.py          (servidor proxy)
+
+================================================================================
+                        STATUS ATUAL
+================================================================================
+
+SERVIDOR:
+   Status: RODANDO ✅
+   Local:  http://127.0.0.1:8090
+   Rede:   http://192.168.1.68:8090
+
+API EXTERNA:
+   Status: CONECTADA ✅
+   URL:    https://api-ia.axion-ide.online/v1
+
+CAPTURA:
+   Status: ATIVA ✅
+   Arquivo: traffic_log.txt
+
+CONFIGURACAO:
+   Endpoint: http://192.168.1.68:8090/v1
+   API Key:  test-key-123
+
+================================================================================
+                        TROUBLESHOOTING
+================================================================================
+
+PROBLEMA: App nao conecta
+SOLUCAO:
+   1. Servidor esta rodando?
+   2. Celular e PC na mesma WiFi?
+   3. Execute: tools\abrir_firewall.bat (como admin)
+   4. Teste no navegador: http://192.168.1.68:8090/health
+
+PROBLEMA: ADB nao funciona
+SOLUCAO:
+   1. Configure manualmente no app
+   2. Ou instale ADB: https://developer.android.com/studio/releases/platform-tools
+
+PROBLEMA: Logs vazios
+SOLUCAO:
+   1. App fez requisicoes?
+   2. URL esta correta? (incluir /v1)
+   3. API key esta correta? (test-key-123)
+   4. Teste "Buscar modelos" primeiro
+
+================================================================================
+                        PROXIMOS PASSOS
+================================================================================
+
+1. ✅ Configure o app (via ADB ou manualmente)
+
+2. ✅ Teste as funcionalidades basicas
+
+3. ✅ Monitore os logs em tempo real
+
+4. ✅ Use diferentes modelos e ferramentas
+
+5. ✅ Envie traffic_log.txt para analise
+
+================================================================================
+
+🚀 TUDO PRONTO! COMECE OS TESTES!
+
+Para mais detalhes, veja:
+   - CONFIGURACAO_FINAL_APP.txt
+   - GUIA_ADB.md
+
+================================================================================

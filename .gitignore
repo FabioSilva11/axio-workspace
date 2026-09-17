@@ -1,0 +1,63 @@
+# Gradle files
+.gradle/
+build/
+
+# Local configuration file (sdk path, etc)
+local.properties
+
+# Log/OS Files
+*.log
+traffic_log.json
+traffic_log.jsonl
+traffic_log.txt
+relatorio_testes_app_api.txt
+screen_*.png
+tools/evidence/
+tools/*_ui.xml
+tools/screenshot_*.png
+
+# Android Studio generated files and folders
+captures/
+.externalNativeBuild/
+.cxx/
+*.aab
+*.apk
+output-metadata.json
+
+# IntelliJ
+*.iml
+.idea/
+misc.xml
+deploymentTargetDropDown.xml
+render.experimental.xml
+
+# Keystore files
+*.jks
+*.keystore
+
+# Google Services (e.g. APIs or Firebase)
+google-services.json
+
+# Android Profiling
+*.hprof
+
+# Reference projects (not part of Axion)
+CLIProxyAPI-main/
+
+# Testes python locais (nao versionar, pedido do usuario)
+tools/test_*.py
+tools/openai_traffic_lab.py
+tools/ui_find.py
+tools/restore_mock_provider.py
+tools/ia_settings_*.xml
+tools/evidence/
+tools/__pycache__/
+tools.zip
+bash.exe.stackdump
+.freebuff/
+tools/new_chat.xml
+tools/t.xml
+tools/test_dump.xml
+tools/ui_dump.xml
+tools/current_ui.xml
+tools/current_run_ui.xml

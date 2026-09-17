@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  allowBackup=false: nenhum conteúdo do app vai para backup em nuvem ou D2D.
+  Este arquivo é mantido como rede de segurança defensiva caso o atributo
+  seja reativado no futuro — segredos (chaves de API, tokens) ficariam
+  excluídos mesmo assim.
+-->
+<full-backup-content>
+    <exclude domain="sharedpref" path="ia_settings.xml" />
+    <exclude domain="sharedpref" path="axion_github.xml" />
+</full-backup-content>

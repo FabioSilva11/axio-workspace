@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+    
+    <item
+        android:id="@+id/menu_thread_list"
+        android:title="@string/chat_menu_threads"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/menu_new_thread"
+        android:title="@string/chat_menu_new_thread"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/menu_model_catalog"
+        android:title="@string/chat_menu_model_catalog"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/menu_clear_chat"
+        android:icon="@android:drawable/ic_menu_delete"
+        android:title="@string/chat_menu_clear_chat"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/menu_rollback_checkpoint"
+        android:title="@string/chat_menu_rollback_checkpoint"
+        app:showAsAction="never" />
+    
+    <item
+        android:id="@+id/menu_toggle_debug"
+        android:title="@string/chat_menu_show_debug"
+        app:showAsAction="never"
+        android:checkable="true" />
+
+    <item
+        android:id="@+id/menu_export_chat"
+        android:title="@string/chat_menu_export_chat"
+        app:showAsAction="never" />
+        
+</menu>
+

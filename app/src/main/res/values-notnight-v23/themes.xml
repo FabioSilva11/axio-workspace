@@ -1,0 +1,7 @@
+<resources>
+    <style name="Platform.V23.Theme.Axion" parent="Platform.V21.Theme.Axion">
+        <item name="android:statusBarColor">?android:attr/colorBackground</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+    <style name="Platform.Theme.Axion" parent="Platform.V23.Theme.Axion" />
+</resources>

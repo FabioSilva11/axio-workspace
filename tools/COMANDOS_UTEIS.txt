@@ -1,0 +1,271 @@
+================================================================================
+                         COMANDOS UTEIS - PROXY AXION
+================================================================================
+
+MENU INTERATIVO (RECOMENDADO)
+================================================================================
+
+   tools\menu_proxy.bat
+
+   Menu com todas as funcoes:
+   - Iniciar/parar servidor
+   - Configurar app via ADB
+   - Monitorar e analisar logs
+   - Exportar em diferentes formatos
+
+================================================================================
+SERVIDOR
+================================================================================
+
+Iniciar servidor:
+   python tools\mock_axion_server.py
+
+Verificar status:
+   curl http://127.0.0.1:8090/health
+
+Ver estatisticas:
+   curl http://127.0.0.1:8090/health | python -m json.tool
+
+Testar endpoint de modelos:
+   curl http://127.0.0.1:8090/v1/models -H "Authorization: Bearer test-key-123"
+
+================================================================================
+CONFIGURACAO DO APP
+================================================================================
+
+Via ADB (automatico):
+   tools\configurar_app_adb.bat
+
+Via ADB (avancado):
+   powershell -ExecutionPolicy Bypass -File tools\configurar_adb_avancado.ps1
+
+Verificar config atual:
+   tools\verificar_config_app.bat
+
+Manual:
+   URL: http://192.168.1.68:8090/v1
+   Key: test-key-123
+
+================================================================================
+MONITORAMENTO
+================================================================================
+
+Ver logs em tempo real:
+   tools\monitorar_logs.bat
+
+Ou com PowerShell:
+   Get-Content traffic_log.txt -Wait -Tail 20
+
+Ver ultimas 50 linhas:
+   Get-Content traffic_log.txt -Tail 50
+
+Buscar palavra nos logs:
+   findstr "error" traffic_log.txt
+   findstr "gemini" traffic_log.txt
+
+================================================================================
+ANALISE DE LOGS
+================================================================================
+
+Analise completa:
+   powershell -ExecutionPolicy Bypass -File tools\analisar_logs.ps1
+
+Ver estatisticas:
+   - Total de requests/responses
+   - Endpoints acessados
+   - Status codes
+   - Modelos utilizados
+   - Uso de tokens
+   - Mensagens enviadas
+   - Erros detectados
+   - Timeline
+
+================================================================================
+EXPORTACAO DE LOGS
+================================================================================
+
+Exportar em TXT:
+   powershell -ExecutionPolicy Bypass -File tools\exportar_logs.ps1 -formato txt
+
+Exportar em HTML (visual):
+   powershell -ExecutionPolicy Bypass -File tools\exportar_logs.ps1 -formato html
+
+Exportar em CSV (Excel):
+   powershell -ExecutionPolicy Bypass -File tools\exportar_logs.ps1 -formato csv
+
+Exportar em Markdown:
+   powershell -ExecutionPolicy Bypass -File tools\exportar_logs.ps1 -formato markdown
+
+================================================================================
+ADB (ANDROID DEBUG BRIDGE)
+================================================================================
+
+Listar dispositivos:
+   adb devices
+
+Listar apps instalados:
+   adb shell pm list packages | findstr "axion"
+
+Ver logs do app em tempo real:
+   adb logcat | findstr "axion"
+
+Limpar dados do app:
+   adb shell pm clear com.saaspaymentsolutions.axion
+
+Forcar parada do app:
+   adb shell am force-stop com.saaspaymentsolutions.axion
+
+Iniciar app:
+   adb shell monkey -p com.saaspaymentsolutions.axion -c android.intent.category.LAUNCHER 1
+
+Abrir configuracoes do app:
+   adb shell am start -n com.saaspaymentsolutions.axion/.SettingsActivity
+
+Ver memoria do app:
+   adb shell dumpsys meminfo com.saaspaymentsolutions.axion
+
+================================================================================
+FIREWALL
+================================================================================
+
+Adicionar regra (como admin):
+   netsh advfirewall firewall add rule name="Axion Proxy Server" dir=in action=allow protocol=TCP localport=8090
+
+Ou execute:
+   tools\abrir_firewall.bat (como administrador)
+
+Verificar porta:
+   netstat -ano | findstr :8090
+
+================================================================================
+REDE
+================================================================================
+
+Ver seu IP local:
+   ipconfig | findstr "IPv4"
+
+Testar conectividade do celular (ping):
+   ping 192.168.1.68
+
+Testar porta do celular (telnet):
+   telnet 192.168.1.68 8090
+
+Ou no navegador do celular:
+   http://192.168.1.68:8090/health
+
+================================================================================
+TESTES MANUAIS
+================================================================================
+
+Testar modelos:
+   curl -X GET http://127.0.0.1:8090/v1/models ^
+        -H "Authorization: Bearer test-key-123"
+
+Testar chat (sem streaming):
+   curl -X POST http://127.0.0.1:8090/v1/chat/completions ^
+        -H "Authorization: Bearer test-key-123" ^
+        -H "Content-Type: application/json" ^
+        -d "{\"model\":\"gemini-3-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"Ola!\"}],\"max_tokens\":50}"
+
+Testar com PowerShell:
+   $headers = @{"Authorization"="Bearer test-key-123"; "Content-Type"="application/json"}
+   $body = @{model="gemini-3-flash"; messages=@(@{role="user"; content="Teste"})} | ConvertTo-Json
+   Invoke-RestMethod -Uri "http://127.0.0.1:8090/v1/chat/completions" -Method Post -Headers $headers -Body $body
+
+================================================================================
+LIMPEZA
+================================================================================
+
+Limpar logs:
+   del traffic_log.txt
+   del traffic_log.json
+
+Limpar logs exportados:
+   del logs_export_*.txt
+   del logs_export_*.html
+   del logs_export_*.csv
+
+Reiniciar servidor (limpa memoria):
+   1. Fechar janela do servidor
+   2. python tools\mock_axion_server.py
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+Servidor nao inicia:
+   python --version
+   python -m pip install requests
+
+Porta ocupada:
+   netstat -ano | findstr :8090
+   taskkill /PID [numero] /F
+
+ADB nao encontrado:
+   Instalar: https://developer.android.com/studio/releases/platform-tools
+   Adicionar ao PATH
+
+Celular nao conecta:
+   1. Mesma WiFi?
+   2. Firewall aberto?
+   3. Testar: curl http://192.168.1.68:8090/health
+
+Logs vazios:
+   1. App fazendo requisicoes?
+   2. URL correta no app?
+   3. API key correta?
+
+================================================================================
+ARQUIVOS IMPORTANTES
+================================================================================
+
+SERVIDOR:
+   tools\mock_axion_server.py      - Servidor proxy principal
+
+LOGS:
+   traffic_log.txt                 - Logs em formato legivel
+   traffic_log.json                - Logs em formato estruturado
+
+SCRIPTS:
+   tools\menu_proxy.bat            - Menu interativo
+   tools\configurar_app_adb.bat    - Config via ADB
+   tools\monitorar_logs.bat        - Monitorar em tempo real
+   tools\analisar_logs.ps1         - Analise de logs
+   tools\exportar_logs.ps1         - Exportar em varios formatos
+
+DOCUMENTACAO:
+   tools\INICIO_RAPIDO.txt         - Guia rapido
+   tools\GUIA_ADB.md               - Guia completo ADB
+   tools\CONFIGURACAO_FINAL_APP.txt - Config do app
+   tools\COMANDOS_UTEIS.txt        - Este arquivo
+
+================================================================================
+CONFIGURACAO DO APP
+================================================================================
+
+   Endpoint: http://192.168.1.68:8090/v1
+   API Key:  test-key-123
+
+   (Emulador: http://10.0.2.2:8090/v1)
+
+================================================================================
+MODELOS DISPONIVEIS
+================================================================================
+
+   gemini-3-flash              claude-sonnet-4-6
+   gpt-5.6-luna                gpt-5.6-terra
+   gemini-pro-agent            claude-opus-4-6-thinking
+
+   Total: 18 modelos
+
+================================================================================
+SUPORTE
+================================================================================
+
+   Todos os logs estao sendo capturados automaticamente em:
+   - traffic_log.txt (formato legivel)
+   - traffic_log.json (formato estruturado)
+
+   Para analise, envie o arquivo traffic_log.txt
+
+================================================================================

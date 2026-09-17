@@ -1,0 +1,3 @@
+<resources>
+    <style name="Scheme.Axion.DayNight" parent="Scheme.Axion.Dark" />
+</resources>

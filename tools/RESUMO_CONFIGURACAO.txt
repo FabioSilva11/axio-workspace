@@ -1,0 +1,132 @@
+================================================================================
+                    SERVIDOR PROXY CONFIGURADO E PRONTO!
+================================================================================
+
+✅ STATUS: TUDO FUNCIONANDO!
+
+================================================================================
+                           CONFIGURAÇÃO DO APP
+================================================================================
+
+📱 CONFIGURE ESTA URL NO APP AXION:
+
+   Para celular/tablet real:  http://192.168.1.68:8090
+   Para emulador Android:     http://10.0.2.2:8090
+
+================================================================================
+                            MODELOS DISPONÍVEIS
+================================================================================
+
+Use um destes modelos no app (recomendados):
+
+   ⭐ gemini-3-flash          (rápido, testado)
+   ⭐ claude-sonnet-4-6        (alta qualidade)
+   ⭐ gpt-5.5                  (GPT-5 series)
+
+Total de modelos disponíveis: 18
+
+================================================================================
+                          CAPTURA DE TRÁFEGO
+================================================================================
+
+📝 TODO O TRÁFEGO SERÁ SALVO EM:
+
+   traffic_log.txt  ⭐ (formato legível - recomendado)
+   traffic_log.json    (formato estruturado)
+
+O que é capturado:
+   ✅ Todas as requisições do app
+   ✅ Headers completos
+   ✅ Body das mensagens
+   ✅ Respostas da API
+   ✅ Timestamps
+   ✅ Erros (se houver)
+
+================================================================================
+                            COMO TESTAR
+================================================================================
+
+1. Abra o app Axion no seu celular/emulador
+
+2. Vá em Configurações > URL da API
+
+3. Configure: http://192.168.1.68:8090
+
+4. Salve e teste:
+   - Buscar modelos
+   - Enviar uma mensagem de teste
+   - Usar ferramentas/tools do agente
+
+5. Verifique os logs em tempo real:
+   - Na janela do servidor (console)
+   - No arquivo traffic_log.txt
+
+================================================================================
+                         TROUBLESHOOTING
+================================================================================
+
+❌ Problema: App não conecta?
+
+   Solução:
+   1. Verifique se o servidor está rodando
+   2. Celular e PC na mesma rede WiFi
+   3. Execute: tools/abrir_firewall.bat (como administrador)
+   4. Teste acessando http://192.168.1.68:8090/health no navegador do celular
+
+❌ Problema: Firewall bloqueando?
+
+   Solução:
+   1. Clique com botão direito em: tools/abrir_firewall.bat
+   2. Selecione "Executar como administrador"
+
+❌ Problema: Logs não aparecem?
+
+   Verifique:
+   1. URL configurada no app está correta?
+   2. App está fazendo requisições? (tente buscar modelos)
+   3. Veja a janela do servidor - deve mostrar "REQUEST"
+
+================================================================================
+                          INFORMAÇÕES TÉCNICAS
+================================================================================
+
+Servidor Local:      http://127.0.0.1:8090
+Servidor Rede:       http://192.168.1.68:8090
+API Externa:         https://api-ia.axion-ide.online/v1
+API Key:             sk-***REDACTED***-ROTACIONE-ESTA-CHAVE
+Porta:               8090
+Host:                0.0.0.0 (aceita conexões externas)
+
+Logs:
+   - traffic_log.txt  (append, formato legível)
+   - traffic_log.json (sobrescreve, formato JSON)
+
+Servidor rodando em: c:\Users\kirit\Desktop\axio-workspace-main\tools\
+
+================================================================================
+                           PRÓXIMOS PASSOS
+================================================================================
+
+1. ✅ Configure a URL no app: http://192.168.1.68:8090
+
+2. ✅ Faça testes no app (buscar modelos, enviar mensagens)
+
+3. ✅ Monitore os logs em tempo real na janela do servidor
+
+4. ✅ Após os testes, envie o arquivo traffic_log.txt para análise
+
+5. ✅ Para parar o servidor: Pressione Ctrl+C na janela do servidor
+
+================================================================================
+                              ATENÇÃO
+================================================================================
+
+⚠️  Mantenha a janela do servidor ABERTA durante os testes!
+⚠️  Se fechar, o app não conseguirá se conectar.
+⚠️  Para reiniciar: python tools/mock_axion_server.py
+
+================================================================================
+
+🚀 TUDO PRONTO! CONFIGURE O APP E COMECE OS TESTES!
+
+================================================================================

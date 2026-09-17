@@ -1,0 +1,167 @@
+===============================================================================
+                 ENDPOINTS E SENHAS - CONFIGURACAO COMPLETA
+===============================================================================
+
+⚠️ **IMPORTANTE**: Duas configurações diferentes!
+
+===============================================================================
+CONFIGURACAO 1: API EXTERNA (ORIGINAL)
+===============================================================================
+
+➤ **Esta é a API REAL para a qual o proxy está encaminhando**
+
+📍 ENDPOINT:
+   https://api-ia.axion-ide.online/v1
+
+🔑 API KEY (SENHA):
+   sk-***REDACTED***-ROTACIONE-ESTA-CHAVE
+
+📋 EXEMPLOS DE USO DIRETO:
+
+GET modelos:
+   curl -X GET "https://api-ia.axion-ide.online/v1/models" \
+        -H "Authorization: Bearer sk-***REDACTED***-ROTACIONE-ESTA-CHAVE"
+
+POST chat:
+   curl -X POST "https://api-ia.axion-ide.online/v1/chat/completions" \
+        -H "Authorization: Bearer sk-***REDACTED***-ROTACIONE-ESTA-CHAVE" \
+        -H "Content-Type: application/json" \
+        -d '{"model":"gemini-3-flash","messages":[{"role":"user","content":"Ola"}],"max_tokens":50}'
+
+===============================================================================
+CONFIGURACAO 2: PROXY LOCAL (QUE ESTÁ RODANDO)
+===============================================================================
+
+➤ **Esta é a configuração para o APP AXION usar**
+
+📍 ENDPOINT PARA DISPOSITIVO FÍSICO:
+   http://192.168.1.68:8090/v1
+
+📍 ENDPOINT PARA EMULADOR:
+   http://10.0.2.2:8090/v1
+
+🔑 API KEY (SENHA) QUE O APP DEVE USAR:
+   test-key-123
+
+📋 EXEMPLOS DE USO VIA PROXY:
+
+GET modelos:
+   curl -X GET "http://192.168.1.68:8090/v1/models" \
+        -H "Authorization: Bearer test-key-123"
+
+POST chat:
+   curl -X POST "http://192.168.1.68:8090/v1/chat/completions" \
+        -H "Authorization: Bearer test-key-123" \
+        -H "Content-Type: application/json" \
+        -d '{"model":"gemini-3-flash","messages":[{"role":"user","content":"Ola"}],"max_tokens":50}'
+
+===============================================================================
+OUTROS ENDPOINTS DO PROXY
+===============================================================================
+
+📍 Health check:
+   http://192.168.1.68:8090/health
+
+📍 Ver logs capturados:
+   http://192.168.1.68:8090/logs
+
+📍 Controlar proxy:
+   POST http://192.168.1.68:8090/control
+   {"reset": true}  # Limpa logs e estatisticas
+
+===============================================================================
+COMO O PROXY FUNCIONA
+===============================================================================
+
+1. App Axion → Proxy → API Externa
+   App envia:    http://192.168.1.68:8090/v1
+   App usa key:  test-key-123
+
+2. Proxy valida a key: test-key-123
+3. Proxy encaminha para: https://api-ia.axion-ide.online/v1
+4. Proxy usa key: sk-***REDACTED***-ROTACIONE-ESTA-CHAVE
+5. Proxy retorna resposta para o app
+
+===============================================================================
+FLUXO COMPLETO
+===============================================================================
+
+[APP AXION]                              [PROXY]                              [API EXTERNA]
+       |                                      |                                      |
+       |--- (1) GET /v1/models -------------->|                                      |
+       |    Header: Bearer test-key-123       |                                      |
+       |                                      |                                      |
+       |                                      |--- (2) GET /models ---------------->|
+       |                                      |    Header: Bearer sk-***REDACTED***      |
+       |                                      |                                      |
+       |                                      |<-- (3) Resposta com modelos ---------|
+       |<-- (4) Resposta com modelos ---------|                                      |
+       |                                      |                                      |
+
+===============================================================================
+TESTES RAPIDOS
+===============================================================================
+
+1. Teste se o proxy está rodando:
+   curl http://192.168.1.68:8090/health
+
+2. Teste endpoint de modelos com a key do app:
+   curl -X GET "http://192.168.1.68:8090/v1/models" -H "Authorization: Bearer test-key-123"
+
+3. Teste endpoint de chat:
+   curl -X POST "http://192.168.1.68:8090/v1/chat/completions" -H "Authorization: Bearer test-key-123" -H "Content-Type: application/json" -d '{"model":"gemini-3-flash","messages":[{"role":"user","content":"Teste"}],"max_tokens":10}'
+
+===============================================================================
+CONFIGURACAO NO APP AXION
+===============================================================================
+
+➤ **CONFIGURAR NO APP:**
+
+URL Base (Endpoint):
+   Para dispositivo físico:  http://192.168.1.68:8090/v1
+   Para emulador Android:    http://10.0.2.2:8090/v1
+
+API Key (Senha):
+   test-key-123
+
+===============================================================================
+ARQUIVOS DE LOG
+===============================================================================
+
+📝 LOGS CAPTURADOS:
+
+   traffic_log.txt  - Formato legível (recomendado)
+   traffic_log.json - Formato estruturado (JSON)
+
+📊 CONTEÚDO CAPTURADO:
+
+   • Todas as requisições do app (headers, body)
+   • Todas as respostas da API (headers, body, status)
+   • Timestamps
+   • Erros (se houver)
+
+===============================================================================
+STATUS ATUAL
+===============================================================================
+
+✅ Servidor Proxy: RODANDO em http://192.168.1.68:8090
+✅ API Externa: CONECTADA (https://api-ia.axion-ide.online/v1)
+✅ Captura de Logs: ATIVA (traffic_log.txt)
+✅ Configuração do App: PRONTA para usar
+
+===============================================================================
+RESUMO FINAL
+===============================================================================
+
+➤ **APP AXION deve usar:**
+   URL:  http://192.168.1.68:8090/v1
+   Key:  test-key-123
+
+➤ **PROXY está usando a API externa:**
+   URL:  https://api-ia.axion-ide.online/v1  
+   Key:  sk-***REDACTED***-ROTACIONE-ESTA-CHAVE
+
+➤ **Resultado:**
+   Todo tráfego capturado em traffic_log.txt
+
+===============================================================================

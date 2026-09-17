@@ -1,0 +1,42 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="?attr/colorControlNormal">
+    <path
+        android:fillColor="@android:color/transparent"
+        android:strokeColor="@android:color/white"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M12 22a1 1 0 0 1 0-20 10 9 0 0 1 10 9 5 5 0 0 1-5 5h-2.25a1.75 1.75 0 0 0-1.4 2.8l.3.4a1.75 1.75 0 0 1-1.4 2.8z" />
+    <path
+        android:fillColor="@android:color/transparent"
+        android:strokeColor="@android:color/white"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M13,6.5 C13,6.224 13.224,6 13.5,6 C13.776,6 14,6.224 14,6.5 C14,6.776 13.776,7 13.5,7 C13.224,7 13,6.776 13,6.5 Z" />
+    <path
+        android:fillColor="@android:color/transparent"
+        android:strokeColor="@android:color/white"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M17,10.5 C17,10.224 17.224,10 17.5,10 C17.776,10 18,10.224 18,10.5 C18,10.776 17.776,11 17.5,11 C17.224,11 17,10.776 17,10.5 Z" />
+    <path
+        android:fillColor="@android:color/transparent"
+        android:strokeColor="@android:color/white"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M6,12.5 C6,12.224 6.224,12 6.5,12 C6.776,12 7,12.224 7,12.5 C7,12.776 6.776,13 6.5,13 C6.224,13 6,12.776 6,12.5 Z" />
+    <path
+        android:fillColor="@android:color/transparent"
+        android:strokeColor="@android:color/white"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M8,7.5 C8,7.224 8.224,7 8.5,7 C8.776,7 9,7.224 9,7.5 C9,7.776 8.776,8 8.5,8 C8.224,8 8,7.776 8,7.5 Z" />
+</vector>

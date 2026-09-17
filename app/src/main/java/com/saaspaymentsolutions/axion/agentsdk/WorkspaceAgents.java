@@ -1,0 +1,111 @@
+package com.saaspaymentsolutions.axion.agentsdk;
+
+import com.saaspaymentsolutions.axion.Tool;
+import com.saaspaymentsolutions.axion.ToolExecResult;
+import com.saaspaymentsolutions.axion.ToolManager;
+
+import org.json.JSONObject;
+
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * Bridges the existing Void-ported tool registry ({@link ToolManager}) into
+ * {@link AgentTool}s and exposes ready-made {@link Agent} factories.
+ */
+public final class WorkspaceAgents {
+
+    private WorkspaceAgents() {}
+
+    /** Adapts a registered {@link Tool} (Void-ported registry) to {@link AgentTool}. */
+    public static AgentTool fromRegistryTool(Tool tool, ToolManager manager) {
+        return new RegistryToolAdapter(tool, manager);
+    }
+
+    /** All Void-ported tools available in agent mode, as {@link AgentTool}s. */
+    public static List<AgentTool> defaultWorkspaceTools(ToolManager manager) {
+        List<AgentTool> tools = new ArrayList<>();
+        for (Tool tool : manager.getToolsForChatMode("agent")) {
+            tools.add(fromRegistryTool(tool, manager));
+        }
+        return tools;
+    }
+
+    /** Read-only toolset: only tools that never mutate files. */
+    public static List<AgentTool> readOnlyTools(ToolManager manager) {
+        List<AgentTool> tools = new ArrayList<>();
+        for (Tool tool : manager.getToolsForChatMode("agent")) {
+            if (!tool.isFileMutation()) {
+                tools.add(fromRegistryTool(tool, manager));
+            }
+        }
+        return tools;
+    }
+
+    /**
+     * Standard topology mirroring the app's multi-agent flow: a coordinator
+     * agent with full tools handing off to a reviewer agent (read-only).
+     */
+    public static Agent workspaceCoordinator(ToolManager manager, String scId) {
+        Agent reviewer = Agent.Builder.forName("reviewer",
+                        "You are a code reviewer. Inspect the provided files and report issues. "
+                                + "Do not modify anything.")
+                .tools(readOnlyTools(manager).toArray(new AgentTool[0]))
+                .build();
+
+        AgentTool reviewerHandoff = new HandoffTool(reviewer);
+
+        return Agent.Builder.forName("coordinator",
+                        "You are the workspace coordinator. Use the available tools to "
+                                + "explore, read, and modify project files to complete the user's task. "
+                                + "Delegate reviews to the reviewer agent when work is complete.")
+                .tools(defaultWorkspaceTools(manager).toArray(new AgentTool[0]))
+                .tools(reviewerHandoff)
+                .handoffs(reviewer)
+                .build();
+    }
+
+    /**
+     * Wraps a legacy {@link Tool} into the SDK interface. Execution goes
+     * through {@link ToolManager#executeTool} so host policies (read-only
+     * turns, explicit error protocol) keep applying.
+     */
+    private static final class RegistryToolAdapter implements AgentTool {
+        private final Tool delegate;
+        private final ToolManager manager;
+
+        RegistryToolAdapter(Tool delegate, ToolManager manager) {
+            this.delegate = delegate;
+            this.manager = manager;
+        }
+
+        @Override
+        public String name() {
+            return delegate.getName();
+        }
+
+        @Override
+        public String description() {
+            return delegate.getDescription();
+        }
+
+        @Override
+        public JSONObject parameters() {
+            JSONObject schema = delegate.getParameters();
+            return schema == null ? new JSONObject() : schema;
+        }
+
+        @Override
+        public boolean requiresApproval() {
+            return delegate.requiresApproval();
+        }
+
+        @Override
+        public AgentToolResult execute(RunContext context, JSONObject args) {
+            ToolExecResult result = manager.executeTool(context.scId(), name(), args.toString());
+            return result.ok
+                    ? AgentToolResult.success(result.output)
+                    : AgentToolResult.error(result.output);
+        }
+    }
+}

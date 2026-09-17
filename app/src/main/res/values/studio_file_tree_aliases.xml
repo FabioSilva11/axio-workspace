@@ -1,0 +1,32 @@
+﻿<resources>
+    <item name="ic_folder_app" type="drawable">@drawable/ic_mtrl_folder</item>
+    <item name="ic_folder_source" type="drawable">@drawable/ic_mtrl_folder_code</item>
+    <item name="ic_folder_java" type="drawable">@drawable/ic_mtrl_folder_code</item>
+    <item name="ic_folder_kotlin" type="drawable">@drawable/ic_mtrl_folder_code</item>
+    <item name="ic_folder_res" type="drawable">@drawable/ic_mtrl_folder</item>
+    <item name="ic_folder_layout" type="drawable">@drawable/ic_mtrl_folder</item>
+    <item name="ic_folder_image" type="drawable">@drawable/ic_mtrl_folder</item>
+    <item name="ic_folder_values" type="drawable">@drawable/ic_mtrl_folder</item>
+    <item name="ic_folder_raw" type="drawable">@drawable/ic_mtrl_folder</item>
+    <item name="ic_folder_assets" type="drawable">@drawable/ic_mtrl_folder</item>
+    <item name="ic_folder_gradle" type="drawable">@drawable/ic_mtrl_folder</item>
+    <item name="ic_folder_build" type="drawable">@drawable/ic_mtrl_folder</item>
+    <item name="ic_folder_default" type="drawable">@drawable/ic_mtrl_folder</item>
+
+    <item name="ic_file_kotlin" type="drawable">@drawable/ic_mtrl_file</item>
+    <item name="ic_file_java" type="drawable">@drawable/ic_mtrl_file</item>
+    <item name="ic_file_manifest" type="drawable">@drawable/ic_mtrl_file</item>
+    <item name="ic_file_layout" type="drawable">@drawable/ic_mtrl_file</item>
+    <item name="ic_file_values" type="drawable">@drawable/ic_mtrl_file</item>
+    <item name="ic_file_gradle" type="drawable">@drawable/ic_mtrl_file</item>
+    <item name="ic_file_properties" type="drawable">@drawable/ic_mtrl_file</item>
+    <item name="ic_file_json" type="drawable">@drawable/ic_mtrl_file</item>
+    <item name="ic_file_image" type="drawable">@drawable/ic_mtrl_file</item>
+    <item name="ic_file_image_xml" type="drawable">@drawable/ic_mtrl_file</item>
+    <item name="ic_file_xml" type="drawable">@drawable/ic_mtrl_file</item>
+    <item name="ic_file_terminal" type="drawable">@drawable/ic_mtrl_file</item>
+    <item name="ic_file_text" type="drawable">@drawable/ic_mtrl_file</item>
+    <item name="ic_file_web" type="drawable">@drawable/ic_mtrl_file</item>
+    <item name="ic_file_default" type="drawable">@drawable/ic_mtrl_file</item>
+</resources>
+
