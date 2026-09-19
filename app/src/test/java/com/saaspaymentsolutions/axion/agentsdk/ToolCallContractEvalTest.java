@@ -281,16 +281,28 @@ public class ToolCallContractEvalTest {
                                 "*** Begin Patch\n*** Update File: src/A.java\n@@\n-v1\n+v2\n*** End Patch"))),
                 FakeAgentLlmGateway.ScriptedTurn.text("concluí"));
 
-        RunResult result = runtime(gateway, agentWithPatchTool(), false).run(agentWithPatchTool(), "edita", SC);
-
-        assertTrue(result.isSuccessful());
+        RunResult result = runtime(gateway, agentWithPatchTool(), false).run(agentWithPatchTool(), "edita", SC);        assertTrue(result.isSuccessful());
         assertEquals("the call executed", "v2\n", fs.readText("src/A.java"));
-        // The narrative text reached the UI as assistant content, not lost.
+        // Item 7 (single display): the narrative text reaches the UI exactly
+        // ONCE — as deltas when the turn streamed, otherwise as ONE
+        // AssistantMessage. The fake gateway does not stream, so the
+        // non-duplicated final message is the expected delivery here.
         boolean textShown = received.stream().anyMatch(e ->
-                e instanceof AgentEvent.AssistantMessageDelta
+                (e instanceof AgentEvent.AssistantMessageDelta
                         && ((AgentEvent.AssistantMessageDelta) e).getDelta()
-                        .contains("Vou atualizar o arquivo agora."));
+                                .contains("Vou atualizar o arquivo agora."))
+                || (e instanceof AgentEvent.AssistantMessage
+                        && ((AgentEvent.AssistantMessage) e).getContent()
+                                .contains("Vou atualizar o arquivo agora.")));
+        long duplicateCount = received.stream().filter(e ->
+                (e instanceof AgentEvent.AssistantMessageDelta
+                        && ((AgentEvent.AssistantMessageDelta) e).getDelta()
+                                .contains("Vou atualizar o arquivo agora."))
+                || (e instanceof AgentEvent.AssistantMessage
+                        && ((AgentEvent.AssistantMessage) e).getContent()
+                                .contains("Vou atualizar o arquivo agora."))).count();
         assertTrue(textShown);
+        assertEquals("text must be displayed exactly once", 1L, duplicateCount);
     }
 
     // ------------------------------------------------------------------
@@ -334,7 +346,7 @@ public class ToolCallContractEvalTest {
         fs.writeText("AGENTS.md", "CONTRACT-WS-RULE");
         RunContextFactory.setOverrideForTest(new RunContextFactory.Resolved(
                 new WorkspaceIdentity(SC, "ws-contract", "file:///ws", "ws", ""), fs));
-        RuntimeFileContext.pin(
+        RuntimeFileContext.pin("test_" + SC,
                 new WorkspaceIdentity(SC, "ws-contract", "file:///ws", "ws", ""), fs);
         FakeAgentLlmGateway gateway = new FakeAgentLlmGateway(
                 FakeAgentLlmGateway.ScriptedTurn.toolCall("apply_patch",

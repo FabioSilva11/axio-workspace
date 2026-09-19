@@ -229,8 +229,14 @@ public class ChatActivity extends BaseAppCompatActivity {
         loadProjectInfo();
         Log.d("ChatActivity", "=== onCreate: CONCLUÍDO em " + (System.currentTimeMillis() - startTime) + "ms ===");
 
-        // Inicializar AgentManager (Void-style logic)
-        agentManager = new AgentManager(this, sc_id, messages, new AgentManager.AgentListener() {
+        // Inicializar o runtime v2 (AgentRuntime + AxionAgentGateway) e o
+        // controller de UI. O AgentManager vira apenas adapter de UI — o
+        // motor de execução é EXCLUSIVAMENTE o AgentRuntime v2 (migração
+        // itens 1–3), e os eventos estruturados do run chegam à UI pelo
+        // mesmo EventStream do runtime (itens 8/9).
+        agentManager = AgentManager.forUi(this, sc_id, messages,
+                com.saaspaymentsolutions.axion.agentsdk.AgentRuntimeFactory.createForChat(this),
+                new AgentManager.AgentListener() {
             @Override
             public void onMessageAdded(ChatMessage message) {
                 ChatFlowLogger.event("ui", "message_added", message == null ? "null"
@@ -365,9 +371,6 @@ public class ChatActivity extends BaseAppCompatActivity {
                 });
             }
         });
-
-        // Carregar histÃ³rico do chat
-        loadChatHistory();
         reconcileManagedReferenceGrants();
         applyPlanUi();
     }

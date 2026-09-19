@@ -73,13 +73,14 @@ public class RuntimeV2OnlyTest {
         AgentRuntime.PendingApproval pending = runtime.currentPendingApproval();
         assertNotNull("host must be able to see the pending approval", pending);
         assertEquals("edit_file", pending.getTool());
-        assertNull("not yet decided", pending.peekDecision());
+        assertEquals("not yet decided", ApprovalHandler.ApprovalState.PENDING,
+                pending.peekState());
 
-        decision.complete(PermissionDecision.ALLOW);
+        // Item 16: the host resolves EXPLICITLY by requestId.
+        assertTrue(runtime.resolveApproval(pending.getRequestId(), PermissionDecision.ALLOW));
         runThread.join(5000);
         assertFalse(runThread.isAlive());
 
-        assertEquals(PermissionDecision.ALLOW, pending.peekDecision());
         assertFalse("denial must not be emitted for an allowed tool",
                 events.policyDenied.stream().anyMatch(e -> e.getTool().equals("edit_file")));
         assertFalse("resolution event must exist", events.resolved.isEmpty());

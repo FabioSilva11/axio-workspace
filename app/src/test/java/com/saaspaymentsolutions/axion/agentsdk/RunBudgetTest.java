@@ -13,7 +13,7 @@ public class RunBudgetTest {
     public void reserveAndSettle_accountsActualUsage() {
         RunBudget budget = new RunBudget(10_000);
         RunBudget.Handle handle = budget.reserve(4_000);
-        budget.settle(handle, 2_500);
+        budget.settle(handle, 2_500, false); // provider-reported
 
         assertEquals(2_500, budget.spent());
         assertEquals(7_500, budget.remaining());
@@ -36,7 +36,7 @@ public class RunBudgetTest {
         RunBudget budget = new RunBudget(10_000);
         RunBudget.Handle handle = budget.reserve(1_000);
         try {
-            budget.settle(handle, 2_000); // actual > reserved
+            budget.settle(handle, 2_000, false); // actual > reserved
             fail("expected UncertainChargeException");
         } catch (RunBudget.UncertainChargeException expected) {
             // ok
@@ -54,9 +54,9 @@ public class RunBudgetTest {
     public void settleTwiceIsRejectedAndBlocks() {
         RunBudget budget = new RunBudget(10_000);
         RunBudget.Handle handle = budget.reserve(1_000);
-        budget.settle(handle, 900);
+        budget.settle(handle, 900, false);
         try {
-            budget.settle(handle, 900); // unknown handle
+            budget.settle(handle, 900, false); // unknown handle
             fail("expected UncertainChargeException");
         } catch (RunBudget.UncertainChargeException expected) {
             // ok
@@ -81,7 +81,7 @@ public class RunBudgetTest {
         RunBudget budget = new RunBudget(10_000);
         RunBudget.Handle handle = budget.reserve(1_000);
         try {
-            budget.settle(handle, -5);
+            budget.settle(handle, -5, false);
             fail("expected UncertainChargeException");
         } catch (RunBudget.UncertainChargeException expected) {
             // ok

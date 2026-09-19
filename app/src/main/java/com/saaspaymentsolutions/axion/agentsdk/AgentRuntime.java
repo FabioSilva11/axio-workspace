@@ -1,5 +1,7 @@
 package com.saaspaymentsolutions.axion.agentsdk;
 
+import com.saaspaymentsolutions.axion.AiChatSettingsHelper;
+import com.saaspaymentsolutions.axion.AiOperationContext;
 import com.saaspaymentsolutions.axion.ChatMessage;
 import com.saaspaymentsolutions.axion.toolcalling.ToolCall;
 
@@ -41,6 +43,7 @@ public final class AgentRuntime {
     private final boolean includeProjectInstructions;
     private final AgentToolRouter toolRouter;
     private final boolean expectFileMutations;
+    private final AiOperationContext builderOperationContext;
     private volatile boolean cancelRequested;
 
     private AgentRuntime(Builder builder) {
@@ -55,6 +58,7 @@ public final class AgentRuntime {
         this.maxOutputTokensPerTurn = builder.maxOutputTokensPerTurn;
         this.includeProjectInstructions = builder.includeProjectInstructions;
         this.expectFileMutations = builder.expectFileMutations;
+        this.builderOperationContext = builder.operationContext;
     }
 
     /** Single-shot run: user input in, final assistant text out. */
@@ -66,6 +70,17 @@ public final class AgentRuntime {
 
     /** Resumable run over caller-owned history (appended with this run's turns). */
     public RunResult run(Agent agent, List<ChatMessage> history, String scId) {
+        return run(agent, history, scId, null);
+    }
+
+    /**
+     * Resumable run with a FROZEN {@link AiOperationContext} (items 10/11):
+     * when the host provides one, every turn uses exactly that provider/model
+     * identity; when not, the runtime captures the host's current selection
+     * once, here, and never reads mutable preferences again mid-run.
+     */
+    public RunResult run(Agent agent, List<ChatMessage> history, String scId,
+                         AiOperationContext operationContext) {
         if (agent == null) {
             return RunResult.failure("No agent was provided.");
         }
@@ -73,6 +88,12 @@ public final class AgentRuntime {
             return RunResult.failure("No user input was provided.");
         }
         cancelRequested = false;
+        // Item 10 of the migration: the provider/model/mode identity of this
+        // run is FROZEN now. Host preference changes mid-run affect the NEXT
+        // run, never this one.
+        final AiOperationContext runContextIdentity = operationContext != null
+                ? operationContext
+                : builderOperationContext != null ? builderOperationContext : captureOperationIdentity();
 
         AgentSession session = new AgentSession(scId, agent.name(), history);
         session.setStatus(AgentSession.Status.RUNNING);
@@ -111,10 +132,17 @@ public final class AgentRuntime {
                 new ContextTracker(budget),
                 agent.name());
 
-        // Pin the run's filesystem for the whole run (cross-thread): tools,
-        // ContextBuilder and ApplyPatchTool read RuntimeFileContext instead
-        // of the global active workspace while this run is in flight.
-        final AutoCloseable pinned = RuntimeFileContext.pin(resolved.workspace(), resolved.filesystem());
+        // Pin the run's filesystem for the whole run under THIS run's id
+        // (item 14): tools, ContextBuilder and ApplyPatchTool read
+        // RuntimeFileContext instead of the global active workspace while
+        // this run is in flight — and concurrent runs never share bindings.
+        // Identity: the frozen operationContext's requestId when available,
+        // else a unique id (tests/headless hosts without preferences).
+        final String runId = runContextIdentity != null
+                ? "run_" + runContextIdentity.getRequestId()
+                : "run_" + java.util.UUID.randomUUID();
+        final AutoCloseable pinned = RuntimeFileContext.pin(
+                runId, resolved.workspace(), resolved.filesystem());
 
         // Compaction-proof handoff (item 7 of the migration): the previous
         // run's durable task state (objective, relevant files, progress) is
@@ -156,6 +184,10 @@ public final class AgentRuntime {
 
                 final LlmTurnOutput turn;
                 try {
+                    // Item 6: the runtime owns the streaming route for THIS
+                    // turn. The listener is registered before the request and
+                    // cleared in the finally — a previous run's listener can
+                    // never contaminate this one.
                     gateway.setDeltaListener(delta -> {
                         if (delta != null && !delta.isEmpty()) {
                             emit(new AgentEvent.AssistantMessageDelta(scId, delta));
@@ -165,7 +197,7 @@ public final class AgentRuntime {
                             resolveSystemPrompt(activeAgent, context),
                             toolSchemasFor(withParityTools(activeAgent)),
                             history,
-                            null);
+                            runContextIdentity);
                 } catch (Exception e) {
                     String reason = "LLM turn failed: " + e.getMessage();
                     emit(new AgentEvent.Error(scId, reason));
@@ -174,15 +206,26 @@ public final class AgentRuntime {
                     return RunResult.failure(reason);
                 } finally {
                     gateway.setDeltaListener(null);
-                    if (reservation != null) {
-                        // No usage report available yet: settle with the full
-                        // estimate so the budget reflects it (conservative).
-                        try {
-                            budget.settle(reservation, reservation.reserved());
-                            context.contextTracker().recordSettled(reservation.reserved());
-                        } catch (RunBudget.UncertainChargeException ignored) {
-                            // Estimate >= reserved by construction; cannot happen here.
-                        }
+                }
+                // Item 17: settle the reservation with REAL usage whenever the
+                // provider reported it; only an estimate when it did not.
+                if (budget != null && reservation != null) {
+                    try {
+                        // Without a provider report the reservation itself is
+                        // the best-known cost: settling the FULL hold (never
+                        // more) keeps spent honest and can never exceed what
+                        // was reserved.
+                        TokenUsage usage = turn.usage() != null
+                                ? turn.usage()
+                                : TokenUsage.estimated(reservation.reserved(), 0);
+                        budget.settle(reservation, usage);
+                        context.contextTracker().recordTurnUsage(usage);
+                    } catch (RunBudget.UncertainChargeException e) {
+                        String reason = "Budget: " + e.getMessage();
+                        emit(new AgentEvent.Error(scId, reason));
+                        session.setStatus(AgentSession.Status.FAILED);
+                        emit(new AgentEvent.RunCompleted(scId, false, reason));
+                        return RunResult.failure(reason);
                     }
                 }
                 // Input as the model will see it on the NEXT turn: the
@@ -236,8 +279,12 @@ public final class AgentRuntime {
 
                 // Assistant text is display-only when tools also arrived: it
                 // stays OUT of the execution path (semantic separation).
-                if (!assistantText.isEmpty()) {
-                    emit(new AgentEvent.AssistantMessageDelta(scId, assistantText));
+                // Item 7 (no duplicate AssistantMessageDelta): when the text
+                // was ALREADY delivered by streaming deltas, do NOT publish it
+                // again at turn end — the UI has it all. A non-streamed turn
+                // emits exactly one AssistantMessage so the UI still sees it.
+                if (!assistantText.isEmpty() && !turn.textStreamed()) {
+                    emit(new AgentEvent.AssistantMessage(scId, assistantText));
                 }
 
                 boolean handedOff = false;
@@ -305,6 +352,11 @@ public final class AgentRuntime {
     /** Cooperative cancellation: checked between turns and tool calls. */
     public void cancel() {
         cancelRequested = true;
+        // Item 33: a cancelled run must not leave a PENDING approval parked;
+        // cancelling them resolves the parked run thread promptly.
+        if (permissions != null) {
+            permissions.cancelPendingApprovals();
+        }
         gateway.cancel();
     }
 
@@ -314,6 +366,11 @@ public final class AgentRuntime {
     /** Session of the most recent run on this runtime (audit/telemetry). */
     public AgentSession lastSession() {
         return sessionSnapshot != null ? sessionSnapshot : lastSession;
+    }
+
+    /** The run-scoped {@link EventStream} this runtime emits to (item 8/9). */
+    public EventStream eventStream() {
+        return events;
     }
 
     // ------------------------------------------------------------------
@@ -327,12 +384,15 @@ public final class AgentRuntime {
      */
     public static final class PendingApproval {
         private final PermissionRequest request;
-        private final java.util.function.Supplier<PermissionDecision> decisionView;
+        private final ApprovalHandler.ApprovalRecord recordView;
 
-        PendingApproval(PermissionRequest request,
-                        java.util.function.Supplier<PermissionDecision> decisionView) {
+        PendingApproval(PermissionRequest request) {
+            this(request, null);
+        }
+
+        PendingApproval(PermissionRequest request, ApprovalHandler.ApprovalRecord recordView) {
             this.request = request;
-            this.decisionView = decisionView;
+            this.recordView = recordView;
         }
 
         public String getTool() {
@@ -343,9 +403,14 @@ public final class AgentRuntime {
             return request;
         }
 
-        /** Current decision: {@code null} while still pending. */
-        public PermissionDecision peekDecision() {
-            return decisionView.get();
+        /** The request id to use with {@code resolveApproval}/{@code cancelApproval}. */
+        public String getRequestId() {
+            return request.getId();
+        }
+
+        /** Lifecycle state snapshot: PENDING while unresolved. */
+        public ApprovalHandler.ApprovalState peekState() {
+            return recordView != null ? recordView.getState() : ApprovalHandler.ApprovalState.PENDING;
         }
     }
 
@@ -355,14 +420,60 @@ public final class AgentRuntime {
             return null;
         }
         PermissionRequest request = permissions.currentPendingRequest();
-        return request == null
-                ? null
-                : new PendingApproval(request, () -> permissions.lastDecisionFor(request));
+        return request == null ? null : new PendingApproval(request);
+    }
+
+    /**
+     * Explicitly resolves a pending approval by its requestId (item 16):
+     * the UI calls this after the user answers the dialog. Returns false
+     * when no matching PENDING request exists (stale dialog / wrong run).
+     */
+    public boolean resolveApproval(String requestId, PermissionDecision decision) {
+        if (permissions == null) {
+            return false;
+        }
+        // The layer owns the resolution channel — works with every handler
+        // implementation (anonymous, resolver-based, test doubles).
+        return permissions.resolve(requestId, decision);
+    }
+
+    /** Cancels a pending approval (user dismissed the dialog). */
+    public boolean cancelApproval(String requestId) {
+        if (permissions == null) {
+            return false;
+        }
+        return permissions.cancel(requestId);
     }
 
     // ------------------------------------------------------------------
     // helpers
     // ------------------------------------------------------------------
+
+    /**
+     * Item 10: freezes THIS run's provider/model/mode from the host's
+     * current selection, ONCE. The frozen identity is what every later turn
+     * of the run uses — mid-run preference changes only affect the NEXT run.
+     * Pure-JVM safe: unavailable preferences yield {@code null} (tests).
+     */
+    private static AiOperationContext captureOperationIdentity() {
+        try {
+            android.content.SharedPreferences prefs = AiChatSettingsHelper.prefs(
+                    com.saaspaymentsolutions.axion.SketchApplication.getContext());
+            AiChatSettingsHelper.ensureValidCurrentSelection(prefs);
+            String providerId = prefs.getString(AiChatSettingsHelper.PREF_CURRENT_PROVIDER, "").trim();
+            String modelName = prefs.getString(AiChatSettingsHelper.PREF_CURRENT_MODEL, "").trim();
+            if (providerId.isEmpty() || modelName.isEmpty()) {
+                return null;
+            }
+            return AiOperationContext.builder()
+                    .providerId(providerId)
+                    .modelName(modelName)
+                    .chatMode(AiChatSettingsHelper.getChatMode(prefs))
+                    .build();
+        } catch (Exception unavailable) {
+            return null; // JVM tests / headless: no frozen identity available
+        }
+    }
 
     /**
      * Codex context assembly (item 12 of the migration): structured
@@ -521,6 +632,7 @@ public final class AgentRuntime {
         private PermissionLayer permissions;
         private final List<Guardrail> inputGuardrails = new ArrayList<>();
         private int maxTurns = DEFAULT_MAX_TURNS;
+        private AiOperationContext operationContext;
         private RunBudget budget;
         private ApprovalHandler inputChannel;
         private int maxOutputTokensPerTurn = 2048;
@@ -594,6 +706,15 @@ public final class AgentRuntime {
          */
         public Builder inputChannel(ApprovalHandler channel) {
             this.inputChannel = channel;
+            return this;
+        }
+
+        /**
+         * Freezes the provider/model/mode of every run of this runtime
+         * (items 10/11). Host preference changes mid-run do not leak in.
+         */
+        public Builder operationContext(AiOperationContext context) {
+            this.operationContext = context;
             return this;
         }
 

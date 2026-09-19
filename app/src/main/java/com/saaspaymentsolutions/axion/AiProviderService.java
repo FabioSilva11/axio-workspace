@@ -128,6 +128,15 @@ public class AiProviderService {
                     : error.getTitle() + ": " + error.getMessage();
             onError(message, null);
         }
+
+        /**
+         * Provider-reported token usage of the current request (item 17 of
+         * the migration). Only REAL reports are delivered here — an absent
+         * report simply never calls this method, and the caller marks its
+         * own fallback as estimated. Emitted at most once per request.
+         */
+        default void onTokenUsage(com.saaspaymentsolutions.axion.agentsdk.TokenUsage usage) {
+        }
     }
 
     /**
@@ -287,6 +296,11 @@ public class AiProviderService {
         public void onFinalMessage(String fullContent, String fullReasoning, String finishReason) {
             emitted.set(true);
             delegate.onFinalMessage(fullContent, fullReasoning, finishReason);
+        }
+
+        @Override
+        public void onTokenUsage(com.saaspaymentsolutions.axion.agentsdk.TokenUsage usage) {
+            delegate.onTokenUsage(usage);
         }
 
         @Override
@@ -1459,6 +1473,7 @@ public class AiProviderService {
 
         android.util.Log.d("AiProviderService", "=== PARSING JSON RESPONSE ===");
         recordOpenAiUsage(json.optJSONObject("usage"));
+        emitOpenAiUsage(json.optJSONObject("usage"), listener);
 
         OpenAiResponseEnvelopeParser.ParsedResponse parsed =
                 OpenAiResponseEnvelopeParser.parse(json);
@@ -1474,6 +1489,7 @@ public class AiProviderService {
 
     private void handleOpenAiChunk(JSONObject json, OpenAiStreamState state, StreamListener listener) {
         recordOpenAiUsage(json.optJSONObject("usage"));
+        emitOpenAiUsage(json.optJSONObject("usage"), listener);
 
         String eventType = json.optString("type", "");
         if (eventType.startsWith("response.") || "error".equals(eventType)) {
@@ -1951,11 +1967,13 @@ public class AiProviderService {
         }
         JSONObject usage = chunk.optJSONObject("usageMetadata");
         if (usage != null) {
+            long inputTokens = usage.optLong("promptTokenCount", 0);
+            long outputTokens = usage.optLong("candidatesTokenCount", 0);
             long total = usage.optLong("totalTokenCount", 0);
             if (total <= 0) {
-                total = usage.optLong("promptTokenCount", 0)
-                        + usage.optLong("candidatesTokenCount", 0);
+                total = inputTokens + outputTokens;
             }
+            emitReportedUsage(listener, total > inputTokens && inputTokens > 0 ? inputTokens : total > outputTokens ? total - outputTokens : total, outputTokens, 0, 0, 0);
             TokenUsageStore.record(SketchApplication.getContext(), total);
         }
         // Safety block: Gemini reports it via promptFeedback.blockReason with no content.
@@ -2252,6 +2270,10 @@ public class AiProviderService {
                     + usage.optLong("cache_read_input_tokens", 0)
                     + usage.optLong("cache_creation_input_tokens", 0);
             long outputTokens = usage.optLong("output_tokens", 0);
+            emitReportedUsage(listener, inputTokens, outputTokens,
+                    usage.optLong("cache_read_input_tokens", 0)
+                            + usage.optLong("cache_creation_input_tokens", 0),
+                    0, 0);
             TokenUsageStore.record(SketchApplication.getContext(), inputTokens + outputTokens);
             emitDebug(listener, "Anthropic usage: input=" + inputTokens
                     + ", output=" + outputTokens);
@@ -2433,6 +2455,11 @@ public class AiProviderService {
             if ("message_delta".equals(type)) {
                 JSONObject usage = json.optJSONObject("usage");
                 if (usage != null) {
+                    emitReportedUsage(listener, usage.optLong("input_tokens", 0),
+                            usage.optLong("output_tokens", 0),
+                            usage.optLong("cache_read_input_tokens", 0),
+                            usage.optLong("cache_creation_input_tokens", 0),
+                            0);
                     TokenUsageStore.record(
                             SketchApplication.getContext(),
                             usage.optLong("output_tokens", 0));
@@ -2683,6 +2710,40 @@ public class AiProviderService {
                     + usage.optLong("completion_tokens", 0);
         }
         TokenUsageStore.record(SketchApplication.getContext(), total);
+    }
+
+    /**
+     * Forwards a provider-reported usage snapshot to the listener (item 17).
+     * Keeps the pre-existing TokenUsageStore bookkeeping untouched; the
+     * structured report is additive so the runtime can settle real usage.
+     */
+    /** OpenAI-family usage blocks (prompt/completion or input/output). */
+    private static void emitOpenAiUsage(JSONObject usage, StreamListener listener) {
+        if (usage == null) {
+            return;
+        }
+        long input = usage.optLong("prompt_tokens", usage.optLong("input_tokens", 0));
+        long output = usage.optLong("completion_tokens", usage.optLong("output_tokens", 0));
+        JSONObject promptDetails = usage.optJSONObject("prompt_tokens_details");
+        JSONObject completionDetails = usage.optJSONObject("completion_tokens_details");
+        emitReportedUsage(listener, input, output,
+                promptDetails == null ? 0 : promptDetails.optLong("cached_tokens", 0),
+                0,
+                completionDetails == null ? 0 : completionDetails.optLong("reasoning_tokens", 0));
+    }
+
+    private static void emitReportedUsage(StreamListener listener, long inputTokens,
+                                          long outputTokens, long cachedInputTokens,
+                                          long cacheWriteTokens, long reasoningTokens) {
+        if (listener == null || (inputTokens <= 0 && outputTokens <= 0)) {
+            return;
+        }
+        try {
+            listener.onTokenUsage(com.saaspaymentsolutions.axion.agentsdk.TokenUsage
+                    .reportedDetailed(inputTokens, outputTokens, cachedInputTokens, reasoningTokens));
+        } catch (Exception ignored) {
+            // Usage reporting must never break the stream.
+        }
     }
 
     private static void emitDebug(StreamListener listener, String message) {

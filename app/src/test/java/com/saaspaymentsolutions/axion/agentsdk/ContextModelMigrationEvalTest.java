@@ -255,6 +255,7 @@ public class ContextModelMigrationEvalTest {
     private static void bindRun(String scId, FakeWorkspaceFileSystem fs) {
         RunContextFactory.setOverrideForTest(new RunContextFactory.Resolved(
                 new WorkspaceIdentity(scId, "ws-" + scId, "fake://" + scId, scId, ""), fs));
-        RuntimeFileContext.pin(new WorkspaceIdentity(scId, "ws-" + scId, "fake://" + scId, scId, ""), fs);
+        RuntimeFileContext.pin("test_" + scId,
+                new WorkspaceIdentity(scId, "ws-" + scId, "fake://" + scId, scId, ""), fs);
     }
 }

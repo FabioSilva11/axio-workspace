@@ -2,7 +2,6 @@ package com.saaspaymentsolutions.axion.agentsdk;
 
 import com.saaspaymentsolutions.axion.FileChangeTracker;
 import com.saaspaymentsolutions.axion.workspace.WorkspaceFileSystem;
-import com.saaspaymentsolutions.axion.workspace.WorkspaceManager;
 import com.saaspaymentsolutions.axion.workspace.WorkspacePath;
 
 import org.json.JSONObject;
@@ -128,17 +127,19 @@ public final class ApplyPatchTool implements AgentTool {
         }
 
         // ---- Pass 1: validate everything against the run's workspace ----
-        // Resolution order (context-model migration, item 14): injected fs
-        // (tests) → the pinned run filesystem (RuntimeFileContext) → the
-        // global active workspace (legacy host without a RunContext).
+        // FAIL-CLOSED (item 13 of the migration): the resolution order is
+        // injected fs (tests) → the pinned run filesystem (RuntimeFileContext)
+        // and NOTHING else. A run with an unresolved workspace can NEVER fall
+        // back to the global active workspace: unknown workspace → DENY, not
+        // "whatever the UI currently has open". For a destructive tool this
+        // is the difference between failing safely and mutating the wrong
+        // project.
         WorkspaceFileSystem fs = injectedFs != null
                 ? injectedFs
                 : RuntimeFileContext.effectiveFileSystem();
         if (fs == null) {
-            fs = WorkspaceManager.getActiveFileSystem();
-        }
-        if (fs == null) {
-            return AgentToolResult.error("Error: no active workspace is open.");
+            return AgentToolResult.error(
+                    "Error: run workspace could not be resolved. No mutation was applied.");
         }
         List<PatchMutation> mutations = new ArrayList<>();
 

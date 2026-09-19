@@ -6,7 +6,6 @@ import com.saaspaymentsolutions.axion.AiProviderService;
 import com.saaspaymentsolutions.axion.ChatMessage;
 import com.saaspaymentsolutions.axion.ContextBuilder;
 import com.saaspaymentsolutions.axion.Tool;
-import com.saaspaymentsolutions.axion.ToolManager;
 import com.saaspaymentsolutions.axion.toolcalling.ToolCall;
 
 import org.json.JSONArray;
@@ -25,27 +24,40 @@ import java.util.concurrent.atomic.AtomicReference;
  * the provider's native tool-call envelope when available.
  *
  * <p>This is what lets the {@link AgentRuntime} fully replace the legacy
- * AgentManager loop: the runtime now sits on the exact same transport the
- * legacy chat used — streamed deltas, reasoning, structured tool calls —
- * with the SDK loop on top.</p>
+ * loop: the runtime sits on the exact same transport the legacy chat used —
+ * streamed deltas, reasoning, structured tool calls — with the SDK loop on
+ * top.</p>
+ *
+ * <p>Contracts implemented here:</p>
+ * <ul>
+ *   <li><b>setDeltaListener</b> (item 6): the runtime-registered listener is
+ *       STORED and used during streaming; it replaces (never merges with)
+ *       the constructor hook and is cleared by the runtime after the turn.</li>
+ *   <li><b>frozen operationContext</b> (items 10/11): provider/model/chatMode
+ *       come from the turn's {@link AiOperationContext}; preferences are only
+ *       a fallback BEFORE a run starts, never a per-turn mutable source.</li>
+ *   <li><b>usage</b> (item 17): the turn carries provider-reported
+ *       {@link TokenUsage} when the provider envelope declares it.</li>
+ *   <li><b>native-only tools</b>: calls are deduplicated by callId (never
+ *       name) and text is never mined for tool protocols.</li>
+ * </ul>
  */
-public final class AxionAgentGateway implements AgentLlmGateway {
+public final class AxionAgentGateway implements AgentLlmGateway, AgentLlmGateway.NativeToolCallsOnly {
 
     private final AiProviderService aiService;
-    private final String chatMode;
+    private final String fallbackChatMode;
+    /** Constructor hook kept for compatibility; the runtime listener wins. */
     private final java.util.function.Consumer<String> deltaListenerHook;
+    /** Listener registered by the runtime for the CURRENT turn (item 6). */
+    private volatile java.util.function.Consumer<String> turnDeltaListener;
     private volatile boolean cancelRequested;
+    private volatile TokenUsage lastUsage;
+    /** Frozen model name from the run's operation context (capability resolution). */
+    private volatile String frozenModelName = "";
 
     public AxionAgentGateway(AiProviderService aiService, String chatMode) {
         this(aiService, chatMode, null);
     }
-
-    /** Host-provided XML-fallback tool definitions for this mode. */
-    public void setXmlFallbackTools(List<Tool> tools) {
-        this.xmlFallbackTools = tools;
-    }
-
-    private List<Tool> xmlFallbackTools;
 
     /** Stream listener that ALSO declares the native-only tool protocol. */
     private interface NativeOnlyStreamListener extends
@@ -60,8 +72,22 @@ public final class AxionAgentGateway implements AgentLlmGateway {
     public AxionAgentGateway(AiProviderService aiService, String chatMode,
                              java.util.function.Consumer<String> deltaListenerHook) {
         this.aiService = aiService;
-        this.chatMode = chatMode == null ? "agent" : chatMode;
+        this.fallbackChatMode = chatMode == null ? "agent" : chatMode;
         this.deltaListenerHook = deltaListenerHook;
+    }
+
+    @Override
+    public void setDeltaListener(java.util.function.Consumer<String> listener) {
+        // The runtime's listener REPLACES any previous one; setting null
+        // clears it. No listener from a previous run can contaminate a new
+        // one: the runtime sets it before every turn and clears it in the
+        // turn's finally.
+        this.turnDeltaListener = listener;
+    }
+
+    /** Provider usage of the most recent completed turn (null before the first). */
+    public TokenUsage lastTurnUsage() {
+        return lastUsage;
     }
 
     @Override
@@ -70,6 +96,7 @@ public final class AxionAgentGateway implements AgentLlmGateway {
                                       List<ChatMessage> messages,
                                       AiOperationContext operationContext) throws Exception {
         cancelRequested = false;
+        lastUsage = null;
 
         ContextBuilder builder = new ContextBuilder(null, messages, null)
                 .setAgentGuidance("")
@@ -78,13 +105,26 @@ public final class AxionAgentGateway implements AgentLlmGateway {
         if (systemPrompt != null && !systemPrompt.isEmpty()) {
             builder.setExternalSystemPrompt(systemPrompt);
         }
-        if (xmlFallbackTools != null) {
-            builder.setExternalTools(xmlFallbackTools);
+        // Item 11: the run's frozen identity wins over global preferences.
+        String chatMode = fallbackChatMode;
+        String providerId = "";
+        String modelName = "";
+        if (operationContext != null) {
+            if (operationContext.getChatMode() != null && !operationContext.getChatMode().trim().isEmpty()) {
+                chatMode = operationContext.getChatMode();
+            }
+            providerId = operationContext.getProviderId();
+            modelName = operationContext.getModelName();
+            builder.setFrozenModelName(modelName);
+        } else {
+            // Fallback BEFORE the run starts (single-turn convenience paths):
+            // read the global selection once — never refreshed per turn.
+            android.content.SharedPreferences prefs =
+                    com.saaspaymentsolutions.axion.SketchApplication.getContext()
+                            .getSharedPreferences(com.saaspaymentsolutions.axion.port.VoidPortSettings.PREFS_NAME,
+                                    android.content.Context.MODE_PRIVATE);
+            providerId = prefs.getString(AiChatSettingsHelper.PREF_CURRENT_PROVIDER, "");
         }
-        String providerId = com.saaspaymentsolutions.axion.SketchApplication.getContext()
-                .getSharedPreferences(com.saaspaymentsolutions.axion.port.VoidPortSettings.PREFS_NAME,
-                        android.content.Context.MODE_PRIVATE)
-                .getString(AiChatSettingsHelper.PREF_CURRENT_PROVIDER, "");
         ContextBuilder.Result request = builder.build(latestUserText(messages), chatMode, providerId);
 
         final CountDownLatch done = new CountDownLatch(1);
@@ -106,7 +146,12 @@ public final class AxionAgentGateway implements AgentLlmGateway {
                     return;
                 }
                 content.append(delta);
-                if (deltaListenerHook != null) {
+                // Item 6: the RUNTIME's listener is the streaming route; the
+                // constructor hook (if any) is a legacy secondary bridge.
+                java.util.function.Consumer<String> runtime = turnDeltaListener;
+                if (runtime != null) {
+                    runtime.accept(delta);
+                } else if (deltaListenerHook != null) {
                     deltaListenerHook.accept(delta);
                 }
             }
@@ -122,6 +167,13 @@ public final class AxionAgentGateway implements AgentLlmGateway {
             public void onToolCall(String name, String arguments, String id) {
                 if (name != null && !name.isEmpty()) {
                     toolCalls.add(new ToolCall(name, arguments == null ? "{}" : arguments, id));
+                }
+            }
+
+            @Override
+            public void onTokenUsage(com.saaspaymentsolutions.axion.agentsdk.TokenUsage usage) {
+                if (usage != null && !usage.isEstimated()) {
+                    lastUsage = usage;
                 }
             }
 
@@ -147,11 +199,9 @@ public final class AxionAgentGateway implements AgentLlmGateway {
             }
         };
 
-        // Tool-call execution contract (item 7): this listener declares the
-        // NATIVE_TOOL_CALLS_ONLY protocol — the provider delivers structured
-        // calls from its envelope and NEVER mines assistant text for tool
-        // calls. Request-scoped: the shared chat transport is untouched for
-        // other callers.
+        // Tool-call execution contract: this listener declares the
+        // NATIVE_TOOL_CALLS_ONLY protocol and this call carries the run's
+        // FROZEN operationContext — the provider/model cannot change mid-run.
         aiService.sendStreamingMessage(request, tools, chatMode, operationContext, listener);
         try {
             if (!done.await(10, TimeUnit.MINUTES)) {
@@ -169,17 +219,17 @@ public final class AxionAgentGateway implements AgentLlmGateway {
         }
 
         // Provider-structured calls only (tool-call execution contract):
-        // the gateway normalizes the provider envelope into StructuredToolCall
-        // equivalents and NEVER re-derives calls from assistant text. A
-        // JSON/XML/DSML block in the text is text, and stays text.
+        // deduplicated by callId (never by name). A JSON/XML/DSML block in
+        // the text is text, and stays text.
         List<ToolCall> structured = new ArrayList<>();
         for (ToolCall call : toolCalls) {
             if (call != null && call.isValid() && !containsCallId(structured, call)) {
                 structured.add(call);
             }
         }
+        boolean streamed = content.length() > 0;
         return new LlmTurnOutput(content.toString(), reasoning.toString(),
-                finishReason.get(), structured);
+                finishReason.get(), structured, streamed, lastUsage);
     }
 
     private static LlmTurnOutput timeoutTurn(String message) {

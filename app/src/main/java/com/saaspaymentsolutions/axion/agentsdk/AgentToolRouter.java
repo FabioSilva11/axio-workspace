@@ -129,12 +129,31 @@ public final class AgentToolRouter {
     /**
      * Routes {@code call} on the run's toolset. This is the ONLY way a tool
      * executes inside the {@link AgentRuntime} v2.
+     *
+     * <p>Item 22 of the migration: a toolset with DUPLICATE tool names is an
+     * invalid configuration and is rejected outright — exactly one
+     * {@code apply_patch} (the canonical {@link ApplyPatchTool}) may exist,
+     * and every name must resolve to a single implementation.</p>
      */
     public RoutedCall route(List<AgentTool> tools,
                             StructuredToolCall call,
                             String scId,
                             RunContext context,
                             LoopHooks loopHooks) {
+        // ---- 0) Toolset sanity: no duplicate names ----------------------
+        // O(n) on a tiny toolset; catches two apply_patch's (or any other
+        // collision) deterministically instead of silently picking one.
+        if (tools != null) {
+            java.util.Set<String> seen = new java.util.HashSet<>();
+            for (AgentTool tool : tools) {
+                if (tool != null && !seen.add(tool.name())) {
+                    return new RoutedCall(call, AgentToolResult.error(
+                            "Error: invalid toolset configuration — duplicate tool name '"
+                                    + tool.name() + "'."), false, false);
+                }
+            }
+        }
+
         // ---- 1) Deduplication by callId (never by name) -------------------
         RoutedCall previous = processedByCallId.get(call.callId());
         if (previous != null) {

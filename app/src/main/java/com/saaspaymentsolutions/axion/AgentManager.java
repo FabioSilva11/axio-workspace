@@ -17,13 +17,11 @@ import java.io.File;
 import com.saaspaymentsolutions.axion.R;
 import com.saaspaymentsolutions.axion.agent.AgentMemory;
 import com.saaspaymentsolutions.axion.agent.AgentRunGuard;
-import com.saaspaymentsolutions.axion.agent.FinishChecker;
 import com.saaspaymentsolutions.axion.agent.MultiAgentOrchestrator;
 import com.saaspaymentsolutions.axion.agent.MultiAgentPolicy;
 import com.saaspaymentsolutions.axion.agent.PatternMatcher;
 import com.saaspaymentsolutions.axion.agent.RetryManager;
 import com.saaspaymentsolutions.axion.agent.TaskPlanner;
-import com.saaspaymentsolutions.axion.agent.ToolSequenceValidator;
 import com.saaspaymentsolutions.axion.port.VoidToolWrapper;
 import com.saaspaymentsolutions.axion.port.VoidPortDiffService;
 import com.saaspaymentsolutions.axion.port.VoidPortConvertToLlmMessageService;
@@ -91,7 +89,6 @@ public class AgentManager {
     private State currentState = State.IDLE;
     private ChatMessage pendingToolMessage;
     private ChatMessage currentStreamingMessage;
-    private Thread currentToolThread;
     private int runVersion = 0;
     private int pendingToolLoopStep = -1;
     private final AgentRunGuard runGuard = new AgentRunGuard();
@@ -102,14 +99,6 @@ public class AgentManager {
     /** Abort the run after this many consecutive failing tool executions. */
     private static final int MAX_CONSECUTIVE_TOOL_FAILURES = 4;
     private int consecutiveToolFailures = 0;
-    /**
-     * Tool calls returned by the LLM in the current turn that still await
-     * execution. Modern models emit several (often parallel) tool calls per
-     * turn; they are executed sequentially in the order received, and the
-     * agent loop only advances once the queue drains.
-     */
-    private final java.util.ArrayDeque<String[]> queuedToolCalls = new java.util.ArrayDeque<>();
-    private String queuedChatMode = "agent";
 
     // ---- History compaction (context only; the visible chat is untouched) ----
     /** The character estimator used by the documented compaction strategy. */
@@ -139,15 +128,9 @@ public class AgentManager {
     /** Checkpoint message shared by every file mutation of the current run (turn-level rollback). */
     private ChatMessage currentRunCheckpointMessage;
     private ChatInteractionTrace interactionTrace;
-    private ChatMessage pendingStreamMessage;
-    private boolean streamUpdateScheduled;
-    private String streamingToolName = "";
-    private String streamingToolId = "";
-    private String streamingMcpServerName;
     private AgentMemory agentMemory;
     private PatternMatcher.Result requestPattern;
     private TaskPlanner.Plan taskPlan;
-    private final java.util.List<ToolSequenceValidator.ToolUsage> toolUsageHistory = new java.util.ArrayList<>();
     private String pendingAgentFeedback = "";
     private int finishValidationFailures = 0;
     private int outputContinuationCount = 0;
@@ -187,6 +170,43 @@ public class AgentManager {
                     : error.getTitle() + ": " + error.getMessage();
             onError(message);
         }
+
+        // ------------------------------------------------------------------
+        // Structured event surface (items 8/9/37): the UI consumes typed
+        // runtime events instead of inferring tool/mutation/completion state
+        // from message text. Defaults keep legacy listeners compiling.
+        // ------------------------------------------------------------------
+
+        /** Streaming delta of assistant text (UI appends to the live message). */
+        default void onAssistantDelta(@Nullable String delta) {
+        }
+
+        /** Complete assistant message for the turn (only when NOT streamed). */
+        default void onAssistantMessage(@Nullable String content) {
+        }
+
+        /** A structured tool call started executing. */
+        default void onToolCallStarted(@Nullable String toolName, @Nullable String callId) {
+        }
+
+        /** A structured tool call finished (success/failure + result text). */
+        default void onToolCallCompleted(@Nullable String toolName, @Nullable String callId,
+                                         boolean success, @Nullable String resultText) {
+        }
+
+        /** A file inside the run's workspace changed (diff/panels refresh). */
+        default void onFileChanged(@Nullable String path, @Nullable String kind,
+                                   @Nullable String toolName) {
+        }
+
+        /** The runtime parked a tool call waiting for the user's decision. */
+        default void onApprovalRequired(@Nullable String requestId, @Nullable String toolName) {
+        }
+
+        /** A pending approval reached a terminal state (ALLOWED/DENIED/...). */
+        default void onPermissionResolved(@Nullable String toolName, boolean allowed,
+                                          @Nullable String stateName) {
+        }
     }
 
     public AgentManager(Context context, String scId, List<ChatMessage> messages, AgentListener listener) {
@@ -203,6 +223,57 @@ public class AgentManager {
         this.mainHandler = new Handler(Looper.getMainLooper());
         this.streamCoalesceHandler = new Handler(Looper.getMainLooper());
         this.checkpointManager = new ChatCheckpointManager(context);
+    }
+
+    /**
+     * UI factory (item 1 of the migration): builds the AgentManager as a
+     * UI CONTROLLER for an already-assembled v2
+     * {@link com.saaspaymentsolutions.axion.agentsdk.AgentRuntime}. The
+     * runtime is the ONLY execution engine; this controller exposes the
+     * preserved surface (approve/reject, cancel, checkpoint, compaction
+     * restore) and bridges structured runtime events into the
+     * {@link AgentListener} surface through the SAME
+     * {@link com.saaspaymentsolutions.axion.agentsdk.EventStream} the
+     * runtime emits to.
+     */
+    public static AgentManager forUi(Context context, String scId, List<ChatMessage> messages,
+                                     com.saaspaymentsolutions.axion.agentsdk.AgentRuntime runtime,
+                                     AgentListener listener) {
+        return new AgentManager(context, scId, messages, listener, runtime);
+    }
+
+    private AgentManager(Context context, String scId, List<ChatMessage> messages,
+                         AgentListener listener,
+                         com.saaspaymentsolutions.axion.agentsdk.AgentRuntime runtime) {
+        this.context = context.getApplicationContext();
+        this.scId = scId;
+        this.messages = messages;
+        this.listener = listener;
+        this.aiService = AiProviderService.getInstance();
+        this.multiAgentOrchestrator = new MultiAgentOrchestrator(this.aiService);
+
+        this.toolManager = new ToolManager();
+        VoidToolWrapper.registerAllVoidTools(this.toolManager);
+
+        this.mainHandler = new Handler(Looper.getMainLooper());
+        this.streamCoalesceHandler = new Handler(Looper.getMainLooper());
+        this.checkpointManager = new ChatCheckpointManager(context);
+        this.uiRuntime = runtime;
+        // The bridge owns the run presentation: it adds user/assistant/tool
+        // messages to the SAME list the UI renders and translates runtime
+        // events into {@link AgentListener} callbacks (items 1/8/9).
+        this.uiHostBridge = new HostBridge(runtime, () -> uiAgentForRun(), listener, scId,
+                null, null, null, this::removeMessage);
+        this.uiHostBridge.attachMessages(messages);
+    }
+
+    /** The runtime-backed engine serving the chat screen (null on legacy construction). */
+    private com.saaspaymentsolutions.axion.agentsdk.AgentRuntime uiRuntime;
+    private HostBridge uiHostBridge;
+    private volatile com.saaspaymentsolutions.axion.agentsdk.Agent uiAgentForRunCache;
+
+    private com.saaspaymentsolutions.axion.agentsdk.Agent uiAgentForRun() {
+        return uiAgentForRunCache;
     }
 
     public State getCurrentState() {
@@ -266,7 +337,7 @@ public class AgentManager {
             com.saaspaymentsolutions.axion.agentsdk.RunContextFactory.Resolved resolved =
                     com.saaspaymentsolutions.axion.agentsdk.RunContextFactory.resolve(scId);
             runIdentityPin = com.saaspaymentsolutions.axion.agentsdk.RuntimeFileContext.pin(
-                    resolved.workspace(), resolved.filesystem());
+                    "host_" + scId, resolved.workspace(), resolved.filesystem());
         } catch (Exception e) {
             runIdentityPin = null; // legacy global fallback stays active
         }
@@ -291,43 +362,135 @@ public class AgentManager {
         processUserMessage(userText, contextPayload, null);
     }
 
+    /**
+     * Item 1 of the migration: the UI's user turn runs EXCLUSIVELY through
+     * the v2 runtime. The legacy in-class agent loop (startAgentLoop →
+     * queuedToolCalls → executeToolCall) is no longer an execution path —
+     * this class keeps only controller responsibilities.
+     */
     public void processUserMessage(String userText, String contextPayload, List<ChatReference> stagingSelections) {
         if (currentState != State.IDLE) {
             ChatFlowLogger.event("agent", "message_ignored", "state=" + currentState);
             return;
         }
+        if (uiRuntime == null || uiHostBridge == null) {
+            throw new IllegalStateException(
+                    "AgentManager without a v2 runtime: use AgentManager.forUi(...). "
+                            + "The legacy loop is retired.");
+        }
 
         String displayText = userText == null ? "" : userText.trim();
+        ChatFlowLogger.event("agent", "turn_started", "chars=" + displayText.length()
+                + ", references=" + (stagingSelections == null ? 0 : stagingSelections.size()));
+
+        setState(State.THINKING);
+        requestPattern = PatternMatcher.analyze(displayText, contextPayload, stagingSelections);
+        toolManager.setMutationsAllowed(requestPattern.allowsMutations());
+        captureOperationContextForRun();
+        beginRunIdentity();
+
+        uiAgentForRunCache = com.saaspaymentsolutions.axion.agentsdk.Agent.Builder.forName("coordinator",
+                "You are the workspace coordinator. Use the available tools to "
+                        + "explore, read, and modify project files to complete the user's task.")
+                .tools(com.saaspaymentsolutions.axion.agentsdk.WorkspaceAgents
+                        .defaultWorkspaceTools(toolManager, null, scId).toArray(
+                        new com.saaspaymentsolutions.axion.agentsdk.AgentTool[0]))
+                .build();
+
+        // The user message is built here (llmContent/references preserved) and
+        // handed to the bridge; the runtime receives the WHOLE conversation as
+        // history, so multi-turn context survives the v2 migration.
         ChatMessage userMsg = new ChatMessage(displayText, true, System.currentTimeMillis());
         userMsg.setContextPayload(contextPayload);
         userMsg.setStagingSelections(stagingSelections);
         userMsg.setLlmContent(ChatReferenceManager.buildLlmUserContent(displayText, contextPayload));
         messages.add(userMsg);
-        listener.onMessageAdded(userMsg);
-        ChatFlowLogger.event("agent", "turn_started", "chars=" + displayText.length()
-                + ", references=" + (stagingSelections == null ? 0 : stagingSelections.size()));
 
-        int version = ++runVersion;
-        initializeAgentExecution(displayText, contextPayload, stagingSelections);
-        captureOperationContextForRun();
-        beginRunIdentity();
-        beginInteractionTrace(version, displayText, stagingSelections);
-        startAgentLoop(version, 0);
+        final int version = ++runVersion;
+        executorForRuns().execute(() -> {
+            try {
+                uiHostBridge.processUserMessage(userMsg);
+                mainHandler.post(() -> {
+                    if (version == runVersion) {
+                        setState(State.IDLE);
+                    }
+                });
+            } catch (Exception e) {
+                mainHandler.post(() -> {
+                    if (version == runVersion) {
+                        setState(State.ERROR);
+                        listener.onError(e.getMessage() == null ? "Run failed" : e.getMessage());
+                        setState(State.IDLE);
+                    }
+                });
+            }
+        });
+    }
+
+    private java.util.concurrent.ExecutorService runExecutor;
+
+    private synchronized java.util.concurrent.ExecutorService executorForRuns() {
+        if (runExecutor == null) {
+            runExecutor = java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "axion-ui-run");
+                t.setDaemon(true);
+                return t;
+            });
+        }
+        return runExecutor;
     }
 
     public void continueFromExistingMessage(@Nullable ChatMessage sourceMessage) {
         if (currentState != State.IDLE) {
             return;
         }
-        int version = ++runVersion;
+        // Regenerate/continue runs through the SAME v2 runtime as a fresh
+        // message: the existing conversation (already containing the source
+        // message) is replayed as history, so the model continues from where
+        // it stopped. No legacy loop is involved.
         String displayText = sourceMessage == null ? findLatestUserMessage() : sourceMessage.getDisplayContent();
         List<ChatReference> selections = sourceMessage == null ? null : sourceMessage.getStagingSelections();
         String contextPayload = sourceMessage == null ? null : sourceMessage.getContextPayload();
         initializeAgentExecution(displayText, contextPayload, selections);
+        if (uiRuntime == null || uiHostBridge == null) {
+            throw new IllegalStateException(
+                    "AgentManager without a v2 runtime: use AgentManager.forUi(...). "
+                            + "The legacy loop is retired.");
+        }
+        requestPattern = PatternMatcher.analyze(displayText, contextPayload, selections);
+        toolManager.setMutationsAllowed(requestPattern.allowsMutations());
         captureOperationContextForRun();
         beginRunIdentity();
-        beginInteractionTrace(version, displayText, selections);
-        startAgentLoop(version, 0);
+        beginInteractionTrace(++runVersion, displayText, selections);
+
+        uiAgentForRunCache = com.saaspaymentsolutions.axion.agentsdk.Agent.Builder.forName("coordinator",
+                "You are the workspace coordinator. Use the available tools to "
+                        + "explore, read, and modify project files to complete the user's task.")
+                .tools(com.saaspaymentsolutions.axion.agentsdk.WorkspaceAgents
+                        .defaultWorkspaceTools(toolManager, null, scId).toArray(
+                        new com.saaspaymentsolutions.axion.agentsdk.AgentTool[0]))
+                .build();
+
+        setState(State.THINKING);
+        final int version = runVersion;
+        executorForRuns().execute(() -> {
+            try {
+                uiHostBridge.processHistory(messages);
+                mainHandler.post(() -> {
+                    if (version == runVersion) {
+                        setState(State.IDLE);
+                    }
+                });
+            } catch (Exception e) {
+                mainHandler.post(() -> {
+                    if (version == runVersion) {
+                        setState(State.ERROR);
+                        listener.onError(e.getMessage() == null ? "Run failed" : e.getMessage());
+                        setState(State.IDLE);
+                    }
+                });
+            }
+        });
     }
 
     public boolean cancelCurrentRun() {
@@ -335,82 +498,23 @@ public class AgentManager {
             return false;
         }
 
+        // v2 runtime cancellation (item 33): the gateway cancels the provider
+        // request, parked approvals resolve as CANCELLED and the run thread
+        // unwinds; the run thread itself completes the UI presentation once
+        // runtime.run returns. Nothing here may execute tools or continue the
+        // run afterwards — there is no second executor left.
         runVersion++;
-        // A user-cancelled turn must not remain in any specialist's session.
-        multiAgentOrchestrator.reset();
-        AiRequestHandle requestHandle = currentRequestHandle;
-        currentRequestHandle = null;
-        if (requestHandle != null) {
-            requestHandle.cancel();
+        if (uiRuntime != null) {
+            uiRuntime.cancel();
         }
         if (currentOperationContext != null) {
             SecureLogger.logCancellation(currentOperationContext.getRequestId(),
                     CancellationReason.USER_REQUESTED);
         }
         toolManager.cancelActiveTool();
-        queuedToolCalls.clear();
         // Kill any shell processes spawned by run_command / persistent terminals;
         // previously they kept running (and leaking) after the user cancelled.
         com.saaspaymentsolutions.axion.port.VoidPortToolsService.killAllTerminals();
-        streamCoalesceHandler.removeCallbacksAndMessages(null);
-        streamUpdateScheduled = false;
-        pendingStreamMessage = null;
-
-        Thread toolThread = currentToolThread;
-        if (toolThread != null) {
-            com.saaspaymentsolutions.axion.port.VoidPortMcpChannel.cancelRequestsForThread(toolThread);
-            toolThread.interrupt();
-        }
-        currentToolThread = null;
-
-        final String interruptedToolName = streamingToolName;
-        final String interruptedMcpServer = streamingMcpServerName;
-        final boolean hadPendingTool = pendingToolMessage != null;
-        final ChatMessage streamingSnapshot = currentStreamingMessage;
-
-        mainHandler.post(() -> {
-            if (ChatMessage.hasVisibleText(interruptedToolName)) {
-                ChatMessage interrupted = ChatMessage.interruptedStreamingTool(
-                        interruptedToolName,
-                        interruptedMcpServer,
-                        System.currentTimeMillis()
-                );
-                messages.add(interrupted);
-                listener.onMessageAdded(interrupted);
-            } else if (pendingToolMessage != null) {
-                pendingToolMessage.setToolRunning(false);
-                pendingToolMessage.setToolError(true);
-                if (currentState == State.AWAITING_APPROVAL) {
-                    pendingToolMessage.setToolState("rejected");
-                    pendingToolMessage.setRejected(true);
-                    pendingToolMessage.setStatus(getString(R.string.chat_tool_status_cancelled));
-                    pendingToolMessage.setDisplayContent(getString(R.string.chat_tool_cancelled_message));
-                } else {
-                    pendingToolMessage.setStatus(getString(R.string.chat_tool_status_cancelled));
-                    pendingToolMessage.setDisplayContent(getString(R.string.chat_tool_cancelled_message));
-                }
-                pendingToolMessage.setToolResult(getString(R.string.chat_tool_cancelled_message));
-                listener.onMessageUpdated(pendingToolMessage);
-            } else if (streamingSnapshot != null) {
-                if (!streamingSnapshot.hasDisplayContent()) {
-                    streamingSnapshot.setDisplayContent(getString(R.string.chat_tool_cancelled_message));
-                } else if (!streamingSnapshot.getDisplayContent().contains(getString(R.string.chat_cancelled_suffix))) {
-                    streamingSnapshot.setDisplayContent(
-                            streamingSnapshot.getDisplayContent().trim()
-                                    + "\n\n"
-                                    + getString(R.string.chat_cancelled_suffix));
-                }
-                streamingSnapshot.setStatus(getString(R.string.chat_tool_status_cancelled));
-                publishAssistantMessage(streamingSnapshot);
-            }
-
-            if (!hadPendingTool && !ChatMessage.hasVisibleText(interruptedToolName)) {
-                // Void adds a user checkpoint after abort when no tool approval is pending.
-            }
-
-            clearStreamingToolState();
-            finishProcessing();
-        });
         return true;
     }
 
@@ -421,22 +525,14 @@ public class AgentManager {
      */
     public void resetConversationState() {
         boolean wasActive = currentState != State.IDLE;
+        // v2 teardown: cancel parked approvals with the run.
+        if (uiRuntime != null) {
+            uiRuntime.cancel();
+        }
         runVersion++;
         multiAgentOrchestrator.reset();
-        AiRequestHandle requestHandle = currentRequestHandle;
-        currentRequestHandle = null;
-        if (requestHandle != null) {
-            requestHandle.cancel();
-        }
         toolManager.cancelActiveTool();
         com.saaspaymentsolutions.axion.port.VoidPortToolsService.killAllTerminals();
-        Thread toolThread = currentToolThread;
-        currentToolThread = null;
-        if (toolThread != null) {
-            com.saaspaymentsolutions.axion.port.VoidPortMcpChannel.cancelRequestsForThread(toolThread);
-            toolThread.interrupt();
-        }
-        streamCoalesceHandler.removeCallbacksAndMessages(null);
         mainHandler.removeCallbacksAndMessages(null);
         historySummary = "";
         historyCompactedUntil = 0;
@@ -449,7 +545,6 @@ public class AgentManager {
         toolManager.setMutationsAllowed(true);
         ChatPlanManager.clearExecutionPlan(scId);
         ChatPlanManager.clearModelPlan(scId);
-        toolUsageHistory.clear();
         pendingAgentFeedback = "";
         finishValidationFailures = 0;
         outputContinuationCount = 0;
@@ -458,50 +553,71 @@ public class AgentManager {
         finalResponseReason = "";
         finalResponseForcedByGuard = false;
         awaitingRecoveredMutation = false;
-        queuedToolCalls.clear();
         pendingToolLoopStep = -1;
         currentRunCheckpointMessage = null;
         interactionTrace = null;
         currentStreamingMessage = null;
         currentOperationContext = null;
         multiAgentOrchestrator.endOperation();
-        pendingStreamMessage = null;
-        streamUpdateScheduled = false;
         multiAgentGuidance = "";
         multiAgentEnabledForRun = false;
         multiAgentPrepared = false;
         multiAgentPreparationInFlight = false;
         multiAgentReviewInFlight = false;
         multiAgentReviewRounds = 0;
-        clearStreamingToolState();
         setState(State.IDLE);
         if (wasActive) {
             listener.onProcessingFinished();
         }
     }
 
-    /** Releases asynchronous agent resources with the owning chat screen. */
     /**
      * Legacy-free host bridge: serves the same {@link AgentListener} surface
      * the retired loop served, but every turn is executed by the v2
      * {@link com.saaspaymentsolutions.axion.agentsdk.AgentRuntime}. Process
      * calls block until the run finishes (the UI already calls them off the
      * main thread); UI callbacks are posted to the main looper.
+     *
+     * <p>Item 8 of the migration: the bridge SUBSCRIBES to the runtime's
+     * {@link com.saaspaymentsolutions.axion.agentsdk.EventStream} and
+     * translates every typed event into UI state. The runtime is NOT a
+     * black box that only returns a final string: streaming deltas, tool
+     * activity, approvals, FileChanged and errors all flow to the UI through
+     * this subscription, scoped to the events' {@code scId} (item 35) so a
+     * stale run's events can never render into a newer conversation.</p>
      */
-    public static final class HostBridge {
+    public static final class HostBridge implements AutoCloseable {
         private final com.saaspaymentsolutions.axion.agentsdk.AgentRuntime runtime;
         private final java.util.function.Supplier<com.saaspaymentsolutions.axion.agentsdk.Agent> agentSupplier;
         private final AgentListener listener;
         private final String scId;
+        private final android.content.Context appContext;
         private final java.util.concurrent.Executor uiExecutor;
+        private final com.saaspaymentsolutions.axion.agentsdk.EventStream eventStream;
+        private final AutoCloseable eventSubscription;
+
+        // ---- Run presentation state, driven ONLY by structured events ----
+        // (items 8/9/35/37: the UI never infers tool/completion state from text;
+        // every fact comes from the runtime's AgentEvent stream).
+        /** The conversation list shared with the host UI (nullable in tests). */
+        private java.util.List<ChatMessage> messages;
+        /** Removes an empty placeholder from the conversation on fatal errors. */
+        private final java.util.function.Consumer<ChatMessage> placeholderRemover;
+        private ChatMessage liveAssistant;
+        private final StringBuilder liveText = new StringBuilder();
+        private final StringBuilder liveReasoning = new StringBuilder();
+        private final java.util.Map<String, ChatMessage> toolBubbles =
+                new java.util.LinkedHashMap<>();
+        private String pendingApprovalRequestId = "";
         private volatile String lastOutput = "";
+        private volatile String lastStatus = "";
 
         /** Production constructor: UI callbacks are posted to the main looper. */
         public HostBridge(com.saaspaymentsolutions.axion.agentsdk.AgentRuntime runtime,
                           java.util.function.Supplier<com.saaspaymentsolutions.axion.agentsdk.Agent> agentSupplier,
                           AgentListener listener,
                           String scId) {
-            this(runtime, agentSupplier, listener, scId, null);
+            this(runtime, agentSupplier, listener, scId, null, null, null, null);
         }
 
         /** Test/headless constructor: inject the callback executor. */
@@ -510,35 +626,92 @@ public class AgentManager {
                           AgentListener listener,
                           String scId,
                           java.util.concurrent.Executor uiExecutor) {
+            this(runtime, agentSupplier, listener, scId, uiExecutor, null, null, null);
+        }
+
+        /** Full constructor: the bridge takes ownership of the stream subscription. */
+        public HostBridge(com.saaspaymentsolutions.axion.agentsdk.AgentRuntime runtime,
+                          java.util.function.Supplier<com.saaspaymentsolutions.axion.agentsdk.Agent> agentSupplier,
+                          AgentListener listener,
+                          String scId,
+                          java.util.concurrent.Executor uiExecutor,
+                          com.saaspaymentsolutions.axion.agentsdk.EventStream eventStream,
+                          android.content.Context appContext) {
+            this(runtime, agentSupplier, listener, scId, uiExecutor, eventStream, appContext, null);
+        }
+
+        public HostBridge(com.saaspaymentsolutions.axion.agentsdk.AgentRuntime runtime,
+                          java.util.function.Supplier<com.saaspaymentsolutions.axion.agentsdk.Agent> agentSupplier,
+                          AgentListener listener,
+                          String scId,
+                          java.util.concurrent.Executor uiExecutor,
+                          com.saaspaymentsolutions.axion.agentsdk.EventStream eventStream,
+                          android.content.Context appContext,
+                          java.util.function.Consumer<ChatMessage> placeholderRemover) {
             this.runtime = runtime;
             this.agentSupplier = agentSupplier;
             this.listener = listener;
             this.scId = scId == null ? "" : scId;
+            this.appContext = appContext;
             this.uiExecutor = uiExecutor != null
                     ? uiExecutor
                     : command -> new Handler(Looper.getMainLooper()).post(command);
+            this.eventStream = eventStream != null
+                    ? eventStream
+                    : com.saaspaymentsolutions.axion.agentsdk.AgentRuntimeEventAccess.eventStreamOf(runtime);
+            this.placeholderRemover = placeholderRemover == null ? m -> { } : placeholderRemover;
+            // Item 8/9/35: one subscription, run-scoped events, structured UI.
+            this.eventSubscription = this.eventStream.subscribe(this::onAgentEvent);
         }
 
-        /** Runs one user turn on the calling thread; UI updates go to main. */
+        /** Shares the host conversation list (user turn + tool bubbles + live
+         *  assistant all land here; ChatActivity renders this same list). */
+        public void attachMessages(java.util.List<ChatMessage> messages) {
+            this.messages = messages;
+        }
+
+        /** Runs one user turn on the calling thread; UI updates go to main.
+         *  Convenience overload for tests/headless hosts: the user message is
+         *  created here and appended to the shared conversation list. */
         public com.saaspaymentsolutions.axion.agentsdk.RunResult processUserMessage(String userText) {
-            final String text = userText == null ? "" : userText;
+            ChatMessage userMsg = new ChatMessage(
+                    userText == null ? "" : userText, true, System.currentTimeMillis());
+            if (messages != null) {
+                synchronized (messages) {
+                    messages.add(userMsg);
+                }
+            }
+            return processUserMessage(userMsg);
+        }
+
+        /** Runs one user turn on the calling thread; UI updates go to main.
+         *  The user message is prebuilt by the controller (llmContent,
+         *  references); the WHOLE conversation is passed to the runtime as
+         *  history so multi-turn context survives the v2 migration. */
+        public com.saaspaymentsolutions.axion.agentsdk.RunResult processUserMessage(ChatMessage userMsg) {
+            beginRunPresentation();
             uiExecutor.execute(() -> {
-                ChatMessage userMsg = new ChatMessage(text, true, System.currentTimeMillis());
                 listener.onMessageAdded(userMsg);
                 listener.onStatusChanged("");
             });
+            lastStatus = "";
+            // Headless/test hosts may not have attached a conversation list:
+            // fall back to the single user message so the run still happens.
+            java.util.List<ChatMessage> history = messages != null ? messages
+                    : java.util.Collections.singletonList(userMsg);
             com.saaspaymentsolutions.axion.agentsdk.RunResult result =
-                    runtime.run(agentSupplier.get(), text, scId);
-            lastOutput = result.isSuccessful() ? result.getOutput() : "";
-            uiExecutor.execute(() -> {
-                if (result.isSuccessful()) {
-                    ChatMessage botMsg = new ChatMessage(result.getOutput(), false, System.currentTimeMillis());
-                    listener.onMessageUpdated(botMsg);
-                } else {
-                    listener.onError(result.getFailureReason());
-                }
-                listener.onProcessingFinished();
-            });
+                    runtime.run(agentSupplier.get(), history, scId);
+            finalizeRunPresentation(result);
+            return result;
+        }
+
+        /** Resumable run over the host's history (multi-turn conversations). */
+        public com.saaspaymentsolutions.axion.agentsdk.RunResult processHistory(
+                java.util.List<ChatMessage> history) {
+            beginRunPresentation();
+            com.saaspaymentsolutions.axion.agentsdk.RunResult result =
+                    runtime.run(agentSupplier.get(), history, scId);
+            finalizeRunPresentation(result);
             return result;
         }
 
@@ -547,650 +720,371 @@ public class AgentManager {
             return lastOutput;
         }
 
+        /** Latest structured status text derived from events. */
+        public String lastStatus() {
+            return lastStatus;
+        }
+
+        /** Resolves a pending approval by requestId (item 16). */
+        public boolean resolveApproval(String requestId,
+                                       com.saaspaymentsolutions.axion.agentsdk.PermissionDecision decision) {
+            return runtime.resolveApproval(requestId, decision);
+        }
+
+        /** Cancels a pending approval (user dismissed the dialog). */
+        public boolean cancelApproval(String requestId) {
+            return runtime.cancelApproval(requestId);
+        }
+
         /** Cooperative cancellation of the run in flight. */
         public void cancel() {
             runtime.cancel();
+        }
+
+        /** Detaches the event subscription (screen destroyed). */
+        @Override
+        public void close() {
+            try {
+                eventSubscription.close();
+            } catch (Exception ignored) {
+            }
+        }
+
+        // ------------------------------------------------------------------
+        // Presentation built from structured events (item 8). Handlers run on
+        // the EventStream delivery thread; every listener call is marshalled to
+        // the UI executor. The runtime remains the single source of truth for
+        // streaming, tool lifecycle, approvals, file changes and completion.
+        // ------------------------------------------------------------------
+
+        private void beginRunPresentation() {
+            synchronized (liveText) {
+                liveText.setLength(0);
+                liveReasoning.setLength(0);
+            }
+            liveAssistant = null;
+            toolBubbles.clear();
+            pendingApprovalRequestId = "";
+        }
+
+        private void finalizeRunPresentation(com.saaspaymentsolutions.axion.agentsdk.RunResult result) {
+            lastOutput = result != null && result.isSuccessful() ? result.getOutput() : "";
+            uiExecutor.execute(() -> {
+                ChatMessage assistant = liveAssistant;
+                if (assistant != null) {
+                    assistant.setStreaming(false);
+                    String failure = result == null || result.isSuccessful()
+                            ? "" : safeText(result.getFailureReason());
+                    boolean cancelled = failure.toLowerCase(java.util.Locale.ROOT).contains("cancel");
+                    if (cancelled) {
+                        if (!assistant.hasDisplayContent()) {
+                            assistant.setDisplayContent(stringOf(R.string.chat_tool_cancelled_message));
+                        } else if (!assistant.getDisplayContent().contains(
+                                stringOf(R.string.chat_cancelled_suffix))) {
+                            assistant.setDisplayContent(assistant.getDisplayContent().trim()
+                                    + "\n\n" + stringOf(R.string.chat_cancelled_suffix));
+                        }
+                        assistant.setStatus(stringOf(R.string.chat_tool_status_cancelled));
+                    } else if (result != null && result.isSuccessful()
+                            && !assistant.hasDisplayContent()
+                            && ChatMessage.hasVisibleText(lastOutput)) {
+                        // Non-streamed final answer: publish it exactly once here.
+                        assistant.setDisplayContent(lastOutput);
+                    }
+                    if (assistant.hasDisplayContent()) {
+                        assistant.setStatus("");
+                    }
+                    listener.onMessageUpdated(assistant);
+                } else if (result != null && !result.isSuccessful()) {
+                    String failure = safeText(result.getFailureReason());
+                    if (!failure.toLowerCase(java.util.Locale.ROOT).contains("cancel")
+                            && ChatMessage.hasVisibleText(failure)) {
+                        listener.onError(failure);
+                    }
+                }
+                listener.onProcessingFinished();
+            });
+        }
+
+        private void onAgentEvent(com.saaspaymentsolutions.axion.agentsdk.AgentEvent event) {
+            // Item 35: reject events of OTHER runs (stale subscribers,
+            // cancelled runs, retried requests) — the UI renders only events
+            // whose scId belongs to this bridge conversation.
+            if (event == null
+                    || (scId != null && !scId.isEmpty()
+                    && event.getScId() != null && !event.getScId().isEmpty()
+                    && !scId.equals(event.getScId()))) {
+                return;
+            }
+            if (event instanceof com.saaspaymentsolutions.axion.agentsdk.AgentEvent.RunStarted) {
+                postStatus(lastStatus);
+            } else if (event instanceof com.saaspaymentsolutions.axion.agentsdk.AgentEvent.TurnStarted) {
+                postStatus("");
+            } else if (event instanceof com.saaspaymentsolutions.axion.agentsdk.AgentEvent.AssistantMessageDelta) {
+                String delta = ((com.saaspaymentsolutions.axion.agentsdk.AgentEvent.AssistantMessageDelta) event).getDelta();
+                if (!ChatMessage.hasVisibleText(delta)) {
+                    return;
+                }
+                ensureLiveAssistant();
+                synchronized (liveText) {
+                    liveText.append(delta);
+                }
+                ChatMessage assistant = liveAssistant;
+                assistant.setStatus("");
+                assistant.setDisplayContent(liveTextSnapshot());
+                uiExecutor.execute(() -> listener.onMessageUpdated(assistant));
+            } else if (event instanceof com.saaspaymentsolutions.axion.agentsdk.AgentEvent.AssistantMessage) {
+                String content = ((com.saaspaymentsolutions.axion.agentsdk.AgentEvent.AssistantMessage) event).getContent();
+                if (!ChatMessage.hasVisibleText(content)) {
+                    return;
+                }
+                // Item 7: if the same text was already delivered as deltas,
+                // publishing it again would duplicate the message. Only a
+                // non-streamed turn (no deltas) materializes the text here.
+                if (content.equals(liveTextSnapshot())) {
+                    return;
+                }
+                ensureLiveAssistant();
+                ChatMessage assistant = liveAssistant;
+                assistant.setStatus("");
+                assistant.setDisplayContent(content);
+                synchronized (liveText) {
+                    liveText.setLength(0);
+                    liveText.append(content);
+                }
+                uiExecutor.execute(() -> listener.onMessageUpdated(assistant));
+            } else if (event instanceof com.saaspaymentsolutions.axion.agentsdk.AgentEvent.ToolCallStarted) {
+                com.saaspaymentsolutions.axion.agentsdk.AgentEvent.ToolCallStarted started =
+                        (com.saaspaymentsolutions.axion.agentsdk.AgentEvent.ToolCallStarted) event;
+                String tool = started.getTool();
+                String callId = started.getCall() == null ? "" : safeText(started.getCall().getId());
+                String args = started.getCall() == null ? "{}" : safeText(started.getCall().getArguments());
+                closeLiveAssistant();
+                ChatMessage existing = toolBubbles.get(callId);
+                if (existing == null) {
+                    ChatMessage bubble = new ChatMessage(tool, args, System.currentTimeMillis(), callId);
+                    bubble.setToolRunning(true);
+                    bubble.setToolState("running_now");
+                    bubble.setStatus(stringOf(R.string.chat_tool_status_running));
+                    bubble.setDisplayContent(stringOf(R.string.chat_tool_running_message));
+                    toolBubbles.put(callId, bubble);
+                    if (messages != null) {
+                        synchronized (messages) {
+                            messages.add(bubble);
+                        }
+                    }
+                    uiExecutor.execute(() -> listener.onMessageAdded(bubble));
+                } else {
+                    existing.setToolRunning(true);
+                    existing.setToolState("running_now");
+                    uiExecutor.execute(() -> listener.onMessageUpdated(existing));
+                }
+                postStatus(statusForTool(tool));
+            } else if (event instanceof com.saaspaymentsolutions.axion.agentsdk.AgentEvent.ToolCallCompleted) {
+                com.saaspaymentsolutions.axion.agentsdk.AgentEvent.ToolCallCompleted completed =
+                        (com.saaspaymentsolutions.axion.agentsdk.AgentEvent.ToolCallCompleted) event;
+                String tool = completed.getTool();
+                String callId = completed.getCall() == null ? "" : safeText(completed.getCall().getId());
+                boolean success = completed.getResult() == null
+                        || !completed.getResult().isError();
+                String resultText = completed.getResult() == null
+                        ? "" : safeText(completed.getResult().output());
+                ChatMessage existing = toolBubbles.get(callId);
+                final ChatMessage bubble;
+                if (existing == null) {
+                    // Completion without a visible start (deduped or approval path).
+                    bubble = new ChatMessage(tool, "{}", System.currentTimeMillis(), callId);
+                    toolBubbles.put(callId, bubble);
+                    if (messages != null) {
+                        synchronized (messages) {
+                            messages.add(bubble);
+                        }
+                    }
+                    uiExecutor.execute(() -> listener.onMessageAdded(bubble));
+                } else {
+                    bubble = existing;
+                }
+                bubble.setToolRunning(false);
+                bubble.setToolError(!success);
+                bubble.setToolState(success ? "success" : "error");
+                bubble.setToolResult(resultText);
+                bubble.setStatus(stringOf(success
+                        ? R.string.chat_tool_status_done
+                        : R.string.chat_tool_status_error));
+                bubble.setDisplayContent(stringOf(success
+                        ? R.string.chat_tool_done_message
+                        : R.string.chat_tool_error_message));
+                bubble.setExpanded(!success);
+                uiExecutor.execute(() -> listener.onMessageUpdated(bubble));
+                postStatus("");
+                boolean mutation = isMutationTool(tool);
+                uiExecutor.execute(() -> listener.onToolExecuted(tool, mutation));
+            } else if (event instanceof com.saaspaymentsolutions.axion.agentsdk.AgentEvent.FileChanged) {
+                com.saaspaymentsolutions.axion.agentsdk.AgentEvent.FileChanged changed =
+                        (com.saaspaymentsolutions.axion.agentsdk.AgentEvent.FileChanged) event;
+                uiExecutor.execute(() -> listener.onFileChanged(changed.getPath(),
+                        changed.getKind() == null ? "" : changed.getKind().name(),
+                        changed.getTool()));
+            } else if (event instanceof com.saaspaymentsolutions.axion.agentsdk.AgentEvent.ApprovalRequired) {
+                com.saaspaymentsolutions.axion.agentsdk.AgentEvent.ApprovalRequired required =
+                        (com.saaspaymentsolutions.axion.agentsdk.AgentEvent.ApprovalRequired) event;
+                String requestId = required.getRequest() == null
+                        ? "" : safeText(required.getRequest().getId());
+                pendingApprovalRequestId = requestId;
+                ChatMessage existing = toolBubbles.get(requestId);
+                final ChatMessage bubble;
+                if (existing == null && required.getRequest() != null) {
+                    String args = required.getRequest().getCall() == null
+                            ? "{}" : safeText(required.getRequest().getCall().getArguments());
+                    bubble = new ChatMessage(required.getTool(), args,
+                            System.currentTimeMillis(), requestId);
+                    toolBubbles.put(requestId, bubble);
+                    if (messages != null) {
+                        synchronized (messages) {
+                            messages.add(bubble);
+                        }
+                    }
+                    uiExecutor.execute(() -> listener.onMessageAdded(bubble));
+                } else {
+                    bubble = existing;
+                }
+                if (bubble != null) {
+                    bubble.setRequiresApproval(true);
+                    bubble.setToolState("tool_request");
+                    bubble.setStatus(stringOf(R.string.chat_tool_status_waiting_approval));
+                    bubble.setDisplayContent(ChatMessage.hasVisibleText(required.getTool())
+                            ? stringOf(R.string.chat_tool_approval_message_named, required.getTool())
+                            : stringOf(R.string.chat_tool_status_waiting_approval));
+                    uiExecutor.execute(() -> listener.onMessageUpdated(bubble));
+                }
+                postStatus(stringOf(R.string.chat_tool_status_waiting_approval));
+                uiExecutor.execute(() -> listener.onApprovalRequired(requestId, required.getTool()));
+            } else if (event instanceof com.saaspaymentsolutions.axion.agentsdk.AgentEvent.PermissionResolved) {
+                com.saaspaymentsolutions.axion.agentsdk.AgentEvent.PermissionResolved resolved =
+                        (com.saaspaymentsolutions.axion.agentsdk.AgentEvent.PermissionResolved) event;
+                // The resolved request is the one the bridge parked; the event
+                // itself carries tool/decision/state (no requestId payload).
+                ChatMessage bubble = toolBubbles.get(pendingApprovalRequestId);
+                pendingApprovalRequestId = "";
+                postStatus("");
+                if (bubble != null && !resolved.isAllowed()
+                        && resolved.getState() != com.saaspaymentsolutions.axion.agentsdk.ApprovalHandler.ApprovalState.ALLOWED) {
+                    bubble.setToolRunning(false);
+                    bubble.setRejected(true);
+                    bubble.setToolState("rejected");
+                    bubble.setToolResult(stringOf(R.string.chat_tool_cancelled_message));
+                    bubble.setStatus(stringOf(R.string.chat_tool_status_cancelled));
+                    bubble.setDisplayContent(stringOf(R.string.chat_tool_cancelled_message));
+                    uiExecutor.execute(() -> listener.onMessageUpdated(bubble));
+                }
+                uiExecutor.execute(() -> listener.onPermissionResolved(resolved.getTool(),
+                        resolved.isAllowed(),
+                        resolved.getState() == null ? "" : resolved.getState().name()));
+            } else if (event instanceof com.saaspaymentsolutions.axion.agentsdk.AgentEvent.PolicyDenied) {
+                com.saaspaymentsolutions.axion.agentsdk.AgentEvent.PolicyDenied denied =
+                        (com.saaspaymentsolutions.axion.agentsdk.AgentEvent.PolicyDenied) event;
+                uiExecutor.execute(() -> listener.onDebug("[policy] " + denied.getTool()
+                        + ": " + denied.getReason()));
+            } else if (event instanceof com.saaspaymentsolutions.axion.agentsdk.AgentEvent.SandboxViolation) {
+                com.saaspaymentsolutions.axion.agentsdk.AgentEvent.SandboxViolation violation =
+                        (com.saaspaymentsolutions.axion.agentsdk.AgentEvent.SandboxViolation) event;
+                uiExecutor.execute(() -> listener.onDebug("[sandbox] " + violation.getTool()
+                        + ": " + violation.getViolation()));
+            } else if (event instanceof com.saaspaymentsolutions.axion.agentsdk.AgentEvent.Error) {
+                String message = ((com.saaspaymentsolutions.axion.agentsdk.AgentEvent.Error) event).getMessage();
+                uiExecutor.execute(() -> listener.onDebug("[error] " + message));
+            } else if (event instanceof com.saaspaymentsolutions.axion.agentsdk.AgentEvent.RunCompleted) {
+                // Nothing here: finalizeRunPresentation closes the run on the
+                // UI thread after runtime.run returns (single completion path).
+            }
+        }
+
+        private void ensureLiveAssistant() {
+            if (liveAssistant != null) {
+                return;
+            }
+            ChatMessage assistant = new ChatMessage("", false, System.currentTimeMillis());
+            assistant.setStreaming(true);
+            assistant.setStatus("");
+            liveAssistant = assistant;
+            if (messages != null) {
+                synchronized (messages) {
+                    messages.add(assistant);
+                }
+            }
+            uiExecutor.execute(() -> listener.onMessageAdded(assistant));
+        }
+
+        private void closeLiveAssistant() {
+            ChatMessage assistant = liveAssistant;
+            if (assistant == null || !assistant.isStreaming()) {
+                return;
+            }
+            assistant.setStreaming(false);
+            uiExecutor.execute(() -> listener.onMessageUpdated(assistant));
+        }
+
+        private String liveTextSnapshot() {
+            synchronized (liveText) {
+                return liveText.toString();
+            }
+        }
+
+        private void postStatus(String status) {
+            lastStatus = status == null ? "" : status;
+            uiExecutor.execute(() -> listener.onStatusChanged(lastStatus));
+        }
+
+        private String stringOf(int resId, Object... args) {
+            if (appContext == null) {
+                return "";
+            }
+            try {
+                return args == null || args.length == 0
+                        ? appContext.getString(resId)
+                        : appContext.getString(resId, args);
+            } catch (Exception e) {
+                return "";
+            }
+        }
+
+        private static String safeText(String value) {
+            return value == null ? "" : value;
+        }
+
+        private static String statusForTool(String toolName) {
+            String name = toolName == null ? "" : toolName.trim();
+            if ("read_file".equals(name) || "search_files".equals(name)
+                    || "list_files".equals(name)) {
+                return "Analisando os arquivos do projeto…";
+            }
+            if ("rewrite_file".equals(name) || "edit_file".equals(name)
+                    || "create_file_or_folder".equals(name)
+                    || "delete_file_or_folder".equals(name)
+                    || "apply_patch".equals(name)) {
+                return "Aplicando alterações no projeto…";
+            }
+            if ("run_command".equals(name) || "compile_project".equals(name)
+                    || "build_project".equals(name)) {
+                return "Verificando se existem erros…";
+            }
+            return name.isEmpty() ? "Executando ferramenta…" : "Executando " + name + "…";
         }
     }
 
     public void release() {
         resetConversationState();
         multiAgentOrchestrator.shutdown();
+        if (uiHostBridge != null) {
+            uiHostBridge.close();
+            uiHostBridge = null;
+        }
+        if (runExecutor != null) {
+            runExecutor.shutdownNow();
+            runExecutor = null;
+        }
     }
 
-    private void startAgentLoop(final int version, final int loopStep) {
-        startAgentLoop(version, loopStep, 0);
-    }
-
-    private void startAgentLoop(final int version, final int loopStep, final int llmAttempt) {
-        if (!isActiveRun(version)) {
-            return;
-        }
-
-        AgentRunGuard.Decision turnDecision =
-                runGuard.beforeModelTurn(loopStep, finalResponseOnly);
-        if (!turnDecision.shouldContinue()) {
-            if (turnDecision.getOutcome() == AgentRunGuard.Outcome.FORCE_FINAL_RESPONSE) {
-                queuedToolCalls.clear();
-                activateFinalResponseOnly(turnDecision.getReason());
-                finalResponseForcedByGuard = true;
-                emitTrace("Circuit breaker de rodadas", turnDecision.getReason());
-            } else {
-                listener.onError(turnDecision.getReason());
-                finishProcessing();
-                return;
-            }
-        }
-
-        // Show feedback immediately. Context compaction and project scanning can
-        // take seconds on a large conversation, and waiting for them made a sent
-        // message look ignored even though the agent was already working.
-        setState(State.THINKING);
-        if (currentStreamingMessage == null) {
-            currentStreamingMessage = createThinkingMessage();
-            clearStreamingToolState();
-            // O placeholder entra imediatamente na conversa e se transforma na
-            // resposta conforme os deltas chegam. Ele continua excluído do
-            // contexto enviado ao provedor por historySnapshot.removeIf abaixo.
-            publishAssistantMessage(currentStreamingMessage);
-        }
-
-        // Fan out to isolated planner/architect sessions once per user run,
-        // then fan their outputs into the manager before the implementer starts.
-        // In Auto mode a short request can be reconsidered after the first file
-        // inspections reveal a larger scope than the initial text suggested.
-        if (!multiAgentPrepared) {
-            SharedPreferences prefs = AiChatSettingsHelper.prefs(context);
-            String chatMode = AiChatSettingsHelper.getChatMode(prefs);
-            if (!"agent".equalsIgnoreCase(chatMode)) {
-                multiAgentPrepared = true;
-            } else if (!multiAgentEnabledForRun) {
-                MultiAgentPolicy.Decision escalation =
-                        MultiAgentPolicy.reconsiderAfterInspection(
-                                multiAgentModeForRun,
-                                requestPattern,
-                                loopStep,
-                                toolUsageHistory);
-                if (escalation.isEnabled()) {
-                    multiAgentEnabledForRun = true;
-                    multiAgentDecisionReason = escalation.getReason();
-                    ChatFlowLogger.event("agent", "multi_agent_escalated",
-                            "reason=" + multiAgentDecisionReason
-                                    + ", loop=" + loopStep
-                                    + ", tools=" + toolUsageHistory.size());
-                    emitTrace("Multiagente ativado após inspeção",
-                            "reason=" + multiAgentDecisionReason
-                                    + ", tools=" + toolUsageHistory.size());
-                } else if (!MultiAgentPolicy.MODE_AUTO.equals(multiAgentModeForRun)) {
-                    multiAgentPrepared = true;
-                }
-            }
-            if (multiAgentEnabledForRun && !multiAgentPrepared) {
-                prepareMultiAgentWorkflow(version, loopStep, llmAttempt);
-                return;
-            }
-        }
-
-        // Compact old history asynchronously before this turn if it grew too large.
-        if (!compactionInFlight && !compactionFailed && shouldCompactHistory()) {
-            compactHistoryAsync(version, () -> startAgentLoop(version, loopStep, llmAttempt));
-            return;
-        }
-
-        emitTrace("Agent loop", "step=" + loopStep);
-
-        // Context assembly walks the project file tree — heavy
-        // work that must NOT run on the UI thread. Previously it ran synchronously
-        // on every loop step, so a turn with several tool calls froze the UI.
-        // Build it on a background thread, then resume streaming on the main thread.
-        final java.util.List<ChatMessage> historySnapshot = new java.util.ArrayList<>(messages);
-        // The placeholder is presentation-only. It must never be sent as an
-        // empty assistant turn to the provider.
-        historySnapshot.removeIf(ChatMessage::isStreaming);
-        final String latestUser = findLatestUserMessage();
-        final String agentGuidance = buildAgentGuidance();
-        final boolean finalOnlyForRequest = finalResponseOnly;
-        final boolean forcedTerminalForRequest = finalResponseForcedByGuard;
-        updateRunStatus("Organizando o contexto da conversa…");
-        new Thread(() -> {
-            final SharedPreferences prefs = AiChatSettingsHelper.prefs(com.saaspaymentsolutions.axion.SketchApplication.getContext());
-            // O modelo, o provedor e o modo são congelados no começo da operação.
-            // Mudanças feitas pelo usuário durante o processamento só valem no próximo envio.
-            final AiOperationContext operationContext = currentOperationContext;
-            final String chatMode = operationContext != null && operationContext.getChatMode() != null
-                    ? operationContext.getChatMode()
-                    : AiChatSettingsHelper.getChatMode(prefs);
-            final String providerId = operationContext != null
-                    ? operationContext.getProviderId()
-                    : prefs.getString(AiChatSettingsHelper.PREF_CURRENT_PROVIDER, "");
-            final String modelName = operationContext != null
-                    ? operationContext.getModelName()
-                    : prefs.getString(AiChatSettingsHelper.PREF_CURRENT_MODEL, "");
-
-            long contextStartedAt = SystemClock.elapsedRealtime();
-            final JSONArray tools = finalOnlyForRequest
-                    ? new JSONArray()
-                    : toolManager.getToolsAsMCP(chatMode);
-            if (!finalOnlyForRequest
-                    && "agent".equalsIgnoreCase(chatMode)) {
-                appendMcpTools(tools, VoidPortMcpChannel.getToolsAsMCP(prefs));
-            }
-            final int toolSchemaTokens = estimateInputTokens(tools == null ? "" : tools.toString());
-            final ContextBuilder.Result contextResult = new ContextBuilder(scId, historySnapshot, toolManager)
-                    .setCompactedHistory(historySummary, historyCompactedUntil)
-                    .setAgentGuidance(agentGuidance)
-                    .setFinalResponseOnly(finalOnlyForRequest)
-                    .setIncludeNativeReferences(loopStep == 0)
-                    .setProjectDocumentationGuidance(requestPattern != null
-                            && requestPattern.requiresProjectExploration())
-                    .setAdditionalInputTokens(toolSchemaTokens)
-                    .build(latestUser, chatMode, providerId);
-            final long contextMs = SystemClock.elapsedRealtime() - contextStartedAt;
-
-            mainHandler.post(() -> {
-                if (!isActiveRun(version)) {
-                    return;
-                }
-                if ("agent".equalsIgnoreCase(chatMode)) {
-                    // Surface a debug notice for stdio-only MCP servers (Android can't spawn them).
-                    emitMcpStdioWarning(prefs);
-                }
-                emitTrace(
-                        "Contexto montado",
-                        "build=" + contextMs + "ms, msgs=" + historySnapshot.size()
-                                + ", tools=" + (tools == null ? 0 : tools.length())
-                                + ", estimatedTokens=" + contextResult.getEstimatedTokens()
-                                + ", toolSchemaTokens=" + toolSchemaTokens
-                                + ", mode=" + chatMode
-                                + ", provider=" + providerId
-                );
-                final ChatMessage botMsg = currentStreamingMessage;
-                if (botMsg == null) {
-                    return;
-                }
-
-                emitTrace("Chamada LLM iniciada");
-                String requestId = currentOperationContext != null 
-                        ? currentOperationContext.getRequestId() 
-                        : "unknown";
-                android.util.Log.d("AgentManager", "=== LLM REQUEST START ===");
-                android.util.Log.d("AgentManager", "Request ID: " + requestId);
-                android.util.Log.d("AgentManager", "Provider: " + providerId);
-                android.util.Log.d("AgentManager", "ChatMode: " + chatMode);
-                android.util.Log.d("AgentManager", "Loop step: " + loopStep);
-                android.util.Log.d("AgentManager", "LLM attempt: " + llmAttempt);
-                android.util.Log.d("AgentManager", "Tools count: " + (tools != null ? tools.length() : 0));
-                android.util.Log.d("AgentManager", "History messages: " + historySnapshot.size());
-                android.util.Log.d("AgentManager", "Context build time: " + contextMs + "ms");
-                android.util.Log.d("AgentManager", "Final response only: " + finalOnlyForRequest);
-                ChatFlowLogger.event("llm", "request_started", "requestId=" + requestId
-                        + ", provider=" + providerId + ", mode=" + chatMode
-                        + ", loop=" + loopStep + ", tools=" + (tools == null ? 0 : tools.length()));
-                
-                botMsg.setDisplayContent("");
-                listener.onMessageUpdated(botMsg);
-                updateRunStatus("Enviando para a inteligência artificial…");
-                currentRequestHandle = aiService.sendStreamingMessage(
-                        contextResult, tools, chatMode, currentOperationContext,
-                new AiProviderService.StreamListener() {
-                    private final StringBuilder contentAccumulator = new StringBuilder();
-                    private final StringBuilder reasoningAccumulator = new StringBuilder();
-                    /** Final tool calls emitted this turn: [name, args, id]. */
-                    private final java.util.List<String[]> collectedToolCalls = new java.util.ArrayList<>();
-                    /** Repeated streaming updates for one tool id replace the prior payload. */
-                    private final java.util.Map<String, Integer> collectedToolCallIndexes =
-                            new java.util.LinkedHashMap<>();
-
-                    @Override
-                    public void onContent(String delta) {
-                        if (!isActiveRun(version) || !ChatMessage.hasVisibleText(delta)) {
-                            return;
-                        }
-                        android.util.Log.v("AgentManager", "LLM content delta: " + delta.length() + " chars");
-                        contentAccumulator.append(delta);
-                        if (VoidPortConvertToLlmMessageService.isProtocolEmptyMessagePrefix(
-                                contentAccumulator.toString())) {
-                            return;
-                        }
-                        botMsg.setStatus("");
-                        botMsg.setDisplayContent(contentAccumulator.toString());
-                        scheduleStreamUpdate(version, botMsg);
-                    }
-
-                    @Override
-                    public void onReasoning(String delta) {
-                        if (!isActiveRun(version) || !ChatMessage.hasVisibleText(delta)) {
-                            return;
-                        }
-                        android.util.Log.v("AgentManager", "LLM reasoning delta: " + delta.length() + " chars");
-                        reasoningAccumulator.append(delta);
-                        botMsg.setReasoning(reasoningAccumulator.toString());
-                        scheduleStreamUpdate(version, botMsg);
-                    }
-
-                    @Override
-                    public void onToolCall(String name, String arguments, String id) {
-                        if (!isActiveRun(version) || !ChatMessage.hasVisibleText(name)) {
-                            return;
-                        }
-                        android.util.Log.d("AgentManager", "LLM tool call: name=" + name + ", id=" + id + ", args_length=" + (arguments != null ? arguments.length() : 0));
-                        ChatFlowLogger.event("llm", "tool_call", "name=" + name + ", id=" + id
-                                + ", argsChars=" + (arguments == null ? 0 : arguments.length()));
-                        // Sanitize the tool name: strip any characters that are not valid
-                        // in a tool name. Some free/quantized models (e.g. gpt-oss-20b:free)
-                        // leak internal tokens into tool names, producing strings like
-                        // "edit_file<|channel|>commentary" that the tool registry cannot
-                        // recognise. The regex keeps only ASCII word chars, hyphens and dots.
-                        String sanitized = TOOL_NAME_SANITIZER.matcher(name.trim()).replaceAll("");
-                        if (sanitized.isEmpty()) {
-                            android.util.Log.w("AgentManager", "Tool name sanitized to empty string: " + name);
-                            return;
-                        }
-                        if (!sanitized.equals(name.trim())) {
-                            android.util.Log.w("AgentManager", "Tool name sanitized: '" + name + "' -> '" + sanitized + "'");
-                        }
-                        String safeArgs = ChatMessage.hasVisibleText(arguments) ? arguments : "{}";
-                        String safeId = ChatMessage.hasVisibleText(id) ? id : "";
-                        collectOrReplaceToolCall(
-                                collectedToolCalls,
-                                collectedToolCallIndexes,
-                                sanitized,
-                                safeArgs,
-                                safeId);
-                        streamingToolName = sanitized;
-                        streamingMcpServerName = resolveMcpServerName(sanitized);
-                        if (!safeId.isEmpty()) {
-                            streamingToolId = safeId;
-                        }
-                    }
-
-                    @Override
-                    public void onDebug(String message) {
-                        if (!isActiveRun(version) || !ChatMessage.hasVisibleText(message)) {
-                            return;
-                        }
-                        mainHandler.post(() -> {
-                            if (!isActiveRun(version)) {
-                                return;
-                            }
-                            listener.onDebug(message);
-                        });
-                    }
-
-                    @Override
-                    public void onFinalMessage(String fullContent, String fullReasoning,
-                                               String finishReason) {
-                        if (!isActiveRun(version)) {
-                            return;
-                        }
-                        android.util.Log.d("AgentManager", "=== LLM RESPONSE COMPLETE ===");
-                        android.util.Log.d("AgentManager", "Content length: " + (fullContent != null ? fullContent.length() : 0) + " chars");
-                        android.util.Log.d("AgentManager", "Reasoning length: " + (fullReasoning != null ? fullReasoning.length() : 0) + " chars");
-                        android.util.Log.d("AgentManager", "Tool calls collected: " + collectedToolCalls.size());
-                        ChatFlowLogger.event("llm", "response_complete", "contentChars="
-                                + (fullContent == null ? 0 : fullContent.length()) + ", reasoningChars="
-                                + (fullReasoning == null ? 0 : fullReasoning.length()) + ", toolCalls="
-                                + collectedToolCalls.size() + ", finishReason=" + safe(finishReason));
-                        
-                        mainHandler.post(() -> {
-                            if (!isActiveRun(version)) {
-                                return;
-                            }
-                            currentRequestHandle = null;
-
-                            flushStreamUpdate(version);
-
-                            // The detector removes protocol blocks only after the
-                            // complete response is available. Treat the final
-                            // payload as authoritative so streamed XML/JSON
-                            // markers are also cleared when no visible text remains.
-                            botMsg.setDisplayContent(sanitizeAssistantPayload(fullContent));
-                            botMsg.setReasoning(sanitizeAssistantPayload(fullReasoning));
-                            botMsg.setStatus("");
-
-                            boolean hasAssistantPayload = botMsg.hasDisplayContent() || botMsg.hasReasoningContent();
-                            if (!collectedToolCalls.isEmpty()) {
-                                if (finalOnlyForRequest) {
-                                    // The documented terminal phase has no tools. A
-                                    // provider that still emits one is stopped here,
-                                    // rather than reopening the execution loop.
-                                    queuedToolCalls.clear();
-                                    clearStreamingToolState();
-                                    if (!hasAssistantPayload) {
-                                        botMsg.setDisplayContent(buildTerminalFallback());
-                                    }
-                                    publishAssistantMessage(botMsg);
-                                    currentStreamingMessage = null;
-                                    emitTrace("Ferramentas bloqueadas na fase terminal",
-                                            "count=" + collectedToolCalls.size());
-                                    emitTraceSummary("encerrado pela condição de término");
-                                    finishProcessing();
-                                    return;
-                                }
-                                if (hasAssistantPayload) {
-                                    publishAssistantMessage(botMsg);
-                                } else {
-                                    removeStreamingPlaceholderIfEmpty(botMsg);
-                                }
-                                currentStreamingMessage = null;
-                                emitTrace("LLM pediu ferramentas", "count=" + collectedToolCalls.size());
-                                clearStreamingToolState();
-                                queuedToolCalls.clear();
-                                // Execute every tool call from this provider response before
-                                // asking the model again. The queue remains sequential so
-                                // approvals, mutations and read-before-write validation preserve
-                                // their deterministic ordering.
-                                for (String[] toolCall : collectedToolCalls) {
-                                    queuedToolCalls.addLast(toolCall);
-                                }
-                                ChatFlowLogger.event("tool", "batch_queued",
-                                        "count=" + queuedToolCalls.size() + ", loop=" + loopStep);
-                                queuedChatMode = chatMode;
-                                processNextQueuedToolCall(version, loopStep);
-                                return;
-                            }
-
-                            clearStreamingToolState();
-                            if (!hasAssistantPayload) {
-                                removeStreamingPlaceholderIfEmpty(botMsg);
-                            } else {
-                                publishAssistantMessage(botMsg);
-                            }
-                            if (isOutputTruncated(finishReason)) {
-                                if (outputContinuationCount < MAX_OUTPUT_CONTINUATIONS) {
-                                    outputContinuationCount++;
-                                    pendingAgentFeedback = "A resposta anterior foi interrompida pelo limite "
-                                            + "de saída. Continue exatamente de onde parou, sem repetir o texto "
-                                            + "já entregue nem refazer ferramentas concluídas. Termine a tarefa "
-                                            + "e entregue uma resposta conclusiva.";
-                                    currentStreamingMessage = null;
-                                    ChatFlowLogger.event("llm", "output_continuation",
-                                            "finishReason=" + safe(finishReason)
-                                                    + ", attempt=" + outputContinuationCount);
-                                    emitTrace("Resposta truncada",
-                                            "continuação=" + outputContinuationCount);
-                                    startAgentLoop(version, loopStep + 1);
-                                    return;
-                                }
-                                botMsg.setDisplayContent(safe(botMsg.getDisplayContent())
-                                        + "\n\n[A resposta atingiu novamente o limite de saída. "
-                                        + "Use Regenerar para retomar deste ponto.]");
-                                publishAssistantMessage(botMsg);
-                                ChatFlowLogger.event("llm", "output_continuation_exhausted",
-                                        "finishReason=" + safe(finishReason));
-                                currentStreamingMessage = null;
-                                listener.onError("O modelo atingiu repetidamente o limite de saída. "
-                                        + "A resposta parcial foi preservada e pode ser retomada.");
-                                emitTraceSummary("limite de saída atingido");
-                                finishProcessing();
-                                return;
-                            }
-                            if (finalOnlyForRequest && forcedTerminalForRequest) {
-                                if (!hasAssistantPayload) {
-                                    botMsg.setDisplayContent(buildTerminalFallback());
-                                    publishAssistantMessage(botMsg);
-                                }
-                                currentStreamingMessage = null;
-                                emitTraceSummary("encerrado pelo circuit breaker");
-                                finishProcessing();
-                                return;
-                            }
-                            if (awaitingRecoveredMutation) {
-                                if (finishValidationFailures < MAX_FINISH_REJECTIONS) {
-                                    finishValidationFailures++;
-                                    pendingAgentFeedback = recoveredMutationFeedback();
-                                    removeMessage(botMsg);
-                                    currentStreamingMessage = null;
-                                    emitTrace("Mutacao obsoleta ainda nao refeita");
-                                    startAgentLoop(version, loopStep + 1);
-                                    return;
-                                }
-                                listener.onError("A edição obsoleta não foi regenerada após a leitura atualizada.");
-                                finishProcessing();
-                                return;
-                            }
-                            FinishChecker.ValidationResult finishResult = FinishChecker.validate(
-                                    agentMemory,
-                                    requestPattern,
-                                    taskPlan,
-                                    toolUsageHistory,
-                                    botMsg.getDisplayContent(),
-                                    chatMode
-                            );
-                            if (!hasAssistantPayload
-                                    && finishResult.canFinish()
-                                    && runGuard.hasSuccessfulToolCall()) {
-                                botMsg.setDisplayContent(buildTerminalFallback());
-                                publishAssistantMessage(botMsg);
-                                hasAssistantPayload = true;
-                            }
-                            if (!finishResult.canFinish()
-                                    && finishValidationFailures < MAX_FINISH_REJECTIONS) {
-                                finishValidationFailures++;
-                                pendingAgentFeedback = finishResult.getFeedbackPrompt();
-                                emitTrace("Finalizacao adiada", finishResult.getReason());
-                                removeMessage(botMsg);
-                                currentStreamingMessage = null;
-                                startAgentLoop(version, loopStep + 1);
-                                return;
-                            }
-                            if (!finishResult.canFinish()) {
-                                emitTrace("Finalizacao bloqueada", finishResult.getReason());
-                                listener.onError("O agente nao concluiu as etapas obrigatorias: "
-                                        + finishResult.getReason());
-                            }
-                            if (finishResult.canFinish()
-                                    && "agent".equalsIgnoreCase(chatMode)
-                                    && multiAgentEnabledForRun
-                                    && multiAgentPrepared
-                                    && multiAgentReviewRounds < MAX_MULTI_AGENT_REVIEW_ROUNDS) {
-                                reviewMultiAgentCompletion(
-                                        version, loopStep, chatMode, botMsg);
-                                return;
-                            }
-                            emitTraceSummary("resposta final sem ferramenta");
-                            finishProcessing();
-                        });
-                    }
-
-                    @Override
-                    public void onOperationStatus(AiOperationStatus status) {
-                        if (status == null || !isActiveRun(version)) {
-                            return;
-                        }
-                        mainHandler.post(() -> {
-                            if (isActiveRun(version)) {
-                                updateRunStatus(status.getUserMessage());
-                            }
-                        });
-                    }
-
-                    @Override
-                    public void onUserFacingError(UserFacingError error, String requestId) {
-                        if (!isActiveRun(version)) {
-                            return;
-                        }
-                        currentRequestHandle = null;
-                        mainHandler.post(() -> {
-                            if (!isActiveRun(version)) {
-                                return;
-                            }
-                            String technicalCode = error == null ? null : error.getTechnicalCode();
-                            if (AgentEmptyResponsePolicy.shouldRetry(technicalCode, llmAttempt)) {
-                                ChatFlowLogger.event("llm", "empty_response_retry",
-                                        "requestId=" + requestId + ", loop=" + loopStep
-                                                + ", nextAttempt=" + (llmAttempt + 2));
-                                pendingAgentFeedback = AgentEmptyResponsePolicy.feedback();
-                                removeMessage(botMsg);
-                                currentStreamingMessage = null;
-                                clearStreamingToolState();
-                                emitTrace("Resposta vazia do modelo",
-                                        "nova chamada lógica=" + (llmAttempt + 2));
-                                setState(State.THINKING);
-                                mainHandler.postDelayed(
-                                        () -> startAgentLoop(version, loopStep, llmAttempt + 1),
-                                        LLM_RETRY_DELAY_MS);
-                                return;
-                            }
-                            if (AgentEmptyResponsePolicy.isEmptyResponse(technicalCode)) {
-                                botMsg.setDisplayContent(AgentEmptyResponsePolicy.buildLocalSummary(
-                                        messages, botMsg));
-                                botMsg.setReasoning("");
-                                botMsg.setStatus("");
-                                publishAssistantMessage(botMsg);
-                                currentStreamingMessage = null;
-                                clearStreamingToolState();
-                                ChatFlowLogger.event("llm", "empty_response_local_summary",
-                                        "requestId=" + requestId + ", loop=" + loopStep
-                                                + ", attempt=" + (llmAttempt + 1));
-                                emitTrace("Resposta vazia do modelo",
-                                        "resumo local publicado após nova tentativa");
-                                emitTraceSummary("resumo local após resposta vazia");
-                                finishProcessing();
-                                return;
-                            }
-                            setState(State.ERROR);
-                            removeStreamingPlaceholderIfEmpty(botMsg);
-                            listener.onUserFacingError(error, requestId);
-                            emitTrace("Erro LLM", error == null ? "unknown" : error.getTechnicalCode());
-                            emitTraceSummary("erro");
-                            finishProcessing();
-                        });
-                    }
-
-                    @Override
-                    public void onError(String message, Throwable t) {
-                        if (!isActiveRun(version) || "cancelled".equalsIgnoreCase(message)) {
-                            return;
-                        }
-                        android.util.Log.e("AgentManager", "=== LLM ERROR ===");
-                        ChatFlowLogger.error("llm", "request_failed requestId=" + requestId, t);
-                        android.util.Log.e("AgentManager", "Error message: " + message);
-                        android.util.Log.e("AgentManager", "Loop step: " + loopStep);
-                        android.util.Log.e("AgentManager", "LLM attempt: " + (llmAttempt + 1) + "/" + MAX_LLM_ATTEMPTS);
-                        if (t != null) {
-                            android.util.Log.e("AgentManager", "Exception: " + t.getClass().getName() + ": " + t.getMessage(), t);
-                        }
-                        
-                        currentRequestHandle = null;
-                        mainHandler.post(() -> {
-                            if (!isActiveRun(version)) {
-                                return;
-                            }
-                            if (llmAttempt + 1 < MAX_LLM_ATTEMPTS) {
-                                android.util.Log.d("AgentManager", "Retrying LLM request, attempt " + (llmAttempt + 2));
-                                removeMessage(botMsg);
-                                currentStreamingMessage = null;
-                                clearStreamingToolState();
-                                emitTrace("Retry LLM", "attempt=" + (llmAttempt + 2));
-                                setState(State.THINKING);
-                                mainHandler.postDelayed(
-                                        () -> startAgentLoop(version, loopStep, llmAttempt + 1),
-                                        LLM_RETRY_DELAY_MS
-                                );
-                                return;
-                            }
-                            android.util.Log.e("AgentManager", "Max LLM attempts reached, giving up");
-                            setState(State.ERROR);
-                            removeStreamingPlaceholderIfEmpty(botMsg);
-                            emitTrace("Erro LLM", message);
-                            listener.onError(message);
-                            emitTraceSummary("erro");
-                            finishProcessing();
-                        });
-                    }
-                });
-            });
-        }, "chat-context-builder").start();
-    }
-
-    private void reviewMultiAgentCompletion(int version, int loopStep,
-                                            String chatMode, ChatMessage botMsg) {
-        if (multiAgentReviewInFlight) {
-            return;
-        }
-        multiAgentReviewInFlight = true;
-        multiAgentReviewRounds++;
-        setState(State.THINKING);
-        emitTrace("Revisor multiagente",
-                "round=" + multiAgentReviewRounds + "/" + MAX_MULTI_AGENT_REVIEW_ROUNDS);
-        String objective = agentMemory == null
-                ? findLatestUserMessage()
-                : agentMemory.getOriginalUserMessage();
-        String evidence = buildMultiAgentExecutionEvidence(chatMode);
-        multiAgentOrchestrator.reviewAsync(
-                objective,
-                multiAgentGuidance,
-                evidence,
-                botMsg.getDisplayContent(),
-                decision -> mainHandler.post(() -> {
-                    if (!isActiveRun(version)) {
-                        return;
-                    }
-                    multiAgentReviewInFlight = false;
-                    if (decision.isApproved()) {
-                        emitTrace("Revisao aprovada",
-                                decision.isDegraded() ? "degraded: " + decision.getReason()
-                                        : decision.getReason());
-                        emitTraceSummary("multiagente concluido");
-                        finishProcessing();
-                        return;
-                    }
-
-                    emitTrace("Revisao rejeitada", decision.getReason());
-                    if (multiAgentReviewRounds < MAX_MULTI_AGENT_REVIEW_ROUNDS) {
-                        finalResponseOnly = false;
-                        finalResponseReason = "";
-                        finalResponseForcedByGuard = false;
-                        pendingAgentFeedback = "[MULTI-AGENT REVIEW FEEDBACK]\n"
-                                + decision.getFeedback()
-                                + "\nResolve the concrete gap, verify with tools, and produce a corrected final response.";
-                        removeMessage(botMsg);
-                        currentStreamingMessage = null;
-                        startAgentLoop(version, loopStep + 1);
-                        return;
-                    }
-
-                    String warning = decision.getReason();
-                    if (!ChatMessage.hasVisibleText(warning)) {
-                        warning = decision.getFeedback();
-                    }
-                    if (ChatMessage.hasVisibleText(warning)) {
-                        botMsg.setDisplayContent(botMsg.getDisplayContent()
-                                + "\n\n[Multi-agent review warning]\n" + warning);
-                        publishAssistantMessage(botMsg);
-                    }
-                    emitTraceSummary("multiagente encerrou no limite de revisao");
-                    finishProcessing();
-                }));
-    }
-
-    private String buildMultiAgentExecutionEvidence(String chatMode) {
-        StringBuilder evidence = new StringBuilder();
-        evidence.append("Chat mode: ").append(chatMode)
-                .append("\nTool executions: ").append(toolUsageHistory.size());
-        for (ToolSequenceValidator.ToolUsage usage : toolUsageHistory) {
-            evidence.append("\n- ")
-                    .append(usage.getToolName())
-                    .append(": ")
-                    .append(usage.wasSuccessful() ? "success" : "failed")
-                    .append(" args=")
-                    .append(truncateForTranscript(safe(usage.getArgs()), 300));
-        }
-        if (taskPlan != null) {
-            evidence.append("\n\n").append(taskPlan.buildPlanSummary());
-        }
-        return truncateForTranscript(evidence.toString(), 6_000);
-    }
-
-    private ChatMessage createThinkingMessage() {
-        // Placeholder visual que será atualizado no mesmo item durante o stream.
-        ChatMessage botMsg = new ChatMessage("", false,
-                System.currentTimeMillis());
-        botMsg.setStatus("");
-        botMsg.setStreaming(true);
-        return botMsg;
-    }
 
     /**
      * Mantém o andamento da operação no mesmo item de resposta da conversa.
@@ -1200,16 +1094,6 @@ public class AgentManager {
     private void updateRunStatus(@Nullable String status) {
         String safeStatus = status == null ? "" : status.trim();
         listener.onStatusChanged(safeStatus);
-
-        ChatMessage streamingMessage = currentStreamingMessage;
-        if (streamingMessage == null
-                || !streamingMessage.isStreaming()
-                || streamingMessage.hasDisplayContent()
-                || streamingMessage.hasReasoningContent()) {
-            return;
-        }
-        streamingMessage.setStatus(safeStatus);
-        publishAssistantMessage(streamingMessage);
     }
 
     private void prepareMultiAgentWorkflow(int version, int loopStep, int llmAttempt) {
@@ -1243,7 +1127,8 @@ public class AgentManager {
                                     + ", architectChars=" + preparation.getArchitectOutputChars()
                                     + ", managerChars=" + preparation.getManagerOutputChars()
                                     + ", degraded=" + preparation.isDegraded());
-                    startAgentLoop(version, loopStep, llmAttempt);
+                    // v2 path: the prepared guidance reaches the runtime through
+                    // buildAgentGuidance() on the NEXT run of this conversation.
                 }));
     }
 
@@ -1478,6 +1363,36 @@ public class AgentManager {
         }
     }
 
+    /**
+     * Item 16: resolves the runtime's pending approval with ALLOW. The UI
+     * no longer executes the tool itself — the parked run thread continues
+     * through the {@code PermissionLayer}.
+     */
+    public void approveTool() {
+        if (uiRuntime != null) {
+            com.saaspaymentsolutions.axion.agentsdk.AgentRuntime.PendingApproval pending =
+                    uiRuntime.currentPendingApproval();
+            if (pending != null) {
+                uiRuntime.resolveApproval(pending.getRequestId(),
+                        com.saaspaymentsolutions.axion.agentsdk.PermissionDecision.ALLOW);
+            }
+        }
+    }
+
+    /**
+     * Item 16: resolves the runtime's pending approval with DENY.
+     */
+    public void rejectTool() {
+        if (uiRuntime != null) {
+            com.saaspaymentsolutions.axion.agentsdk.AgentRuntime.PendingApproval pending =
+                    uiRuntime.currentPendingApproval();
+            if (pending != null) {
+                uiRuntime.resolveApproval(pending.getRequestId(),
+                        com.saaspaymentsolutions.axion.agentsdk.PermissionDecision.DENY);
+            }
+        }
+    }
+
     private String truncateForTranscript(String text, int maxChars) {
         if (text == null) {
             return "";
@@ -1486,774 +1401,6 @@ public class AgentManager {
     }
 
     /** Runs the next queued tool call, or advances the agent loop when the queue drains. */
-    private void processNextQueuedToolCall(int version, int loopStep) {
-        if (!isActiveRun(version)) {
-            return;
-        }
-        String[] next = queuedToolCalls.pollFirst();
-        if (next == null) {
-            if (!awaitingRecoveredMutation && runGuard.hasSuccessfulToolCall()) {
-                FinishChecker.ValidationResult completion = FinishChecker.validate(
-                        agentMemory,
-                        requestPattern,
-                        taskPlan,
-                        toolUsageHistory,
-                        "",
-                        queuedChatMode
-                );
-                boolean deterministicPlanComplete = completion.canFinish()
-                        && taskPlan != null
-                        && taskPlan.isComplete();
-                AgentRunGuard.Decision completionDecision =
-                        runGuard.afterCompletionCandidate(deterministicPlanComplete);
-                if (!completionDecision.shouldContinue()) {
-                    pendingAgentFeedback = "";
-                    activateFinalResponseOnly(completionDecision.getReason());
-                    finalResponseForcedByGuard = true;
-                    emitTrace("Conclusão confirmada", completionDecision.getReason());
-                } else if (deterministicPlanComplete) {
-                    pendingAgentFeedback =
-                            "[COMPLETION CANDIDATE]\n"
-                                    + "The deterministic requirements appear satisfied. "
-                                    + "If the user's actual objective is complete, return the final answer now "
-                                    + "without tools. If concrete work is still missing, call only the tools "
-                                    + "needed to complete it.";
-                    emitTrace("Conclusão candidata",
-                            "tools=" + runGuard.getToolCalls());
-                }
-            }
-            startAgentLoop(version, loopStep + 1);
-            return;
-        }
-        handleToolCall(next[0], next[1], next[2], version, loopStep, queuedChatMode);
-    }
-
-    private void handleToolCall(String name, String args, String id, int version, int loopStep, String chatMode) {
-        ToolArgumentsValidator.Result rawValidation = ToolArgumentsValidator.validate(args, null);
-        if (!rawValidation.isValid()) {
-            addUnavailableToolMessage(name, args, id, chatMode, version, loopStep,
-                    "Erro: argumentos inválidos para '" + name + "'. " + rawValidation.getError());
-            return;
-        }
-        args = rawValidation.getArguments().toString();
-
-        AgentRunGuard.Decision guardDecision =
-                runGuard.beforeToolCall(name, args, finalResponseOnly);
-        if (!guardDecision.shouldContinue()) {
-            queuedToolCalls.clear();
-            emitTrace("Circuit breaker de ferramentas", guardDecision.getReason());
-            if (guardDecision.getOutcome() == AgentRunGuard.Outcome.FORCE_FINAL_RESPONSE) {
-                activateFinalResponseOnly(guardDecision.getReason());
-                finalResponseForcedByGuard = true;
-                startAgentLoop(version, loopStep + 1);
-            } else {
-                listener.onError(guardDecision.getReason());
-                finishProcessing();
-            }
-            return;
-        }
-
-        ToolSequenceValidator.ValidationResult sequenceResult = ToolSequenceValidator.validate(
-                name,
-                args == null ? "{}" : args,
-                toolUsageHistory,
-                null
-        );
-        if (!sequenceResult.isValid()) {
-            String predecessorArgs = ToolSequenceValidator.buildPredecessorArgs(
-                    sequenceResult, args == null ? "{}" : args);
-            if (predecessorArgs != null
-                    && toolManager.hasToolForChatMode("read_file", chatMode)) {
-                // The stale patch is discarded. Only a fresh read is queued;
-                // the model must generate a new patch from that returned content.
-                queuedToolCalls.clear();
-                queuedToolCalls.addFirst(new String[]{"read_file", predecessorArgs, ""});
-                awaitingRecoveredMutation = isMutationTool(name);
-                pendingAgentFeedback = recoveredMutationFeedback();
-                emitTrace("Recuperação automática de edição obsoleta",
-                        "predecessor=read_file");
-                processNextQueuedToolCall(version, loopStep);
-                return;
-            }
-            String guidance = sequenceResult.getSuggestion();
-            addUnavailableToolMessage(name, args, id, chatMode, version, loopStep,
-                    sequenceResult.getErrorMessage()
-                            + (guidance == null || guidance.isEmpty() ? "" : " " + guidance));
-            return;
-        }
-
-        if ("get_file".equals(name)) {
-            addUnavailableToolMessage(name, args, id, chatMode, version, loopStep,
-                    "Erro: ferramenta 'get_file' não existe. Use 'read_file' para ler arquivos.");
-            return;
-        }
-
-        Tool tool = toolManager.getTool(name);
-        boolean mcpTool = tool == null && isMcpToolAvailable(name, chatMode);
-        if ((!mcpTool && tool == null) || (!mcpTool && !toolManager.hasToolForChatMode(name, chatMode))) {
-            addUnavailableToolMessage(name, args, id, chatMode, version, loopStep, null);
-            return;
-        }
-
-        JSONObject parameterSchema = mcpTool ? findMcpToolSchema(name) : tool.getParameters();
-        ToolArgumentsValidator.Result schemaValidation =
-                ToolArgumentsValidator.validate(args, parameterSchema);
-        if (!schemaValidation.isValid()) {
-            addUnavailableToolMessage(name, args, id, chatMode, version, loopStep,
-                    "Erro: argumentos inválidos para '" + name + "'. " + schemaValidation.getError());
-            return;
-        }
-        args = schemaValidation.getArguments().toString();
-
-        boolean needsApproval = mcpTool
-                ? !VoidPortSettings.isAutoApprovalEnabled(
-                        VoidPortSettings.prefs(context),
-                        VoidPortSettings.APPROVAL_MCP_TOOLS)
-                : VoidPortSettings.requiresApproval(context, tool);
-
-        ChatMessage toolMsg = new ChatMessage(name, args, System.currentTimeMillis(), id);
-        toolMsg.setToolState(needsApproval ? "tool_request" : "running_now");
-        toolMsg.setRequiresApproval(needsApproval);
-        toolMsg.setStatus(needsApproval
-                ? getString(R.string.chat_tool_status_waiting_approval)
-                : getString(R.string.chat_tool_status_running));
-        toolMsg.setDisplayContent(needsApproval
-                ? getString(R.string.chat_tool_approval_message_named, name)
-                : getString(R.string.chat_tool_running_message));
-        toolMsg.setMcpServerName(mcpTool ? resolveMcpServerName(name) : null);
-        pendingToolMessage = toolMsg;
-        pendingToolLoopStep = loopStep;
-
-        final Tool previewTool = mcpTool ? null : tool;
-        mainHandler.post(() -> {
-            if (!isActiveRun(version)) {
-                return;
-            }
-
-            messages.add(toolMsg);
-            listener.onMessageAdded(toolMsg);
-            emitTrace("Ferramenta na fila", "name=" + name + ", approval=" + needsApproval);
-
-            if (needsApproval) {
-                setState(State.AWAITING_APPROVAL);
-                // Build the diff preview OFF the UI thread (the LCS diff is heavy)
-                // and refresh the message when ready — the user is reviewing anyway.
-                if (previewTool != null && previewTool.isDestructive()) {
-                    new Thread(() -> {
-                        prepareToolPreview(toolMsg, previewTool);
-                        mainHandler.post(() -> {
-                            if (isActiveRun(version)) {
-                                listener.onMessageUpdated(toolMsg);
-                            }
-                        });
-                    }, "chat-tool-preview").start();
-                }
-            } else {
-                executeTool(toolMsg, version, loopStep);
-            }
-        });
-    }
-
-    private void addUnavailableToolMessage(String name, String args, String id, String chatMode, int version, int loopStep, String customError) {
-        String safeName = name == null ? "" : name.trim();
-        String mode = chatMode == null || chatMode.trim().isEmpty() ? "agent" : chatMode.trim();
-        String availableTools = toolManager.getToolNamesForChatMode(mode);
-        String result = (customError != null) ? customError : "Erro: ferramenta '" + safeName + "' nao esta disponivel no modo '" + mode + "'.";
-        if (!availableTools.isEmpty()) {
-            result += " Ferramentas disponiveis: " + availableTools + ".";
-        }
-
-        ChatMessage toolMsg = new ChatMessage(safeName, args, System.currentTimeMillis(), id);
-        toolMsg.setToolRunning(false);
-        toolMsg.setToolError(true);
-        toolMsg.setToolState("error");
-        toolMsg.setStatus(getString(R.string.chat_tool_status_error));
-        toolMsg.setDisplayContent(getString(R.string.chat_tool_error_message));
-        toolMsg.setToolResult(result);
-        pendingToolMessage = null;
-        if (taskPlan != null) {
-            taskPlan.recordToolFailure(safeName);
-            syncExecutionPlan();
-        }
-
-        mainHandler.post(() -> {
-            if (!isActiveRun(version)) {
-                return;
-            }
-            messages.add(toolMsg);
-            listener.onMessageAdded(toolMsg);
-            consecutiveToolFailures++;
-            if (consecutiveToolFailures >= MAX_CONSECUTIVE_TOOL_FAILURES) {
-                listener.onError(consecutiveToolFailureMessage());
-                finishProcessing();
-                return;
-            }
-            processNextQueuedToolCall(version, loopStep);
-        });
-    }
-
-    public void approveTool() {
-        if (currentState != State.AWAITING_APPROVAL || pendingToolMessage == null) {
-            return;
-        }
-
-        pendingToolMessage.setApproved(true);
-        pendingToolMessage.setToolState("running_now");
-        pendingToolMessage.setStatus(getString(R.string.chat_tool_status_approved));
-        pendingToolMessage.setDisplayContent(getString(R.string.chat_tool_approved_message));
-        listener.onMessageUpdated(pendingToolMessage);
-        executeTool(pendingToolMessage, runVersion, pendingToolLoopStep);
-    }
-
-    public void rejectTool() {
-        if (currentState != State.AWAITING_APPROVAL || pendingToolMessage == null) {
-            return;
-        }
-
-        pendingToolMessage.setRejected(true);
-        pendingToolMessage.setToolRunning(false);
-        pendingToolMessage.setToolError(true);
-        pendingToolMessage.setToolState("rejected");
-        pendingToolMessage.setStatus(getString(R.string.chat_tool_status_rejected));
-        pendingToolMessage.setDisplayContent(getString(R.string.chat_tool_rejected_message));
-        pendingToolMessage.setToolResult(getString(R.string.chat_tool_rejected_message));
-        if (taskPlan != null) {
-            taskPlan.recordToolFailure(pendingToolMessage.getToolName());
-            syncExecutionPlan();
-        }
-        listener.onMessageUpdated(pendingToolMessage);
-        finishProcessing();
-    }
-
-    private void executeTool(final ChatMessage toolMsg, final int version, final int loopStep) {
-        if (!isActiveRun(version)) {
-            return;
-        }
-
-        if (taskPlan != null) {
-            taskPlan.markToolStarted(toolMsg.getToolName());
-            syncExecutionPlan();
-        }
-        setState(State.EXECUTING_TOOL);
-        updateRunStatus(userStatusForTool(toolMsg.getToolName()));
-        toolMsg.setStatus(getString(R.string.chat_tool_status_running));
-        toolMsg.setDisplayContent(getString(R.string.chat_tool_running_message));
-        listener.onMessageUpdated(toolMsg);
-
-        android.util.Log.d("AgentManager", "=== TOOL EXECUTION START ===");
-        android.util.Log.d("AgentManager", "Tool name: " + toolMsg.getToolName());
-        android.util.Log.d("AgentManager", "Tool ID: " + toolMsg.getToolId());
-        android.util.Log.d("AgentManager", "Loop step: " + loopStep);
-        ChatFlowLogger.event("tool", "execution_started", "name=" + toolMsg.getToolName()
-                + ", id=" + toolMsg.getToolId() + ", loop=" + loopStep);
-        
-        emitTrace("Ferramenta iniciada", "name=" + toolMsg.getToolName());
-        final long toolStartedAt = SystemClock.elapsedRealtime();
-        currentToolThread = new Thread(() -> {
-            ChatCheckpointManager.CheckpointEntry checkpointEntry = createCheckpointIfNeeded(toolMsg);
-            if (checkpointEntry != null) {
-                mainHandler.post(() -> {
-                    if (!isActiveRun(version)) {
-                        return;
-                    }
-                    // Turn-level (transactional) checkpoint: all files touched during
-                    // the same run share ONE checkpoint message, so a rollback
-                    // restores the whole turn instead of a single file.
-                    if (currentRunCheckpointMessage != null
-                            && mergeSnapshotIntoCheckpoint(currentRunCheckpointMessage, checkpointEntry)) {
-                        listener.onMessageUpdated(currentRunCheckpointMessage);
-                        return;
-                    }
-                    ChatMessage checkpointMsg = checkpointEntry.toChatMessage();
-                    currentRunCheckpointMessage = checkpointMsg;
-                    messages.add(checkpointMsg);
-                    listener.onMessageAdded(checkpointMsg);
-                });
-            }
-
-            com.saaspaymentsolutions.axion.ToolExecResult execResult = executeToolCall(toolMsg);
-            final String result = execResult.output;
-            boolean isError = !execResult.ok;
-            final long toolDurationMs = SystemClock.elapsedRealtime() - toolStartedAt;
-
-            android.util.Log.d("AgentManager", "=== TOOL EXECUTION COMPLETE ===");
-            android.util.Log.d("AgentManager", "Tool name: " + toolMsg.getToolName());
-            android.util.Log.d("AgentManager", "Duration: " + toolDurationMs + "ms");
-            android.util.Log.d("AgentManager", "Success: " + !isError);
-            android.util.Log.d("AgentManager", "Result length: " + (result != null ? result.length() : 0) + " chars");
-            if (isError && result != null) {
-                android.util.Log.e("AgentManager", "Tool error: " + (result.length() > 500 ? result.substring(0, 500) + "..." : result));
-            }
-            ChatFlowLogger.event("tool", "execution_complete", "name=" + toolMsg.getToolName()
-                    + ", ok=" + !isError + ", durationMs=" + toolDurationMs
-                    + ", resultChars=" + (result == null ? 0 : result.length()));
-
-            mainHandler.post(() -> {
-                currentToolThread = null;
-                if (!isActiveRun(version)) {
-                    return;
-                }
-                emitTrace(
-                        "Ferramenta concluída",
-                        "name=" + toolMsg.getToolName()
-                                + ", ok=" + !isError
-                                + ", duration=" + toolDurationMs + "ms"
-                                + ", resultChars=" + (result == null ? 0 : result.length())
-                );
-
-                // Cancelled run: the shell process was killed on purpose. Record
-                // the orphan result on the message only — do NOT feed it back into
-                // toolUsageHistory/runGuard or continue the queue, otherwise the
-                // next turn starts with zombie tool state from a dead run.
-                if (isError && result != null && "cancelled".equalsIgnoreCase(result.trim())) {
-                    toolMsg.setToolRunning(false);
-                    toolMsg.setToolError(true);
-                    toolMsg.setToolState("cancelled");
-                    toolMsg.setToolResult(result);
-                    toolMsg.setStatus(getString(R.string.chat_tool_status_cancelled));
-                    toolMsg.setDisplayContent(getString(R.string.chat_tool_cancelled_message));
-                    listener.onMessageUpdated(toolMsg);
-                    return;
-                }
-                toolMsg.setToolRunning(false);
-                toolMsg.setToolError(isError);
-                toolMsg.setToolState(isError ? "error" : "success");
-                toolMsg.setToolResult(result);
-                toolMsg.setStatus(getString(isError
-                        ? R.string.chat_tool_status_error
-                        : R.string.chat_tool_status_done));
-                toolMsg.setDisplayContent(getString(isError
-                        ? R.string.chat_tool_error_message
-                        : R.string.chat_tool_done_message));
-                toolMsg.setExpanded(isError);
-                listener.onMessageUpdated(toolMsg);
-
-                toolUsageHistory.add(ToolSequenceValidator.createUsage(
-                        toolMsg.getToolName(),
-                        toolMsg.getToolArgs() == null ? "{}" : toolMsg.getToolArgs(),
-                        !isError
-                ));
-                runGuard.onToolCompleted(
-                        toolMsg.getToolName(),
-                        toolMsg.getToolArgs() == null ? "{}" : toolMsg.getToolArgs(),
-                        result == null ? "" : result,
-                        !isError);
-
-                if (!isError) {
-                    consecutiveToolFailures = 0;
-                    String toolName = toolMsg.getToolName();
-                    boolean isMutation = "rewrite_file".equals(toolName) ||
-                            "edit_file".equals(toolName) ||
-                            "create_file_or_folder".equals(toolName) ||
-                            "delete_file_or_folder".equals(toolName);
-                    listener.onToolExecuted(toolName, isMutation);
-                    if (isMutation) {
-                        ContextBuilder.invalidateWorkspaceCache(scId);
-                        awaitingRecoveredMutation = false;
-                        // Durable task memory (context-model migration, item 7):
-                        // the mutation survives compaction in the task store.
-                        try {
-                            com.saaspaymentsolutions.axion.agentsdk.TaskMemory runMemory =
-                                    com.saaspaymentsolutions.axion.agentsdk.TaskMemoryStore.load(
-                                            com.saaspaymentsolutions.axion.agentsdk.TaskMemoryStore.LEGACY_RUN_KEY);
-                            if (runMemory == null) {
-                                runMemory = new com.saaspaymentsolutions.axion.agentsdk.TaskMemory(
-                                        scId, "", agentMemory == null ? "" : agentMemory.getOriginalUserMessage());
-                            }
-                            String mutatedPath = argsPathOf(toolMsg);
-                            if (mutatedPath != null) {
-                                runMemory.recordFile(mutatedPath);
-                                runMemory.recordAppliedChange(toolName + ": " + mutatedPath);
-                            }
-                            com.saaspaymentsolutions.axion.agentsdk.TaskMemoryStore.save(
-                                    com.saaspaymentsolutions.axion.agentsdk.TaskMemoryStore.LEGACY_RUN_KEY,
-                                    runMemory);
-                        } catch (Exception ignored) {
-                        }
-                    }
-                    if (taskPlan != null) {
-                        taskPlan.recordToolUsage(toolName);
-                        if (agentMemory != null) {
-                            agentMemory.setProgress(taskPlan.getCompletedSteps(), taskPlan.getTotalSteps());
-                        }
-                        syncExecutionPlan();
-                    }
-                } else {
-                    if (taskPlan != null) {
-                        taskPlan.recordToolFailure(toolMsg.getToolName());
-                        syncExecutionPlan();
-                    }
-                    consecutiveToolFailures++;
-                    RetryManager.RetryDecision retryDecision = RetryManager.shouldRetry(
-                            toolMsg.getToolName(),
-                            toolMsg.getToolArgs() == null ? "{}" : toolMsg.getToolArgs(),
-                            result == null ? "" : result,
-                            consecutiveToolFailures,
-                            toolUsageHistory
-                    );
-                    if (retryDecision.shouldRetry()
-                            && retryDecision.getAlternativeTool() != null
-                            && retryDecision.getAlternativeArgs() != null
-                            && toolManager.hasToolForChatMode(
-                                    retryDecision.getAlternativeTool(), queuedChatMode)) {
-                        queuedToolCalls.addFirst(new String[]{
-                                retryDecision.getAlternativeTool(),
-                                retryDecision.getAlternativeArgs(),
-                                ""
-                        });
-                        emitTrace("Retry alternativo", retryDecision.getReason());
-                    }
-                    if (consecutiveToolFailures >= MAX_CONSECUTIVE_TOOL_FAILURES) {
-                        // Stop burning tokens: repeated tool failures indicate the
-                        // model is stuck; surface the problem instead of looping.
-                        emitTrace("Loop de falhas", "falhas consecutivas=" + consecutiveToolFailures);
-                        listener.onError(consecutiveToolFailureMessage());
-                        clearPendingToolState();
-                        finishProcessing();
-                        return;
-                    }
-                }
-
-                clearPendingToolState();
-                processNextQueuedToolCall(version, loopStep);
-            });
-        }, "chat-tool-worker");
-        currentToolThread.start();
-    }
-
-    private com.saaspaymentsolutions.axion.ToolExecResult executeToolCall(ChatMessage toolMsg) {
-        String toolName = toolMsg.getToolName();
-        if (toolName != null && toolName.startsWith("mcp_")) {
-            if (false) {
-            }
-            return com.saaspaymentsolutions.axion.ToolExecResult.fromLegacyString(VoidPortMcpChannel.callTool(
-                    VoidPortSettings.prefs(context),
-                    toolName,
-                    parseToolArgs(toolMsg.getToolArgs())
-            ));
-        }
-        return toolManager.executeTool(scId, toolName, toolMsg.getToolArgs());
-    }
-
-    private void appendMcpTools(JSONArray target, JSONArray mcpTools) {
-        if (target == null || mcpTools == null || mcpTools.length() == 0) {
-            return;
-        }
-        for (int i = 0; i < mcpTools.length(); i++) {
-            JSONObject tool = mcpTools.optJSONObject(i);
-            if (tool != null) {
-                target.put(tool);
-            }
-        }
-    }
-
-    private boolean isMcpToolAvailable(String name, String chatMode) {
-        if (!"agent".equalsIgnoreCase(chatMode) || name == null || !name.startsWith("mcp_")) {
-            return false;
-        }
-        JSONArray mcpTools = VoidPortMcpChannel.getToolsAsMCP(VoidPortSettings.prefs(context));
-        for (int i = 0; i < mcpTools.length(); i++) {
-            JSONObject tool = mcpTools.optJSONObject(i);
-            JSONObject function = tool == null ? null : tool.optJSONObject("function");
-            if (function != null && name.equals(function.optString("name", ""))) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private void prepareToolPreview(ChatMessage toolMsg, Tool tool) {
-        if (toolMsg == null || tool == null || !tool.isDestructive()) {
-            return;
-        }
-
-        try {
-            JSONObject args = parseToolArgs(toolMsg.getToolArgs());
-            String filePath = normalizeToolPath(toolPathArg(args));
-            String content = args.optString("new_content", "");
-            if (content.isEmpty()) {
-                content = args.optString("search_replace_blocks", "");
-            }
-            if (content.isEmpty()) {
-                content = args.optString("content", "");
-            }
-            if (content.isEmpty()) {
-                content = args.optString("code_edit", "");
-            }
-            if (filePath.isEmpty() || content.isEmpty()) {
-                return;
-            }
-
-            boolean existedBefore = new File(ProjectPathResolver.resolveForRead(scId, filePath).getFile().getAbsolutePath()).exists();
-            String beforeContent = existedBefore ? safe(new String(java.nio.file.Files.readAllBytes(new File(ProjectPathResolver.resolveForRead(scId, filePath).getFile().getAbsolutePath()).toPath()))) : "";
-            String preview = buildVoidPreview(filePath, beforeContent, content, existedBefore);
-            toolMsg.setToolResult(preview);
-        } catch (Exception ignored) {
-        }
-    }
-
-    private String buildVoidPreview(String filePath, String beforeContent, String generatedContent, boolean existedBefore) {
-        String cleanedContent = extractRegularCode(generatedContent);
-        List<ExtractCodeFromResult.ExtractedSearchReplaceBlock> blocks =
-                ExtractCodeFromResult.extractSearchReplaceBlocks(cleanedContent);
-        if (!blocks.isEmpty()) {
-            return buildSearchReplacePreview(filePath, cleanedContent, blocks);
-        }
-        return buildWholeFilePreview(filePath, beforeContent, cleanedContent, existedBefore);
-    }
-
-    private String buildSearchReplacePreview(String filePath, String content,
-                                             List<ExtractCodeFromResult.ExtractedSearchReplaceBlock> blocks) {
-        String language = LanguageHelpers.detectLanguage(filePath, content);
-        StringBuilder builder = new StringBuilder();
-        builder.append("VOID SEARCH/REPLACE PREVIEW\n");
-        builder.append("File: ").append(filePath).append("\n");
-        builder.append("Language: ").append(language).append("\n");
-        builder.append("Actions: ")
-                .append(ActionIds.VOID_ACCEPT_DIFF_ACTION_ID)
-                .append(" / ")
-                .append(ActionIds.VOID_REJECT_DIFF_ACTION_ID)
-                .append("\n\n");
-
-        int printed = 0;
-        for (int i = 0; i < blocks.size() && printed < MAX_PREVIEW_LINES; i++) {
-            ExtractCodeFromResult.ExtractedSearchReplaceBlock block = blocks.get(i);
-            builder.append("Block ").append(i + 1).append(" - ").append(block.state).append("\n");
-            builder.append(PromptConstants.TRIPLE_TICK.get(0)).append(language).append("\n");
-            builder.append(PromptConstants.ORIGINAL).append("\n");
-            printed = appendPreviewLines(builder, block.orig, printed);
-            builder.append(PromptConstants.DIVIDER).append("\n");
-            printed = appendPreviewLines(builder, block.fin, printed);
-            builder.append(PromptConstants.FINAL).append("\n");
-            builder.append(PromptConstants.TRIPLE_TICK.get(1)).append("\n\n");
-        }
-        if (printed >= MAX_PREVIEW_LINES) {
-            builder.append("... preview truncated ...\n");
-        }
-        return builder.toString().trim();
-    }
-
-    private String buildWholeFilePreview(String filePath, String beforeContent, String afterContent, boolean existedBefore) {
-        String safeBefore = safe(beforeContent);
-        String safeAfter = safe(afterContent);
-        String language = LanguageHelpers.detectLanguage(filePath, safeAfter);
-        List<VoidPortDiffService.ComputedDiff> diffs =
-                VoidPortDiffService.findDiffs(safeBefore, safeAfter);
-
-        StringBuilder builder = new StringBuilder();
-        builder.append("VOID DIFF PREVIEW\n");
-        builder.append("File: ").append(filePath).append("\n");
-        builder.append("Mode: ").append(existedBefore ? "update" : "create").append("\n");
-        builder.append("Language: ").append(language).append("\n");
-        builder.append("Actions: ")
-                .append(ActionIds.VOID_ACCEPT_FILE_ACTION_ID)
-                .append(" / ")
-                .append(ActionIds.VOID_REJECT_FILE_ACTION_ID)
-                .append("\n\n");
-
-        if (diffs.isEmpty()) {
-            builder.append("No content changes detected.");
-            return builder.toString();
-        }
-
-        int printed = 0;
-        for (int i = 0; i < diffs.size() && printed < MAX_PREVIEW_LINES; i++) {
-            VoidPortDiffService.ComputedDiff diff = diffs.get(i);
-            builder.append("Change ")
-                    .append(i + 1)
-                    .append(" - ")
-                    .append(diff.type)
-                    .append(" original lines ")
-                    .append(formatLineRange(diff.originalStartLine, diff.originalEndLine))
-                    .append(" -> new lines ")
-                    .append(formatLineRange(diff.startLine, diff.endLine))
-                    .append("\n");
-            builder.append(PromptConstants.TRIPLE_TICK.get(0)).append(language).append("\n");
-            builder.append(PromptConstants.ORIGINAL).append("\n");
-            printed = appendPreviewLines(builder, diff.originalCode, printed);
-            builder.append(PromptConstants.DIVIDER).append("\n");
-            printed = appendPreviewLines(builder, diff.code, printed);
-            builder.append(PromptConstants.FINAL).append("\n");
-            builder.append(PromptConstants.TRIPLE_TICK.get(1)).append("\n\n");
-        }
-
-        if (printed >= MAX_PREVIEW_LINES) {
-            builder.append("... preview truncated ...\n");
-        }
-        return builder.toString().trim();
-    }
-
-    private String formatLineRange(int startLine, int endLine) {
-        if (startLine <= 0 || endLine < startLine) {
-            return "none";
-        }
-        if (startLine == endLine) {
-            return String.valueOf(startLine);
-        }
-        return startLine + "-" + endLine;
-    }
-
-    private String extractRegularCode(String content) {
-        ExtractCodeFromResult.Extraction extraction =
-                ExtractCodeFromResult.extractCodeFromRegular(content, content == null ? 0 : content.length());
-        return extraction.fullText;
-    }
-
-    private int appendPreviewLines(StringBuilder builder, String content, int printed) {
-        return appendLineRange(builder, splitLines(safe(content)), 0, splitLines(safe(content)).length, printed);
-    }
-
-    private int appendLineRange(StringBuilder builder, String[] lines, int start, int end, int printed) {
-        for (int i = start; i < end && printed < MAX_PREVIEW_LINES; i++) {
-            builder.append(lines[i]).append("\n");
-            printed++;
-        }
-        return printed;
-    }
-
-    private String[] splitLines(String content) {
-        if (content == null || content.isEmpty()) {
-            return new String[0];
-        }
-        return content.replace("\r\n", "\n").replace('\r', '\n').split("\n", -1);
-    }
-
-    private ChatCheckpointManager.CheckpointEntry createCheckpointIfNeeded(ChatMessage toolMsg) {
-        Tool tool = toolManager.getTool(toolMsg.getToolName());
-        if (tool == null || (!tool.isDestructive() && !tool.isFileMutation())) {
-            return null;
-        }
-
-        try {
-            JSONObject args = parseToolArgs(toolMsg.getToolArgs());
-            String filePath = normalizeToolPath(toolPathArg(args));
-            if (filePath.isEmpty()) {
-                return null;
-            }
-
-            boolean existedBefore = new File(ProjectPathResolver.resolveForRead(scId, filePath).getFile().getAbsolutePath()).exists();
-            String beforeContent = existedBefore ? safe(new String(java.nio.file.Files.readAllBytes(new File(ProjectPathResolver.resolveForRead(scId, filePath).getFile().getAbsolutePath()).toPath()))) : "";
-            return checkpointManager.createCheckpoint(
-                    scId,
-                    toolMsg.getToolId() != null ? toolMsg.getToolId() : "",
-                    safe(toolMsg.getToolName()),
-                    filePath,
-                    beforeContent,
-                    existedBefore
-            );
-        } catch (Exception ignored) {
-            return null;
-        }
-    }
-
-    private void clearPendingToolState() {
-        pendingToolMessage = null;
-        pendingToolLoopStep = -1;
-    }
-
-    private void scheduleStreamUpdate(int version, ChatMessage message) {
-        if (!isActiveRun(version) || message == null) {
-            return;
-        }
-        pendingStreamMessage = message;
-        if (streamUpdateScheduled) {
-            return;
-        }
-        streamUpdateScheduled = true;
-        streamCoalesceHandler.postDelayed(() -> {
-            streamUpdateScheduled = false;
-            flushStreamUpdate(version);
-        }, STREAM_COALESCE_MS);
-    }
-
-    private void flushStreamUpdate(int version) {
-        if (!isActiveRun(version)) {
-            return;
-        }
-        ChatMessage message = pendingStreamMessage;
-        pendingStreamMessage = null;
-        if (message != null) {
-            publishAssistantMessage(message);
-        }
-    }
-
-    /**
-     * Adds a deferred assistant message on its first real payload, then updates
-     * it normally. This prevents an empty, blinking "Pensando" row in the list.
-     */
-    private void publishAssistantMessage(ChatMessage message) {
-        if (message == null) {
-            return;
-        }
-        if (!messages.contains(message)) {
-            messages.add(message);
-            listener.onMessageAdded(message);
-        } else {
-            listener.onMessageUpdated(message);
-        }
-    }
-
-    private void clearStreamingToolState() {
-        streamingToolName = "";
-        streamingToolId = "";
-        streamingMcpServerName = null;
-    }
-
-    @Nullable
-    private String resolveMcpServerName(String toolName) {
-        if (toolName == null || !toolName.startsWith("mcp_")) {
-            return null;
-        }
-        SharedPreferences prefs = VoidPortSettings.prefs(context);
-        return VoidPortMcpChannel.resolveServerNameForTool(prefs, toolName);
-    }
-
-    /**
-     * Emits a one-time debug notice per run when stdio-only MCP servers are
-     * configured. Android cannot spawn desktop stdio processes, so those servers
-     * are silently skipped by {@link VoidPortMcpChannel}; surfacing the warning
-     * here prevents confusing "tool not found" errors for the user.
-     */
-    private boolean mcpStdioWarningEmitted = false;
-
-    private void emitMcpStdioWarning(SharedPreferences prefs) {
-        if (mcpStdioWarningEmitted) {
-            return;
-        }
-        java.util.List<VoidPortMcpChannel.ServerStatus> statuses = VoidPortMcpChannel.readServerStatuses(prefs);
-        boolean hasStdio = false;
-        for (VoidPortMcpChannel.ServerStatus s : statuses) {
-            if ("stdio-config-only".equals(s.status)) {
-                hasStdio = true;
-                break;
-            }
-        }
-        if (hasStdio) {
-            mcpStdioWarningEmitted = true;
-            listener.onDebug("[MCP] Aviso: um ou mais servidores MCP usam stdio/command e não podem ser iniciados pelo Android. " +
-                    "Exponha-os como endpoint HTTP em mcpServers para usá-los aqui.");
-        }
-    }
-
-    private void finishProcessing() {
-        streamCoalesceHandler.removeCallbacksAndMessages(null);
-        streamUpdateScheduled = false;
-        pendingStreamMessage = null;
-        queuedToolCalls.clear();
-        clearPendingToolState();
-        clearStreamingToolState();
-        currentStreamingMessage = null;
-        currentToolThread = null;
-        currentOperationContext = null;
-        endRunIdentity();
-        multiAgentOrchestrator.endOperation();
-        setState(State.IDLE);
-        if (interactionTrace != null) {
-            emitTraceSummary("processamento concluído");
-        }
-        listener.onProcessingFinished();
-    }
-
     /** Best-effort path extraction from a tool message for task memory. */
     @Nullable
     private static String argsPathOf(ChatMessage toolMsg) {
@@ -2364,7 +1511,6 @@ public class AgentManager {
         ChatPlanManager.clearExecutionPlan(scId);
         ChatPlanManager.clearModelPlan(scId);
         pendingAgentFeedback = "";
-        toolUsageHistory.clear();
         finishValidationFailures = 0;
         outputContinuationCount = 0;
     }
@@ -2424,15 +1570,12 @@ public class AgentManager {
 
     private void beginInteractionTrace(int version, String userText, List<ChatReference> stagingSelections) {
         interactionTrace = new ChatInteractionTrace(version);
-        mcpStdioWarningEmitted = false;
         runGuard.reset();
         finalResponseOnly = false;
         finalResponseReason = "";
         finalResponseForcedByGuard = false;
         awaitingRecoveredMutation = false;
         consecutiveToolFailures = 0;
-        queuedToolCalls.clear();
-        toolUsageHistory.clear();
         pendingAgentFeedback = "";
         finishValidationFailures = 0;
         outputContinuationCount = 0;
@@ -2496,7 +1639,6 @@ public class AgentManager {
     private void activateFinalResponseOnly(String reason) {
         finalResponseOnly = true;
         finalResponseReason = reason == null ? "" : reason.trim();
-        queuedToolCalls.clear();
     }
 
     private String sanitizeAssistantPayload(String payload) {

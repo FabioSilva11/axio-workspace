@@ -191,8 +191,8 @@ public abstract class AgentEvent {
 
     /**
      * A tool call needs a permission decision. Emitted after the policy
-     * requested user input; the run blocks until the host resumes it via
-     * the {@link ApprovalHandler}.
+     * requested user input; the run parks until the host resolves the
+     * {@link PermissionRequest} via the {@link ApprovalHandler} protocol.
      */
     public static final class ApprovalRequired extends AgentEvent {
         private final String tool;
@@ -219,17 +219,26 @@ public abstract class AgentEvent {
         }
     }
 
-    /** A permission decision was applied to a tool call. */
+    /** A permission decision was applied to a tool call, with its lifecycle state. */
     public static final class PermissionResolved extends AgentEvent {
         private final String tool;
         private final PermissionDecision decision;
         private final boolean allowed;
+        private final ApprovalHandler.ApprovalState state;
 
         public PermissionResolved(String scId, String tool, PermissionDecision decision, boolean allowed) {
+            this(scId, tool, decision, allowed, null);
+        }
+
+        public PermissionResolved(String scId, String tool, PermissionDecision decision,
+                                  boolean allowed, ApprovalHandler.ApprovalState state) {
             super(scId);
             this.tool = tool == null ? "" : tool;
             this.decision = decision;
             this.allowed = allowed;
+            this.state = state == null
+                    ? (allowed ? ApprovalHandler.ApprovalState.ALLOWED : ApprovalHandler.ApprovalState.DENIED)
+                    : state;
         }
 
         public String getTool() {
@@ -242,6 +251,11 @@ public abstract class AgentEvent {
 
         public boolean isAllowed() {
             return allowed;
+        }
+
+        /** Lifecycle state: ALLOWED / DENIED / TIMED_OUT / CANCELLED. */
+        public ApprovalHandler.ApprovalState getState() {
+            return state;
         }
     }
 

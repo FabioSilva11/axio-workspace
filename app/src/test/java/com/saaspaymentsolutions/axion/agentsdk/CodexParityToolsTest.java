@@ -45,7 +45,7 @@ public class CodexParityToolsTest {
     public void contextRemaining_withBudget_reportsRealNumbers() throws Exception {
         RunBudget budget = new RunBudget(10_000);
         RunBudget.Handle handle = budget.reserve(1_500);
-        budget.settle(handle, 1_500);
+        budget.settle(handle, 1_500, false);
         RunContext context = RunContext.bare("sc1", "agent", new ContextTracker(budget));
         context.contextTracker().recordInputEstimate(2_000);
         ContextRemainingTool tool = new ContextRemainingTool();

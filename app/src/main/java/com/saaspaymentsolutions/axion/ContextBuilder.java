@@ -30,12 +30,11 @@ import com.saaspaymentsolutions.axion.skills.SkillManager;
  * tool history across OpenAI-style, Anthropic-style and XML fallback flows.
  */
 public class ContextBuilder {
-    private static final int DEFAULT_TOTAL_BUDGET_TOKENS = 6000;
-    private static final int DEFAULT_SYSTEM_BUDGET_TOKENS = 2400;
-    private static final int DEFAULT_HISTORY_BUDGET_TOKENS = 3000;
-    private static final int MIN_HISTORY_BUDGET_TOKENS = 1000;
-    private static final int MAX_ANDROID_CONTEXT_BUDGET_TOKENS = 128000;
-    private static final int DEFAULT_COMPILE_ERROR_TOKENS = 500;
+    /** Legacy alias kept for readability; the values now live in ContextBudget. */
+    private static final int DEFAULT_TOTAL_BUDGET_TOKENS =
+            com.saaspaymentsolutions.axion.agentsdk.ContextBudget.MIN_TOTAL_TOKENS;
+    private static final int MIN_HISTORY_BUDGET_TOKENS =
+            com.saaspaymentsolutions.axion.agentsdk.ContextBudget.MIN_HISTORY_BUDGET_TOKENS;
     private static final int MIN_XML_SYSTEM_BUDGET_TOKENS = 3600;
     private static final int MIN_REQUIRED_SECTION_TOKENS = 64;
     /** Tool results are compacted only after the uncompressed history exceeds its token budget. */
@@ -142,10 +141,19 @@ public class ContextBuilder {
     private final String scId;
     private final List<ChatMessage> messages;
     private final ToolManager toolManager;
-    private int totalBudgetTokens = DEFAULT_TOTAL_BUDGET_TOKENS;
-    private int systemBudgetTokens = DEFAULT_SYSTEM_BUDGET_TOKENS;
-    private int historyBudgetTokens = 8000; // Increased to prevent losing older steps
-    private int compileErrorBudgetTokens = DEFAULT_COMPILE_ERROR_TOKENS;
+    // Item 19 of the migration: budgets come from ContextBudget (single
+    // source of truth) — no second set of independent constants here.
+    private com.saaspaymentsolutions.axion.agentsdk.ContextBudget budget =
+            com.saaspaymentsolutions.axion.agentsdk.ContextBudget.defaults();
+    /** Unused placeholder kept for binary compatibility; budgets live in ContextBudget. */
+    @SuppressWarnings("unused")
+    private final int additionalInputTokensOverride = 0;
+    /** Mirrors of the structured budget for the existing local code paths. */
+    private int totalBudgetTokens = com.saaspaymentsolutions.axion.agentsdk.ContextBudget.MIN_TOTAL_TOKENS;
+    private int systemBudgetTokens = 2_400;
+    private int historyBudgetTokens = 3_000;
+    private int compileErrorBudgetTokens =
+            com.saaspaymentsolutions.axion.agentsdk.ContextBudget.MIN_COMPILE_ERROR_TOKENS;
 
     /** Summary replacing messages before {@link #historyStartIndex} (context compaction). */
     private String historySummary = "";
@@ -157,6 +165,7 @@ public class ContextBuilder {
     private List<Tool> externalTools;
     private boolean includeProjectDocumentationGuidance;
     private String currentModelName = "";
+    private String frozenModelName = "";
     /** Tokens consumed outside messages/system, principally function schemas. */
     private int additionalInputTokens;
 
@@ -231,12 +240,19 @@ public class ContextBuilder {
 
     public Result build(String latestUserMessage, String chatMode, String providerId) {
         SharedPreferences prefs = VoidPortSettings.prefs(SketchApplication.getContext());
-        String currentModel = prefs.getString(VoidPortSettings.PREF_CURRENT_MODEL, "");
-        currentModelName = currentModel == null ? "" : currentModel;
+        // Item 11 of the migration: when a run freezes its model identity, the
+        // builder resolves capabilities from the FROZEN model — never from the
+        // mutable global preference (which may already point to another model).
+        if (frozenModelName != null && !frozenModelName.isEmpty()) {
+            currentModelName = frozenModelName;
+        } else {
+            String currentModel = prefs.getString(VoidPortSettings.PREF_CURRENT_MODEL, "");
+            currentModelName = currentModel == null ? "" : currentModel;
+        }
         VoidPortModelCapabilities.Capabilities capabilities =
-                VoidPortModelCapabilities.getModelCapabilities(providerId, currentModel);
+                VoidPortModelCapabilities.getModelCapabilities(providerId, currentModelName);
         configureBudgets(capabilities);
-        ProviderFormat providerFormat = resolveProviderFormat(providerId, currentModel);
+        ProviderFormat providerFormat = resolveProviderFormat(providerId, currentModelName);
         rebalanceForProviderFormat(providerFormat);
         String systemContext = buildSystemContext(
                 latestUserMessage, chatMode, providerId, providerFormat, prefs);
@@ -249,25 +265,40 @@ public class ContextBuilder {
 
     private void configureBudgets(VoidPortModelCapabilities.Capabilities capabilities) {
         if (capabilities == null) {
-            totalBudgetTokens = DEFAULT_TOTAL_BUDGET_TOKENS;
-            systemBudgetTokens = DEFAULT_SYSTEM_BUDGET_TOKENS;
-            historyBudgetTokens = Math.max(MIN_HISTORY_BUDGET_TOKENS,
-                    DEFAULT_HISTORY_BUDGET_TOKENS - additionalInputTokens);
-            compileErrorBudgetTokens = DEFAULT_COMPILE_ERROR_TOKENS;
+            budget = com.saaspaymentsolutions.axion.agentsdk.ContextBudget.builder()
+                    .recentHistoryTokens(Math.max(
+                            com.saaspaymentsolutions.axion.agentsdk.ContextBudget.MIN_HISTORY_BUDGET_TOKENS,
+                            com.saaspaymentsolutions.axion.agentsdk.ContextBudget.defaults().recentHistoryTokens()
+                                    - additionalInputTokens))
+                    .build();
+            totalBudgetTokens = budget.totalTokens();
+            systemBudgetTokens = budget.systemTokens();
+            historyBudgetTokens = budget.recentHistoryTokens();
+            compileErrorBudgetTokens = budget.compileErrorTokens();
             return;
         }
 
+        // Single calculator (item 19): the same formula ContextBudget owns.
         boolean reasoningEnabled = capabilities.reasoningCapabilities.supportsReasoning
                 && !capabilities.reasoningCapabilities.canTurnOffReasoning;
         int reservedOutput = Math.max(1024, capabilities.effectiveReservedOutputTokenSpace(reasoningEnabled));
-        int usableWindow = Math.max(DEFAULT_TOTAL_BUDGET_TOKENS, capabilities.contextWindow - reservedOutput);
-        totalBudgetTokens = Math.max(DEFAULT_TOTAL_BUDGET_TOKENS,
-                Math.min(MAX_ANDROID_CONTEXT_BUDGET_TOKENS, usableWindow));
-        systemBudgetTokens = Math.max(DEFAULT_SYSTEM_BUDGET_TOKENS, Math.min(16000, totalBudgetTokens / 4));
-        compileErrorBudgetTokens = Math.max(DEFAULT_COMPILE_ERROR_TOKENS, Math.min(2000, systemBudgetTokens / 6));
-        historyBudgetTokens = Math.max(MIN_HISTORY_BUDGET_TOKENS,
-                totalBudgetTokens - systemBudgetTokens - compileErrorBudgetTokens
-                        - additionalInputTokens);
+        budget = com.saaspaymentsolutions.axion.agentsdk.ContextBudget.forWindow(
+                capabilities.contextWindow, reservedOutput, additionalInputTokens);
+        totalBudgetTokens = budget.totalTokens();
+        systemBudgetTokens = budget.systemTokens();
+        historyBudgetTokens = budget.recentHistoryTokens();
+        compileErrorBudgetTokens = budget.compileErrorTokens();
+    }
+
+    /** Freezes the model used for capability resolution (run-scoped builds). */
+    public ContextBuilder setFrozenModelName(String modelName) {
+        this.frozenModelName = modelName == null ? "" : modelName.trim();
+        return this;
+    }
+
+    /** The last computed structured budget (telemetry/tests). */
+    public com.saaspaymentsolutions.axion.agentsdk.ContextBudget budget() {
+        return budget;
     }
 
     private void rebalanceForProviderFormat(ProviderFormat providerFormat) {
@@ -409,12 +440,27 @@ public class ContextBuilder {
         builder.append("Here is the user's system information:\n");
         builder.append("<system_info>\n");
         builder.append("- Android Host\n\n");
-        com.saaspaymentsolutions.axion.workspace.Workspace activeWs = com.saaspaymentsolutions.axion.workspace.WorkspaceManager.getActiveWorkspace();
-        builder.append("- Active Workspace Name: ").append(activeWs != null ? activeWs.getName() : "Workspace").append("\n");
-        builder.append("- Active Workspace Path: ").append(activeWs != null ? activeWs.getDisplayPath() : ".").append("\n");
-        if (activeWs != null && activeWs.getDetectedTechnology() != null && !activeWs.getDetectedTechnology().isEmpty()) {
-            builder.append("- Detected Technologies: ").append(activeWs.getDetectedTechnology()).append("\n");
+        // Single execution identity (items 12/13): when a run binding is in
+        // flight, the RUN's workspace is the authoritative one — the UI's
+        // active workspace is only a display fallback for host-only paths.
+        com.saaspaymentsolutions.axion.agentsdk.WorkspaceIdentity runIdentity =
+                com.saaspaymentsolutions.axion.agentsdk.RuntimeFileContext.effectiveIdentity();
+        String wsName = null;
+        String wsPath = null;
+        if (runIdentity != null && runIdentity.displayName() != null
+                && !runIdentity.displayName().isEmpty()) {
+            wsName = runIdentity.displayName();
+            wsPath = runIdentity.rootUri();
+        } else {
+            com.saaspaymentsolutions.axion.workspace.Workspace activeWs =
+                    com.saaspaymentsolutions.axion.workspace.WorkspaceManager.getActiveWorkspace();
+            if (activeWs != null) {
+                wsName = activeWs.getName();
+                wsPath = activeWs.getDisplayPath();
+            }
         }
+        builder.append("- Active Workspace Name: ").append(wsName != null ? wsName : "Workspace").append("\n");
+        builder.append("- Active Workspace Path: ").append(wsPath != null ? wsPath : ".").append("\n");
         builder.append("\n- Project path contract:\n");
         builder.append("Use '.' or relative paths for files in the active workspace. ")
                 .append("Never send placeholders such as <uri>, <path>, undefined, or fake absolute paths.");

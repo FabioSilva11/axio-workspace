@@ -10,11 +10,19 @@ import java.util.regex.Pattern;
  * porting the decision model of Codex's sandboxing (deny first, explain the
  * violation) to Android, where kernel-level sandboxing is not available.
  *
- * <p>The sandbox is advisory-by-policy and enforced-by-host: the shell tool
- * consults {@link #validate} before spawning a process and refuses to run
- * violating commands. It cannot make the OS sandbox the process; it stops
- * the obvious escape and destruction patterns and produces a typed
- * {@link AgentEvent.SandboxViolation} for the UI.</p>
+ * <p><b>HONEST SCOPE (item 25): THIS IS A POLICY GUARD, NOT AN OS SANDBOX.</b>
+ * It is a deny-first validator over the command STRING. It cannot make the
+ * OS confine the process; a sufficiently creative payload may still escape
+ * the patterns below. Defense in depth is layered: the
+ * {@link PermissionLayer} asks the user for shell tools, and the runtime
+ * treats every shell execution as policy-gated, never sandbox-guaranteed.</p>
+ *
+ * <p>Beyond the classic destructive deny-list, a configured workspace root
+ * also rejects shell composition operators ({@code ; && || | $() backticks
+ * redirections}), environment expansions and interpreter inline-exec
+ * (python/perl/node/ruby/php {@code -c/-e}) — the bypass channels a string
+ * deny-list alone cannot inspect. Symlink escapes and kernel-level escapes
+ * remain OUT of scope on Android and are documented as residual risk.</p>
  */
 public final class CommandSandbox {
 
@@ -48,6 +56,24 @@ public final class CommandSandbox {
             "git\\s+reset\\s+--hard",
     };
 
+    /**
+     * Shell-operator patterns (item 25): a command containing these is
+     * rejected under a configured workspace root — operators compose
+     * commands the deny-list cannot see (curl|sh via $(), chains that end
+     * in a destructive second command, redirects that clobber files,
+     * interpreters spawning other commands).
+     */
+    private static final Pattern SHELL_OPERATORS = Pattern.compile(
+            ";|&&|\\|\\|?|`|\\$\\(|\\$\\{|>\\(|<<?", Pattern.CASE_INSENSITIVE);
+
+    /**
+     * Interpreter commands that can execute arbitrary secondary payloads
+     * (python/perl/node/ruby -c, -e, scripts): the deny-list cannot reason
+     * about what the payload does, so a jailed run refuses them outright.
+     */
+    private static final Pattern INTERPRETER_EXEC = Pattern.compile(
+            "\\b(python3?|perl|node|ruby|php)\\b[^&|;]*(-c|-e)\\s", Pattern.CASE_INSENSITIVE);
+
     private final String workspaceRoot;
     private final List<Pattern> denyList;
 
@@ -69,6 +95,26 @@ public final class CommandSandbox {
         for (Pattern pattern : denyList) {
             if (pattern.matcher(cmd).find()) {
                 return new Violation("Command matches deny-list pattern: " + pattern.pattern());
+            }
+        }
+
+        // Shell operators and interpreter exec are only rejected when a
+        // workspace root is configured (the jail is active). Pure deny-list
+        // validation (tests/no-root hosts) keeps the legacy behavior.
+        if (!workspaceRoot.isEmpty()) {
+            if (INTERPRETER_EXEC.matcher(cmd).find()) {
+                return new Violation("Interpreter with inline code (-c/-e) is not allowed "
+                        + "inside the sandboxed workspace.");
+            }
+            java.util.regex.Matcher operator = SHELL_OPERATORS.matcher(cmd);
+            while (operator.find()) {
+                // '>' alone is a redirection that stays inside the workspace;
+                // composite operators and pipes cross the policy boundary.
+                String op = operator.group();
+                if (!">".equals(op) && !"<".equals(op)) {
+                    return new Violation("Shell operator '" + op + "' is not allowed "
+                            + "inside the sandboxed workspace.");
+                }
             }
         }
 

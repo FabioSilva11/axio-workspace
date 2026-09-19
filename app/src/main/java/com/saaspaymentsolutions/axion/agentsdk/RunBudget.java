@@ -11,7 +11,10 @@ import java.util.concurrent.locks.ReentrantLock;
  *
  * <ul>
  *   <li>reserve the worst-case cost before each LLM turn;</li>
- *   <li>settle with the actual usage when the response arrives;</li>
+ *   <li>settle with the REAL usage when the response arrives —
+ *       {@link #settle(Handle, TokenUsage)} accepts provider-reported
+ *       {@link TokenUsage} and records whether the number was real or
+ *       estimated;</li>
  *   <li>block the run permanently when the cost cannot be confirmed
  *       (missing/implausible usage report) — fail closed, as the Cookbook
  *       does for uncertain charges.</li>
@@ -35,7 +38,7 @@ public final class RunBudget {
         }
     }
 
-    /** Opaque handle returned by {@link #reserve}; pass it to {@link #settle}. */
+    /** Opaque handle returned by {@link #reserve}; pass it to a settle method. */
     public static final class Handle {
         private final long reserved;
 
@@ -48,12 +51,33 @@ public final class RunBudget {
         }
     }
 
+    /** Immutable accounting snapshot of the last settled turn. */
+    public static final class Settlement {
+        private final long actualTokens;
+        private final boolean estimated;
+
+        Settlement(long actualTokens, boolean estimated) {
+            this.actualTokens = actualTokens;
+            this.estimated = estimated;
+        }
+
+        public long actualTokens() {
+            return actualTokens;
+        }
+
+        /** True when settled with an estimate, false with provider-reported usage. */
+        public boolean isEstimated() {
+            return estimated;
+        }
+    }
+
     private final long maximum;
     private long spent;
     private long pending;
     private boolean blocked;
     private final Map<Handle, Long> holds = new HashMap<>();
     private final ReentrantLock lock = new ReentrantLock();
+    private Settlement lastSettlement;
 
     public RunBudget(long maxTokens) {
         if (maxTokens <= 0) {
@@ -93,6 +117,16 @@ public final class RunBudget {
         }
     }
 
+    /** Snapshot of how the last reservation was settled (real vs estimated). */
+    public Settlement lastSettlement() {
+        lock.lock();
+        try {
+            return lastSettlement;
+        } finally {
+            lock.unlock();
+        }
+    }
+
     /** Cheap pre-check: can the run afford at least {@code minimum} more tokens? */
     public void ensureActive(long minimum) {
         lock.lock();
@@ -108,7 +142,7 @@ public final class RunBudget {
 
     /**
      * Reserves the worst-case cost of the next turn. The reservation counts
-     * against the budget until {@link #settle} returns the unused part.
+     * against the budget until a settle method returns the unused part.
      */
     public Handle reserve(long worstCaseTokens) {
         if (worstCaseTokens <= 0) {
@@ -131,11 +165,30 @@ public final class RunBudget {
     }
 
     /**
-     * Settles a reservation with the actual token usage. If the actual spend
-     * exceeds the reservation the run is blocked permanently (uncertain
-     * charge), mirroring the Cookbook's fail-closed rule.
+     * THE normal settlement path: real usage in, reservation released.
+     * Provider-reported usage settles exactly its total; estimated usage also
+     * settles its total but is recorded as ESTIMATED so telemetry never
+     * confuses the two. When the spend exceeds the reservation the run is
+     * blocked permanently (uncertain charge), mirroring the Cookbook's
+     * fail-closed rule.
      */
-    public void settle(Handle handle, long actualTokens) {
+    public void settle(Handle handle, TokenUsage usage) throws UncertainChargeException {
+        long actual = usage == null ? 0L : usage.totalTokens();
+        boolean estimated = usage == null || usage.isEstimated();
+        settleInternal(handle, actual, estimated);
+    }
+
+    /**
+     * Backward-compatible numeric settle; the caller declares whether the
+     * value is a real report or an estimate. Prefer
+     * {@link #settle(Handle, TokenUsage)}.
+     */
+    public void settle(Handle handle, long actualTokens, boolean estimated)
+            throws UncertainChargeException {
+        settleInternal(handle, actualTokens, estimated);
+    }
+
+    private void settleInternal(Handle handle, long actualTokens, boolean estimated) {
         if (handle == null || actualTokens < 0) {
             block();
             throw new UncertainChargeException("Invalid spend settlement");
@@ -149,6 +202,7 @@ public final class RunBudget {
             }
             pending -= held;
             spent += actualTokens;
+            lastSettlement = new Settlement(actualTokens, estimated);
             if (actualTokens > held) {
                 block();
                 throw new UncertainChargeException(
