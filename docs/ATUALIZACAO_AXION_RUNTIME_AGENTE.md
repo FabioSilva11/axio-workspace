@@ -48,6 +48,60 @@ workspace ativo, somente se comprovadamente do scId
 null → revert recusado (log de workspace incompatível)
 ```
 
+## Contrato de contexto (migração do modelo de contexto — Codex)
+
+> Segundo contrato arquitetural do Axion (paridade `Session → Cwd → Context`
+> do Codex). Resolve definitivamente `scId = A` + `activeWorkspace = B`.
+
+1. **UMA identidade de execução por run.** `RunContextFactory.resolve(scId)`
+   produz `WorkspaceIdentity + WorkspaceFileSystem` UMA vez no início do run;
+   prompt, AGENTS.md, snapshot, tools e mutations derivam dele.
+2. **Ordem de resolução do filesystem em execução:** binding do run
+   (`RuntimeFileContext.effectiveFileSystem()`) → workspace ativo global
+   (apenas hosts sem `RunContext`). Tools nunca voltam silenciosamente ao
+   global quando há run ativo.
+3. **`RunContext` é a única fonte de verdade do contexto:**
+   `scId → workspace → filesystem → instruções → snapshot → TaskMemory`.
+4. **AGENTS.md é hierárquico (Codex):** `AGENTS.md` da raiz até o cwd,
+   `AGENTS.override.md` substitui o arquivo regular do MESMO diretório;
+   lido SEMPRE do filesystem do run, com cache por identidade
+   (`fs|cwd`) — nunca `cache[A] = filesystem[B]`.
+5. **Snapshot honesto (anti-alucinação):** `ProjectDiscovery` só grava o que
+   verifica nos arquivos de build/manifest; o resto fica `UNKNOWN` e o
+   prompt instrui o modelo a descobrir com as tools — nunca inventar.
+6. **Separação de conceitos:** documentação (README) ≠ instruções
+   (AGENTS.md) ≠ memória de execução (`TaskMemory`) ≠ estado da conversa.
+7. **Memória de tarefa durável:** `TaskMemory` + `TaskMemoryStore` (JSON por
+   conversa em armazenamento interno do Axion) sobrevivem à compactação do
+   histórico e ao processo; `AgentMemory` é memória de run (não persistente,
+   documentado como tal); `AgentSession` é registro em memória do run.
+8. **Cadeia única:** `ChatActivity → AgentManager (pin da identidade) →
+   ContextBuilder/loop` e `AgentRuntime` usam a MESMA resolução
+   (`RunContextFactory` + `RuntimeFileContext`); `ApplyPatchTool`,
+   `VoidPortToolsService`, `ContextBuilder` e `FileChangeTracker` resolvem
+   runtime-first.
+
+```
+User → ChatActivity → AgentManager.processUserMessage
+  → RunContextFactory.resolve(scId) → RuntimeFileContext.pin(...)  ← identidade fixada
+  → loop: ContextBuilder (fs do run) → AiProviderService → tools (fs do run)
+          → mutations (fs do run) → FileChangeTracker (bind do fs do run)
+  → TaskMemoryStore.save (estado durável da tarefa)
+  → RuntimeFileContext.unpin (fim do run)
+```
+
+```
+AgentRuntime.run(agent, history, scId)   ← mesma resolução para hosts v2
+  → RunContextFactory.resolve → RunContext{identity, fs, instruções,
+    snapshot, TaskMemory} → RunContextAssembler (fragmentos com proveniência)
+  → turnos → tools → TaskMemoryStore.save/load
+```
+
+Classes da migração: `RunContext`, `WorkspaceIdentity`, `RunContextFactory`,
+`RuntimeFileContext`, `RunContextAssembler`, `ProjectInstructions`
+(hierárquico), `ProjectSnapshot` + `ProjectDiscovery`, `TaskMemory` +
+`TaskMemoryStore`. Testes: `ContextModelMigrationEvalTest` (8 evals).
+
 ## Estado atual (atualizado): fluxo de mutação de arquivos
 
 > Esta seção reflete o código implementado (não o plano original abaixo). O fluxo

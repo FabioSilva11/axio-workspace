@@ -19,7 +19,7 @@ public class CodexParityToolsTest {
 
     @Test
     public void contextRemaining_withoutBudget_reportsGracefulFallback() throws Exception {
-        RunContext context = new RunContext("sc1", "agent", new ContextTracker(null));
+        RunContext context = RunContext.bare("sc1", "agent", new ContextTracker(null));
         ContextRemainingTool tool = new ContextRemainingTool();
 
         AgentToolResult result = tool.execute(context, new JSONObject());
@@ -32,7 +32,7 @@ public class CodexParityToolsTest {
 
     @Test
     public void contextRemaining_withoutTracker_returnsGracefulNote() throws Exception {
-        RunContext legacyContext = new RunContext("sc1", "agent");
+        RunContext legacyContext = RunContext.bare("sc1", "agent", null);
         ContextRemainingTool tool = new ContextRemainingTool();
 
         AgentToolResult result = tool.execute(legacyContext, new JSONObject());
@@ -46,7 +46,7 @@ public class CodexParityToolsTest {
         RunBudget budget = new RunBudget(10_000);
         RunBudget.Handle handle = budget.reserve(1_500);
         budget.settle(handle, 1_500);
-        RunContext context = new RunContext("sc1", "agent", new ContextTracker(budget));
+        RunContext context = RunContext.bare("sc1", "agent", new ContextTracker(budget));
         context.contextTracker().recordInputEstimate(2_000);
         ContextRemainingTool tool = new ContextRemainingTool();
 
@@ -78,7 +78,7 @@ public class CodexParityToolsTest {
         RequestUserInputTool tool = new RequestUserInputTool(null);
 
         AgentToolResult result = tool.execute(
-                new RunContext("sc1", "agent"),
+                RunContext.bare("sc1", "agent", null),
                 new JSONObject().put("question", "Qual banco usar?"));
 
         assertTrue(result.isError());
@@ -90,7 +90,7 @@ public class CodexParityToolsTest {
         RequestUserInputTool tool = new RequestUserInputTool(null);
 
         AgentToolResult result = tool.execute(
-                new RunContext("sc1", "agent"), new JSONObject());
+                RunContext.bare("sc1", "agent", null), new JSONObject());
 
         assertTrue(result.isError());
         assertTrue(result.output().contains("question"));
@@ -103,7 +103,7 @@ public class CodexParityToolsTest {
         RequestUserInputTool tool = new RequestUserInputTool(channel);
 
         AgentToolResult result = tool.execute(
-                new RunContext("sc1", "agent"),
+                RunContext.bare("sc1", "agent", null),
                 new JSONObject()
                         .put("question", "Persistência local?")
                         .put("options", new org.json.JSONArray()
@@ -123,7 +123,7 @@ public class CodexParityToolsTest {
         RequestUserInputTool tool = new RequestUserInputTool(channel);
 
         AgentToolResult result = tool.execute(
-                new RunContext("sc1", "agent"),
+                RunContext.bare("sc1", "agent", null),
                 new JSONObject().put("question", "Renomear tudo?"));
 
         assertFalse(result.isError());
@@ -140,7 +140,7 @@ public class CodexParityToolsTest {
         for (int i = 0; i < 6; i++) {
             six.put(new JSONObject().put("label", "opt " + (i + 1)));
         }
-        tool.execute(new RunContext("sc1", "agent"),
+        tool.execute(RunContext.bare("sc1", "agent", null),
                 new JSONObject().put("question", "q").put("options", six));
 
         assertEquals("handler must receive at most 4 options",

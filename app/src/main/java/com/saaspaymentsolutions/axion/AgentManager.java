@@ -252,6 +252,37 @@ public class AgentManager {
         updateRunStatus(statusText);
     }
 
+    // ------------------------------------------------------------------
+    // Single execution identity (context-model migration, item 3): the
+    // workspace of THIS run is pinned from the scId before the loop starts,
+    // so every tool, ContextBuilder read and mutation goes to the run's
+    // filesystem — never to whatever workspace the UI has active.
+    // ------------------------------------------------------------------
+    private volatile AutoCloseable runIdentityPin;
+
+    private void beginRunIdentity() {
+        endRunIdentity();
+        try {
+            com.saaspaymentsolutions.axion.agentsdk.RunContextFactory.Resolved resolved =
+                    com.saaspaymentsolutions.axion.agentsdk.RunContextFactory.resolve(scId);
+            runIdentityPin = com.saaspaymentsolutions.axion.agentsdk.RuntimeFileContext.pin(
+                    resolved.workspace(), resolved.filesystem());
+        } catch (Exception e) {
+            runIdentityPin = null; // legacy global fallback stays active
+        }
+    }
+
+    private void endRunIdentity() {
+        AutoCloseable pin = runIdentityPin;
+        runIdentityPin = null;
+        if (pin != null) {
+            try {
+                pin.close();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
     public void processUserMessage(String userText) {
         processUserMessage(userText, null);
     }
@@ -279,6 +310,7 @@ public class AgentManager {
         int version = ++runVersion;
         initializeAgentExecution(displayText, contextPayload, stagingSelections);
         captureOperationContextForRun();
+        beginRunIdentity();
         beginInteractionTrace(version, displayText, stagingSelections);
         startAgentLoop(version, 0);
     }
@@ -293,6 +325,7 @@ public class AgentManager {
         String contextPayload = sourceMessage == null ? null : sourceMessage.getContextPayload();
         initializeAgentExecution(displayText, contextPayload, selections);
         captureOperationContextForRun();
+        beginRunIdentity();
         beginInteractionTrace(version, displayText, selections);
         startAgentLoop(version, 0);
     }
@@ -1817,6 +1850,26 @@ public class AgentManager {
                     if (isMutation) {
                         ContextBuilder.invalidateWorkspaceCache(scId);
                         awaitingRecoveredMutation = false;
+                        // Durable task memory (context-model migration, item 7):
+                        // the mutation survives compaction in the task store.
+                        try {
+                            com.saaspaymentsolutions.axion.agentsdk.TaskMemory runMemory =
+                                    com.saaspaymentsolutions.axion.agentsdk.TaskMemoryStore.load(
+                                            com.saaspaymentsolutions.axion.agentsdk.TaskMemoryStore.LEGACY_RUN_KEY);
+                            if (runMemory == null) {
+                                runMemory = new com.saaspaymentsolutions.axion.agentsdk.TaskMemory(
+                                        scId, "", agentMemory == null ? "" : agentMemory.getOriginalUserMessage());
+                            }
+                            String mutatedPath = argsPathOf(toolMsg);
+                            if (mutatedPath != null) {
+                                runMemory.recordFile(mutatedPath);
+                                runMemory.recordAppliedChange(toolName + ": " + mutatedPath);
+                            }
+                            com.saaspaymentsolutions.axion.agentsdk.TaskMemoryStore.save(
+                                    com.saaspaymentsolutions.axion.agentsdk.TaskMemoryStore.LEGACY_RUN_KEY,
+                                    runMemory);
+                        } catch (Exception ignored) {
+                        }
                     }
                     if (taskPlan != null) {
                         taskPlan.recordToolUsage(toolName);
@@ -2192,12 +2245,29 @@ public class AgentManager {
         currentStreamingMessage = null;
         currentToolThread = null;
         currentOperationContext = null;
+        endRunIdentity();
         multiAgentOrchestrator.endOperation();
         setState(State.IDLE);
         if (interactionTrace != null) {
             emitTraceSummary("processamento concluído");
         }
         listener.onProcessingFinished();
+    }
+
+    /** Best-effort path extraction from a tool message for task memory. */
+    @Nullable
+    private static String argsPathOf(ChatMessage toolMsg) {
+        try {
+            String args = toolMsg.getToolArgs();
+            if (args == null || args.isEmpty()) {
+                return null;
+            }
+            org.json.JSONObject json = new org.json.JSONObject(args);
+            String path = json.optString("uri", json.optString("path", ""));
+            return path.isEmpty() ? null : path;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private void captureOperationContextForRun() {

@@ -118,7 +118,11 @@ public class RuntimeM367IntegrationTest {
         File root = temp.newFolder("ws");
         WorkspaceFileSystem fs = new LocalFolderWorkspaceFileSystem(root);
         fs.writeText("AGENTS.md", "# Regras do projeto\nSem TODOs no código.");
-        ProjectInstructions.setOverrideFileSystem(fs);
+        // The runtime resolves instructions from the RUN's filesystem: force
+        // the scId→workspace resolution instead of the legacy global override.
+        RunContextFactory.setOverrideForTest(new RunContextFactory.Resolved(
+                new WorkspaceIdentity("sc_m7", "", root.toURI().toString(), "ws", ""),
+                fs));
 
         RecordingGateway gateway = new RecordingGateway(
                 FakeAgentLlmGateway.ScriptedTurn.text("ok"));
@@ -126,13 +130,15 @@ public class RuntimeM367IntegrationTest {
                 .includeProjectInstructions(true)
                 .build();
 
-        RunResult result = runtime.run(scriptedAgent(), "oi", "sc_m7");
-        ProjectInstructions.setOverrideFileSystem(null);
-
-        assertTrue(result.isSuccessful());
-        assertNotNull(gateway.lastSystemPrompt);
-        assertTrue("system prompt must contain AGENTS.md content",
-                gateway.lastSystemPrompt.contains("Regras do projeto"));
+        try {
+            RunResult result = runtime.run(scriptedAgent(), "oi", "sc_m7");
+            assertTrue(result.isSuccessful());
+            assertNotNull(gateway.lastSystemPrompt);
+            assertTrue("system prompt must contain AGENTS.md content",
+                    gateway.lastSystemPrompt.contains("Regras do projeto"));
+        } finally {
+            RunContextFactory.clearOverrideForTest();
+        }
     }
 
     @Test

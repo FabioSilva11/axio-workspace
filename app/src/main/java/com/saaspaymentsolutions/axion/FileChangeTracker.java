@@ -106,10 +106,14 @@ public class FileChangeTracker {
     public static void trackChange(String scId, String filePath, String before, String after,
                                    boolean existedBefore) {
         if (!valid(scId) || !valid(filePath)) return;
-        // The caller just mutated through the active filesystem: bind it as
-        // the workspace of this change so reverts land in the right project
-        // even after the user switches workspaces.
-        bindFileSystem(scId, WorkspaceManager.getActiveFileSystem());
+        // The caller just mutated through a filesystem: bind THAT one as the
+        // workspace of this change so reverts land in the right project even
+        // after the user switches workspaces. Runtime-first: when a run is in
+        // flight the mutation went through the run's filesystem, so prefer it
+        // over the global active selection (which is a UI choice).
+        WorkspaceFileSystem runFs =
+                com.saaspaymentsolutions.axion.agentsdk.RuntimeFileContext.effectiveFileSystem();
+        bindFileSystem(scId, runFs != null ? runFs : WorkspaceManager.getActiveFileSystem());
         Object lock = lockFor(scId);
         synchronized (lock) {
             ensureLoadedLocked(scId);

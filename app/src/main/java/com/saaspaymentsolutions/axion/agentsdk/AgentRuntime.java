@@ -89,7 +89,37 @@ public final class AgentRuntime {
             }
         }
 
-        RunContext context = new RunContext(scId, agent.name(), new ContextTracker(budget));
+        // ---- Single execution identity (item 2/3 of the migration) ----
+        // The workspace of this run is resolved ONCE from the scId — never
+        // from the global active workspace, which is a UI selection that may
+        // point anywhere. Prompt, AGENTS.md, snapshot, tools and mutations
+        // all derive from this RunContext.
+        final RunContextFactory.Resolved resolved = RunContextFactory.resolve(scId);
+        RunContext context = new RunContext(
+                scId,
+                resolved.workspace(),
+                resolved.filesystem(),
+                includeProjectInstructions
+                        ? ProjectInstructions.load(resolved.filesystem(), cwdOf(resolved), PROJECT_INSTRUCTIONS_MAX_CHARS)
+                        : "",
+                includeProjectInstructions
+                        ? ProjectDiscovery.discover(resolved.filesystem(), cwdOf(resolved))
+                        : null,
+                new TaskMemory(scId, environmentIdOf(resolved), latestUserText(history)),
+                new ContextTracker(budget),
+                agent.name());
+
+        // Pin the run's filesystem for the whole run (cross-thread): tools,
+        // ContextBuilder and ApplyPatchTool read RuntimeFileContext instead
+        // of the global active workspace while this run is in flight.
+        final AutoCloseable pinned = RuntimeFileContext.pin(resolved.workspace(), resolved.filesystem());
+
+        // Compaction-proof handoff (item 7 of the migration): the previous
+        // run's durable task state (objective, relevant files, progress) is
+        // restored from the task store, so a compacted history never erases
+        // where the task stands.
+        TaskMemoryStore.restoreInto(scId, context.taskMemory());
+
         Agent activeAgent = agent;
         int turns = 0;
         try {
@@ -128,7 +158,7 @@ public final class AgentRuntime {
                         }
                     });
                     turn = gateway.completeTurn(
-                            resolveSystemPrompt(activeAgent),
+                            resolveSystemPrompt(activeAgent, context),
                             toolSchemasFor(withParityTools(activeAgent)),
                             history,
                             null);
@@ -235,7 +265,7 @@ public final class AgentRuntime {
                     // Side-effect announcement first, then the call completion:
                     // by the time the model and the UI see "completed", the
                     // filesystem change and its FileChanged already happened.
-                    emitFileChangedIfAny(scId, tool, args, result);
+                    emitFileChangedIfAny(context, tool, args, result);
                     emit(new AgentEvent.ToolCallCompleted(scId, tool.name(), call, result));
                     appendToolResult(history, call, result.output());
 
@@ -256,6 +286,13 @@ public final class AgentRuntime {
             return RunResult.maxTurnsReached(context, "");
         } finally {
             sessionSnapshot = session;
+            // Durable task memory: the NEXT run (and process restart) starts
+            // from this state even when the history gets compacted.
+            TaskMemoryStore.save(scId, context.taskMemory());
+            try {
+                pinned.close();
+            } catch (Exception ignored) {
+            }
         }
     }
 
@@ -321,18 +358,17 @@ public final class AgentRuntime {
     // helpers
     // ------------------------------------------------------------------
 
-    /** M7: agent instructions + durable project memory (AGENTS.md). */
-    private String resolveSystemPrompt(Agent agent) {
+    /**
+     * Codex context assembly (item 12 of the migration): structured
+     * fragments — agent instructions, AGENTS.md hierarchy, workspace
+     * snapshot and task memory — rendered in a fixed order from THIS run's
+     * {@link RunContext}. Never reads the global active workspace.
+     */
+    private String resolveSystemPrompt(Agent agent, RunContext context) {
         if (!includeProjectInstructions) {
             return agent.instructions();
         }
-        String agents = ProjectInstructions.load(PROJECT_INSTRUCTIONS_MAX_CHARS);
-        if (agents.isEmpty()) {
-            return agent.instructions();
-        }
-        return agent.instructions()
-                + "\n\n## AGENTS.md do workspace\n\n"
-                + agents;
+        return RunContextAssembler.assemble(agent, context).renderPrompt();
     }
 
     /** ~4 chars per token, same estimate used by AgentManager. */
@@ -377,21 +413,48 @@ public final class AgentRuntime {
     /** Upper bound for AGENTS.md injection (~600 tokens). */
     private static final int PROJECT_INSTRUCTIONS_MAX_CHARS = 2400;
 
+    /** Workspace-relative cwd of the resolved run (root when absent). */
+    private static String cwdOf(RunContextFactory.Resolved resolved) {
+        return resolved != null
+                && resolved.workspace() != null
+                && resolved.workspace().cwd() != null
+                ? resolved.workspace().cwd()
+                : "";
+    }
+
+    /** Stable environment id of the resolved run (workspace id, else scId). */
+    private static String environmentIdOf(RunContextFactory.Resolved resolved) {
+        if (resolved != null && resolved.workspace() != null
+                && !resolved.workspace().workspaceId().isEmpty()) {
+            return resolved.workspace().workspaceId();
+        }
+        return "";
+    }
+
     private void emit(AgentEvent event) {
         events.emit(event);
     }
 
-    /** Emits FileChanged for registry file tools (best-effort attribution). */
-    private void emitFileChangedIfAny(String scId, AgentTool tool, JSONObject args, AgentToolResult result) {
+    /**
+     * Emits FileChanged for registry file tools (best-effort attribution)
+     * and records the touched file into the run's task memory so the state
+     * survives compaction.
+     */
+    private void emitFileChangedIfAny(RunContext context, AgentTool tool, JSONObject args, AgentToolResult result) {
+        String scId = context.scId();
         if (result == null || result.isError() || args == null || !tool.isFileMutation()) {
             return;
+        }
+        String path = args.optString("uri", args.optString("path", ""));
+        if (context.taskMemory() != null && !path.isEmpty()) {
+            context.taskMemory().recordFile(path);
+            context.taskMemory().recordAppliedChange(tool.name() + ": " + path);
         }
         // apply_patch announces its own committed mutations per file; the
         // heuristic below cannot attribute them (it looks at uri/path args).
         if ("apply_patch".equals(tool.name())) {
             return;
         }
-        String path = args.optString("uri", args.optString("path", ""));
         if (path.isEmpty()) {
             return;
         }

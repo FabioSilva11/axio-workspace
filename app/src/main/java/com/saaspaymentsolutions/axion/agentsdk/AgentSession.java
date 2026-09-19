@@ -11,9 +11,15 @@ import java.util.List;
 
 /**
  * Stateful record of one agent run, mirroring the session concept of
- * openai-agents-js and the distributed session of AgentScope (single-device
- * flavor): messages, usage counters, permission audit trail and the bounded
- * event log that hosts can replay after process death.
+ * openai-agents-js: messages, usage counters, permission audit trail and a
+ * bounded event log.
+ *
+ * <p><b>Persistence contract (honest):</b> this class is a per-run,
+ * IN-MEMORY record only. Nothing here is written to disk; durable state
+ * lives elsewhere — chat history in {@code SqliteChatStorage}, file-change
+ * audit in {@code FileChangeTracker} (Axion-internal files), and the run's
+ * task state in {@link TaskMemory} + {@link TaskMemoryStore}. The event log
+ * is bounded to {@value #MAX_EVENT_LOG} entries and is also memory-only.</p>
  *
  * <p>Thread-safety: mutated only by the runtime's run thread; snapshots are
  * defensive copies so UI threads can read freely.</p>

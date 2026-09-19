@@ -446,7 +446,21 @@ public class ContextBuilder {
         }
         String result = "NO FOLDERS OPEN";
         try {
-            com.saaspaymentsolutions.axion.workspace.WorkspaceFileSystem fs = com.saaspaymentsolutions.axion.workspace.WorkspaceManager.getActiveFileSystem();
+            // Context-model migration (item 10): when a run is in flight the
+            // cache key and the filesystem BOTH come from the run's identity,
+            // so cache[A] can never be backed by filesystem[B]. The legacy
+            // scId key is kept for non-run callers (host-only assembly).
+            com.saaspaymentsolutions.axion.agentsdk.WorkspaceIdentity runIdentity =
+                    com.saaspaymentsolutions.axion.agentsdk.RuntimeFileContext.effectiveIdentity();
+            com.saaspaymentsolutions.axion.workspace.WorkspaceFileSystem fs =
+                    com.saaspaymentsolutions.axion.agentsdk.RuntimeFileContext.effectiveFileSystem();
+            if (runIdentity != null && fs != null
+                    && runIdentity.scId() != null && !runIdentity.scId().isEmpty()) {
+                cacheKey = runIdentity.scId() + "@" + runIdentity.rootUri();
+            }
+            if (fs == null) {
+                fs = com.saaspaymentsolutions.axion.workspace.WorkspaceManager.getActiveFileSystem();
+            }
             if (fs != null) {
                 result = com.saaspaymentsolutions.axion.workspace.WorkspaceScanner.generateStructureOverview(fs, 100);
             } else {

@@ -4,7 +4,7 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * Immutable result of a {@link Runner} run, mirroring
+ * Immutable result of an {@link AgentRuntime} run, mirroring
  * {@code RunnerResult/RunResult} from openai-agents-js.
  */
 public final class RunResult {
@@ -16,9 +16,11 @@ public final class RunResult {
     private final String failureReason;
     private final GuardrailResult guardrail;
     private final List<String> handoffTrail;
+    private final RunContext context;
 
     private RunResult(Status status, String output, String failureReason,
-                      GuardrailResult guardrail, List<String> handoffTrail) {
+                      GuardrailResult guardrail, List<String> handoffTrail,
+                      RunContext context) {
         this.status = status;
         this.output = output == null ? "" : output;
         this.failureReason = failureReason == null ? "" : failureReason;
@@ -26,24 +28,34 @@ public final class RunResult {
         this.handoffTrail = handoffTrail == null
                 ? Collections.emptyList()
                 : Collections.unmodifiableList(handoffTrail);
+        this.context = context;
     }
 
     static RunResult success(String output, RunContext context) {
-        return new RunResult(Status.SUCCESS, output, "", null, context.handoffTrail());
+        return new RunResult(Status.SUCCESS, output, "", null, context.handoffTrail(), context);
     }
 
     static RunResult maxTurnsReached(RunContext context, String partialOutput) {
         return new RunResult(Status.MAX_TURNS, partialOutput,
-                "Max turns reached.", null, context.handoffTrail());
+                "Max turns reached.", null, context.handoffTrail(), context);
     }
 
     static RunResult blockedByGuardrail(GuardrailResult result) {
         return new RunResult(Status.GUARDRAIL_BLOCKED, "", "",
-                result, Collections.emptyList());
+                result, Collections.emptyList(), null);
     }
 
     static RunResult failure(String reason) {
-        return new RunResult(Status.FAILED, "", reason, null, Collections.emptyList());
+        return new RunResult(Status.FAILED, "", reason, null, Collections.emptyList(), null);
+    }
+
+    /**
+     * The {@link RunContext} of the run, when one was created (guardrail
+     * blocks and pre-context failures return {@code null}). Hosts use it to
+     * persist the {@link TaskMemory} after the run ends.
+     */
+    public RunContext context() {
+        return context;
     }
 
     public boolean isSuccessful() {

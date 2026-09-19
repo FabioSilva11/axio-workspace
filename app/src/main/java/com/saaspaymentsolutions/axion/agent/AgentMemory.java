@@ -10,13 +10,20 @@ import java.util.List;
 import com.saaspaymentsolutions.axion.ChatReference;
 
 /**
- * AgentMemory preserves the user's original intent and critical context
- * throughout the agent loop, surviving history compaction and multiple iterations.
+ * Host-side, per-message view of the user's intent: the original request,
+ * key files and requirements of the CURRENT run, injected into the system
+ * prompt so the loop never loses the thread mid-turn. This addresses the
+ * "Memory of Intent" problem inside one run.
  *
- * This addresses the "Memory of Intent" problem where the agent loses track of
- * the original objective after history is compacted.
- *
- * Inspired by Cursor and Void IDE's approach to maintaining persistent context.
+ * <p><b>Scope contract (honest):</b> this is RUN memory, not persistent
+ * memory — it lives only while the run is in flight and is rebuilt from the
+ * user message on every run. Durable task state (objective, relevant files,
+ * progress, applied changes across runs AND history compaction) is carried
+ * by {@code com.saaspaymentsolutions.axion.agentsdk.TaskMemory} and
+ * persisted by {@code TaskMemoryStore}. Documentation, instructions and
+ * memory stay separate concepts: README.md is human documentation,
+ * AGENTS.md is operational instruction, this class is neither — it is run
+ * state.</p>
  */
 public class AgentMemory {
 

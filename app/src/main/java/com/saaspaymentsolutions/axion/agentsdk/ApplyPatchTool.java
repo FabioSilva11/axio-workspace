@@ -127,8 +127,16 @@ public final class ApplyPatchTool implements AgentTool {
             return AgentToolResult.error("Error: invalid patch — " + e.getMessage());
         }
 
-        // ---- Pass 1: validate everything against the current workspace ----
-        WorkspaceFileSystem fs = injectedFs != null ? injectedFs : WorkspaceManager.getActiveFileSystem();
+        // ---- Pass 1: validate everything against the run's workspace ----
+        // Resolution order (context-model migration, item 14): injected fs
+        // (tests) → the pinned run filesystem (RuntimeFileContext) → the
+        // global active workspace (legacy host without a RunContext).
+        WorkspaceFileSystem fs = injectedFs != null
+                ? injectedFs
+                : RuntimeFileContext.effectiveFileSystem();
+        if (fs == null) {
+            fs = WorkspaceManager.getActiveFileSystem();
+        }
         if (fs == null) {
             return AgentToolResult.error("Error: no active workspace is open.");
         }

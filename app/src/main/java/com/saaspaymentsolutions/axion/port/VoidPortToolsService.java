@@ -621,7 +621,10 @@ public final class VoidPortToolsService {
             // WorkspaceFileSystem (SAF or local folder), never through
             // java.io.File. ProjectPathResolver below is only a fallback for
             // sessions with no workspace open.
-            WorkspaceFileSystem ws = WorkspaceManager.getActiveFileSystem();
+            WorkspaceFileSystem ws = com.saaspaymentsolutions.axion.agentsdk.RuntimeFileContext.effectiveFileSystem();
+            if (ws == null) {
+                ws = WorkspaceManager.getActiveFileSystem();
+            }
             if (ws != null) {
                 return createThroughWorkspace(scId, ws, uriStr, isFolder);
             }
@@ -708,7 +711,10 @@ public final class VoidPortToolsService {
             // (SAF or local folder), never straight through java.io.File. The legacy
             // ProjectPathResolver path below is only a fallback for sessions with no
             // workspace open.
-            WorkspaceFileSystem ws = WorkspaceManager.getActiveFileSystem();
+            WorkspaceFileSystem ws = com.saaspaymentsolutions.axion.agentsdk.RuntimeFileContext.effectiveFileSystem();
+            if (ws == null) {
+                ws = WorkspaceManager.getActiveFileSystem();
+            }
             if (ws != null) {
                 return deleteThroughWorkspace(scId, ws, uriStr, isRecursive);
             }
@@ -841,7 +847,11 @@ public final class VoidPortToolsService {
                     || com.saaspaymentsolutions.axion.workspace.WorkspacePath.hasParentTraversal(destination)) {
                 return new ToolCallResult("Security error: path traversal blocked");
             }
-            com.saaspaymentsolutions.axion.workspace.WorkspaceFileSystem fs = com.saaspaymentsolutions.axion.workspace.WorkspaceManager.getActiveFileSystem();
+            com.saaspaymentsolutions.axion.workspace.WorkspaceFileSystem fs =
+                    com.saaspaymentsolutions.axion.agentsdk.RuntimeFileContext.effectiveFileSystem();
+            if (fs == null) {
+                fs = com.saaspaymentsolutions.axion.workspace.WorkspaceManager.getActiveFileSystem();
+            }
             if (fs != null) {
                 boolean ok = fs.move(source, destination);
                 return new ToolCallResult(ok ? "File moved successfully from " + source + " to " + destination : "Failed to move file");
@@ -868,7 +878,11 @@ public final class VoidPortToolsService {
                     || com.saaspaymentsolutions.axion.workspace.WorkspacePath.hasParentTraversal(newName)) {
                 return new ToolCallResult("Security error: path traversal blocked");
             }
-            com.saaspaymentsolutions.axion.workspace.WorkspaceFileSystem fs = com.saaspaymentsolutions.axion.workspace.WorkspaceManager.getActiveFileSystem();
+            com.saaspaymentsolutions.axion.workspace.WorkspaceFileSystem fs =
+                    com.saaspaymentsolutions.axion.agentsdk.RuntimeFileContext.effectiveFileSystem();
+            if (fs == null) {
+                fs = com.saaspaymentsolutions.axion.workspace.WorkspaceManager.getActiveFileSystem();
+            }
             if (fs != null) {
                 boolean ok = fs.rename(uri, newName);
                 return new ToolCallResult(ok ? "File renamed successfully to " + newName : "Failed to rename file");
@@ -894,7 +908,11 @@ public final class VoidPortToolsService {
                     || com.saaspaymentsolutions.axion.workspace.WorkspacePath.hasParentTraversal(destination)) {
                 return new ToolCallResult("Security error: path traversal blocked");
             }
-            com.saaspaymentsolutions.axion.workspace.WorkspaceFileSystem fs = com.saaspaymentsolutions.axion.workspace.WorkspaceManager.getActiveFileSystem();
+            com.saaspaymentsolutions.axion.workspace.WorkspaceFileSystem fs =
+                    com.saaspaymentsolutions.axion.agentsdk.RuntimeFileContext.effectiveFileSystem();
+            if (fs == null) {
+                fs = com.saaspaymentsolutions.axion.workspace.WorkspaceManager.getActiveFileSystem();
+            }
             if (fs != null) {
                 boolean ok = fs.copy(source, destination);
                 return new ToolCallResult(ok ? "File copied successfully from " + source + " to " + destination : "Failed to copy file");
@@ -915,7 +933,11 @@ public final class VoidPortToolsService {
             if (com.saaspaymentsolutions.axion.workspace.WorkspacePath.hasParentTraversal(uri)) {
                 return new ToolCallResult("Security error: path traversal blocked");
             }
-            com.saaspaymentsolutions.axion.workspace.WorkspaceFileSystem fs = com.saaspaymentsolutions.axion.workspace.WorkspaceManager.getActiveFileSystem();
+            com.saaspaymentsolutions.axion.workspace.WorkspaceFileSystem fs =
+                    com.saaspaymentsolutions.axion.agentsdk.RuntimeFileContext.effectiveFileSystem();
+            if (fs == null) {
+                fs = com.saaspaymentsolutions.axion.workspace.WorkspaceManager.getActiveFileSystem();
+            }
             if (fs != null) {
                 com.saaspaymentsolutions.axion.workspace.WorkspaceFileSystem.FileMetadata meta = fs.getMetadata(uri);
                 if (meta != null) {
@@ -1918,7 +1940,11 @@ public final class VoidPortToolsService {
                 return null;
             }
             String norm = com.saaspaymentsolutions.axion.workspace.WorkspacePath.normalize(uriStr);
-            com.saaspaymentsolutions.axion.workspace.WorkspaceFileSystem fs = com.saaspaymentsolutions.axion.workspace.WorkspaceManager.getActiveFileSystem();
+            com.saaspaymentsolutions.axion.workspace.WorkspaceFileSystem fs =
+                    com.saaspaymentsolutions.axion.agentsdk.RuntimeFileContext.effectiveFileSystem();
+            if (fs == null) {
+                fs = com.saaspaymentsolutions.axion.workspace.WorkspaceManager.getActiveFileSystem();
+            }
             if (fs != null && fs.exists(norm) && !fs.isDirectory(norm)) {
                 return fs.readText(norm);
             }
@@ -1938,7 +1964,11 @@ public final class VoidPortToolsService {
                 return false;
             }
             String norm = com.saaspaymentsolutions.axion.workspace.WorkspacePath.normalize(uriStr);
-            com.saaspaymentsolutions.axion.workspace.WorkspaceFileSystem fs = com.saaspaymentsolutions.axion.workspace.WorkspaceManager.getActiveFileSystem();
+            com.saaspaymentsolutions.axion.workspace.WorkspaceFileSystem fs =
+                    com.saaspaymentsolutions.axion.agentsdk.RuntimeFileContext.effectiveFileSystem();
+            if (fs == null) {
+                fs = com.saaspaymentsolutions.axion.workspace.WorkspaceManager.getActiveFileSystem();
+            }
             if (fs != null) {
                 fs.writeText(norm, content);
                 return true;
