@@ -130,6 +130,18 @@ public class AiProviderService {
         }
     }
 
+    /**
+     * Request-scoped protocol declaration (tool-call execution contract,
+     * item 7 — Codex {@code ResponseItem::FunctionCall} vs
+     * {@code ResponseItem::Message}): a listener implementing this marker
+     * receives tool calls ONLY from the provider's structured envelope.
+     * Assistant text is never mined for XML/JSON/DSML tool protocols and
+     * never re-emitted as {@code onToolCall}. Set exclusively by the
+     * AgentRuntime v2 gateway; the legacy chat never sets it.
+     */
+    public interface NativeToolCallsOnly {
+    }
+
     private static final class StreamPerf {
         private final long startedAt = SystemClock.elapsedRealtime();
         private long firstChunkAt;
@@ -243,9 +255,14 @@ public class AiProviderService {
         private final StreamListener delegate;
         final java.util.concurrent.atomic.AtomicBoolean emitted =
                 new java.util.concurrent.atomic.AtomicBoolean(false);
+        /** True when the delegate declared the native-only tool protocol. */
+        final boolean nativeToolCallsOnly;
 
         EmissionTracker(StreamListener delegate) {
             this.delegate = delegate;
+            this.nativeToolCallsOnly = delegate instanceof NativeToolCallsOnly
+                    || (delegate instanceof EmissionTracker
+                    && ((EmissionTracker) delegate).nativeToolCallsOnly);
         }
 
         @Override
@@ -2779,6 +2796,17 @@ public class AiProviderService {
             List<ToolCall> nativeCalls,
             JSONArray tools,
             StreamListener listener) {
+        // v2 contract (Codex ResponseItem parity): when the caller declares
+        // NATIVE_TOOL_CALLS_ONLY (the AgentRuntime gateway), the structured
+        // envelope is the ONLY source of tool calls. Text passes through
+        // untouched — nothing is mined from it and nothing text-derived is
+        // re-emitted as onToolCall. Legacy chat listeners keep the
+        // sanitizing detector for old integrations (explicit LEGACY path).
+        if (listener instanceof EmissionTracker
+                && ((EmissionTracker) listener).nativeToolCallsOnly) {
+            return new ToolCallParseResult("native",
+                    new ArrayList<>(nativeCalls), content, reasoning);
+        }
         ToolCallParseResult result = toolCallDetector.detect(
                 new ToolCallResponse(
                         content,

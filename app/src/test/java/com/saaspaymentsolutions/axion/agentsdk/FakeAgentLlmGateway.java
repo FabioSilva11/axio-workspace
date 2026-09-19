@@ -48,6 +48,11 @@ public final class FakeAgentLlmGateway implements AgentLlmGateway {
             return new ScriptedTurn("", Arrays.asList(calls));
         }
 
+        /** Assistant text AND structured tool call in the same turn (test 11). */
+        public static ScriptedTurn textWithToolCall(String content, ToolCall... calls) {
+            return new ScriptedTurn(content, Arrays.asList(calls));
+        }
+
         public String content() {
             return content;
         }

@@ -39,20 +39,22 @@ public final class AgentRuntime {
     private final ApprovalHandler inputChannel;
     private final int maxOutputTokensPerTurn;
     private final boolean includeProjectInstructions;
-    private final AgentTurnParser turnParser = new AgentTurnParser();
-    private final ToolExecutor toolExecutor = new ToolExecutor();
+    private final AgentToolRouter toolRouter;
+    private final boolean expectFileMutations;
     private volatile boolean cancelRequested;
 
     private AgentRuntime(Builder builder) {
         this.gateway = builder.gateway;
         this.events = builder.events;
         this.permissions = builder.permissions;
+        this.toolRouter = new AgentToolRouter(permissions, events);
         this.inputGuardrails = Collections.unmodifiableList(new ArrayList<>(builder.inputGuardrails));
         this.maxTurns = Math.max(1, builder.maxTurns);
         this.budget = builder.budget;
         this.inputChannel = builder.inputChannel;
         this.maxOutputTokensPerTurn = builder.maxOutputTokensPerTurn;
         this.includeProjectInstructions = builder.includeProjectInstructions;
+        this.expectFileMutations = builder.expectFileMutations;
     }
 
     /** Single-shot run: user input in, final assistant text out. */
@@ -122,6 +124,8 @@ public final class AgentRuntime {
 
         Agent activeAgent = agent;
         int turns = 0;
+        int recoveryNudges = 0;
+        toolRouter.resetForNewRun();
         try {
             while (turns++ < maxTurns) {
                 if (cancelRequested) {
@@ -186,14 +190,39 @@ public final class AgentRuntime {
                 context.contextTracker().recordInputEstimate(estimatedInputTokens(history));
                 context.incrementLlmCalls();
 
-                AgentTurnParser.ParsedTurn parsed = turnParser.parse(
-                        turn.content(), turn.reasoning(), turn.finishReason(), turn.toolCalls());
+                // ---- Source of truth (Codex ResponseItem parity) ----------
+                // structuredToolCalls = executable facts from the provider
+                // envelope; assistantText = displayable message. The runtime
+                // NEVER re-derives tool calls from the text.
+                List<ToolCall> structuredCalls = turn.toolCalls() == null
+                        ? Collections.emptyList()
+                        : turn.toolCalls();
+                String assistantText = turn.content() == null ? "" : turn.content().trim();
 
-                if (!parsed.hasToolCalls()) {
-                    String output = parsed.content().trim();
-                    emit(new AgentEvent.AssistantMessage(scId, output));
+                if (structuredCalls.isEmpty()) {
+                    if (assistantText.isEmpty()) {
+                        String reason = "LLM returned an empty turn.";
+                        emit(new AgentEvent.Error(scId, reason));
+                        session.setStatus(AgentSession.Status.FAILED);
+                        emit(new AgentEvent.RunCompleted(scId, false, reason));
+                        return RunResult.failure(reason);
+                    }
+                    // Recovery (item 15/test 15): the host declared this task
+                    // must end with a file mutation, and the model answered in
+                    // plain text without applying any. ONE nudge, then accept
+                    // the answer — never a loop.
+                    if (expectFileMutations
+                            && context.taskMemory() != null
+                            && context.taskMemory().appliedChanges().isEmpty()
+                            && recoveryNudges < 1) {
+                        recoveryNudges++;
+                        history.add(new ChatMessage(RECOVERY_NUDGE, ChatMessage.TYPE_USER,
+                                System.currentTimeMillis()));
+                        continue;
+                    }
+                    emit(new AgentEvent.AssistantMessage(scId, assistantText));
                     for (Guardrail guardrail : activeAgent.outputGuardrails()) {
-                        GuardrailResult result = guardrail.checkOutput(output);
+                        GuardrailResult result = guardrail.checkOutput(assistantText);
                         if (result.isTripwireTriggered()) {
                             session.setStatus(AgentSession.Status.FAILED);
                             emit(new AgentEvent.RunCompleted(scId, false, "Blocked by output guardrail"));
@@ -202,75 +231,52 @@ public final class AgentRuntime {
                     }
                     session.setStatus(AgentSession.Status.COMPLETED);
                     emit(new AgentEvent.RunCompleted(scId, true, ""));
-                    return RunResult.success(output, context);
+                    return RunResult.success(assistantText, context);
+                }
+
+                // Assistant text is display-only when tools also arrived: it
+                // stays OUT of the execution path (semantic separation).
+                if (!assistantText.isEmpty()) {
+                    emit(new AgentEvent.AssistantMessageDelta(scId, assistantText));
                 }
 
                 boolean handedOff = false;
-                for (ToolCall call : parsed.toolCalls()) {
+                for (ToolCall legacyCall : structuredCalls) {
                     if (cancelRequested) {
                         session.setStatus(AgentSession.Status.CANCELLED);
                         emit(new AgentEvent.RunCompleted(scId, false, "Run cancelled"));
                         return RunResult.failure("Run cancelled.");
                     }
-                    AgentTool tool = findTool(activeAgent, call.getName());
-                    if (tool == null) {
-                        tool = findParityTool(call.getName());
-                    }
-                    if (tool == null) {
-                        String message = "Error: unknown tool '" + call.getName() + "'.";
-                        emit(new AgentEvent.Error(scId, message));
-                        appendToolResult(history, call, message);
+                    AgentToolRouter.StructuredToolCall call = new AgentToolRouter.StructuredToolCall(
+                            legacyCall.getId(), legacyCall.getName(), legacyCall.getArguments());
+                    List<AgentTool> toolset = withParityTools(activeAgent);
+                    AgentToolRouter.RoutedCall routed = toolRouter.route(
+                            toolset, call, scId, context, new AgentToolRouter.LoopHooks() {
+                                @Override
+                                public void onToolCallStarted(AgentToolRouter.StructuredToolCall c, AgentTool t) {
+                                    context.incrementToolCalls();
+                                    emit(new AgentEvent.ToolCallStarted(scId, t.name(), legacyCall));
+                                }
+
+                                @Override
+                                public void onToolCallCompleted(AgentToolRouter.StructuredToolCall c, AgentTool t, AgentToolResult r) {
+                                    if (r != null) {
+                                        // Unknown tools arrive with t == null:
+                                        // the call's own name is the identity.
+                                        emit(new AgentEvent.ToolCallCompleted(scId,
+                                                t != null ? t.name() : c.toolName(), legacyCall, r));
+                                    }
+                                }
+                            });
+                    if (routed.wasDeduplicated()) {
                         continue;
                     }
-
-                    // The runtime lends its own EventStream and scId to patch
-                    // tools built without one, so FileChanged events and the
-                    // FileChangeTracker records flow on THIS run's channel —
-                    // never a detached stream.
-                    if (tool instanceof ApplyPatchTool && ((ApplyPatchTool) tool).hasNoStream()) {
-                        tool = ((ApplyPatchTool) tool).boundTo(events, scId);
+                    AgentToolResult result = routed.result();
+                    if (result != null) {
+                        appendToolResult(history, legacyCall, result.output());
                     }
-
-                    // Permission layer first: DENY never reaches the user,
-                    // ASK_USER parks the run until the host decides.
-                    if (permissions != null) {
-                        PermissionLayer.Outcome outcome = permissions.check(tool, call, scId);
-                        if (outcome == PermissionLayer.Outcome.BLOCKED) {
-                            appendToolResult(history, call,
-                                    "Error: execution of '" + call.getName()
-                                            + "' was denied by policy or user.");
-                            continue;
-                        }
-                    }
-
-                    context.incrementToolCalls();
-                    emit(new AgentEvent.ToolCallStarted(scId, tool.name(), call));
-
-                    // Sandbox pre-check for tools that enforce their own rules
-                    // (e.g. shell deny-list). A non-null result blocks execution.
-                    if (tool instanceof SandboxAwareTool) {
-                        AgentToolResult pre = ((SandboxAwareTool) tool).preExecute(call);
-                        if (pre != null) {
-                            emit(new AgentEvent.ToolCallCompleted(scId, tool.name(), call, pre));
-                            appendToolResult(history, call, pre.output());
-                            continue;
-                        }
-                    }
-
-                    JSONObject args = toolExecutor.parseArguments(call.getArguments());
-                    AgentToolResult result = args == null
-                            ? AgentToolResult.error("Error: invalid JSON arguments for '"
-                            + call.getName() + "'.")
-                            : toolExecutor.run(tool, context, args);
-                    // Side-effect announcement first, then the call completion:
-                    // by the time the model and the UI see "completed", the
-                    // filesystem change and its FileChanged already happened.
-                    emitFileChangedIfAny(context, tool, args, result);
-                    emit(new AgentEvent.ToolCallCompleted(scId, tool.name(), call, result));
-                    appendToolResult(history, call, result.output());
-
-                    if (tool instanceof HandoffTool) {
-                        Agent target = findHandoffTarget(activeAgent, call.getName());
+                    if (routed.handedOff()) {
+                        Agent target = findHandoffTarget(activeAgent, call.toolName());
                         if (target != null && target != activeAgent) {
                             context.recordHandoff(activeAgent, target, "");
                             activeAgent = target;
@@ -390,13 +396,22 @@ public final class AgentRuntime {
      */
     private List<AgentTool> withParityTools(Agent agent) {
         List<AgentTool> tools = new ArrayList<>(agent.tools());
-        if (findTool(agent, "get_context_remaining") == null) {
+        if (findNamedTool(tools, "get_context_remaining") == null) {
             tools.add(new ContextRemainingTool());
         }
-        if (inputChannel != null && findTool(agent, "request_user_input") == null) {
+        if (inputChannel != null && findNamedTool(tools, "request_user_input") == null) {
             tools.add(new RequestUserInputTool(inputChannel));
         }
         return tools;
+    }
+
+    private static AgentTool findNamedTool(List<AgentTool> tools, String toolName) {
+        for (AgentTool tool : tools) {
+            if (tool.name().equals(toolName)) {
+                return tool;
+            }
+        }
+        return null;
     }
 
     /** Lookup across the agent's own tools plus the implicit parity tools. */
@@ -435,34 +450,18 @@ public final class AgentRuntime {
         events.emit(event);
     }
 
-    /**
-     * Emits FileChanged for registry file tools (best-effort attribution)
-     * and records the touched file into the run's task memory so the state
-     * survives compaction.
-     */
-    private void emitFileChangedIfAny(RunContext context, AgentTool tool, JSONObject args, AgentToolResult result) {
-        String scId = context.scId();
-        if (result == null || result.isError() || args == null || !tool.isFileMutation()) {
-            return;
-        }
-        String path = args.optString("uri", args.optString("path", ""));
-        if (context.taskMemory() != null && !path.isEmpty()) {
-            context.taskMemory().recordFile(path);
-            context.taskMemory().recordAppliedChange(tool.name() + ": " + path);
-        }
-        // apply_patch announces its own committed mutations per file; the
-        // heuristic below cannot attribute them (it looks at uri/path args).
-        if ("apply_patch".equals(tool.name())) {
-            return;
-        }
-        if (path.isEmpty()) {
-            return;
-        }
-        AgentEvent.FileChangeKind kind = tool.name().toLowerCase(Locale.ROOT).contains("delete")
-                ? AgentEvent.FileChangeKind.DELETED
-                : AgentEvent.FileChangeKind.MODIFIED;
-        emit(new AgentEvent.FileChanged(scId, path, kind, tool.name()));
-    }
+    // ------------------------------------------------------------------
+    // Recovery (item 15): plain-text answer while a mutation is expected
+    // ------------------------------------------------------------------
+
+    /** Recovery nudge appended as a user message; at most ONE per run. */
+    static final String RECOVERY_NUDGE =
+            "[system] Sua resposta anterior foi apenas texto, mas a tarefa exige uma "
+                    + "alteração real de arquivo. Execute a mutation com a tool apropriada "
+                    + "(por exemplo apply_patch) em uma chamada estruturada de ferramenta. "
+                    + "Se já não houver nada a alterar, responda apenas com o texto final.";
+
+
 
     private JSONArray toolSchemasFor(Agent agent) {
         return toolSchemasFor(agent.tools());
@@ -483,15 +482,6 @@ public final class AgentRuntime {
             }
         }
         return schemas;
-    }
-
-    private static AgentTool findTool(Agent agent, String toolName) {
-        for (AgentTool tool : agent.tools()) {
-            if (tool.name().equals(toolName)) {
-                return tool;
-            }
-        }
-        return null;
     }
 
     private static Agent findHandoffTarget(Agent activeAgent, String toolName) {
@@ -535,6 +525,7 @@ public final class AgentRuntime {
         private ApprovalHandler inputChannel;
         private int maxOutputTokensPerTurn = 2048;
         private boolean includeProjectInstructions = true;
+        private boolean expectFileMutations = false;
 
         public Builder(AgentLlmGateway gateway) {
             if (gateway == null) {
@@ -582,6 +573,18 @@ public final class AgentRuntime {
         /** M7: inject workspace AGENTS.md into the system prompt (default true). */
         public Builder includeProjectInstructions(boolean include) {
             this.includeProjectInstructions = include;
+            return this;
+        }
+
+        /**
+         * Declares that this task is expected to end with at least one file
+         * mutation (item 15 recovery): when the model finishes with plain
+         * text and nothing was mutated, the runtime sends ONE recovery nudge
+         * asking for a structured tool call, then accepts the answer. Default
+         * {@code false} — read-only flows never get nudged.
+         */
+        public Builder expectFileMutations(boolean expect) {
+            this.expectFileMutations = expect;
             return this;
         }
 

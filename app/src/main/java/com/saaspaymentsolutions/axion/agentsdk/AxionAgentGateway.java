@@ -7,9 +7,7 @@ import com.saaspaymentsolutions.axion.ChatMessage;
 import com.saaspaymentsolutions.axion.ContextBuilder;
 import com.saaspaymentsolutions.axion.Tool;
 import com.saaspaymentsolutions.axion.ToolManager;
-import com.saaspaymentsolutions.axion.toolcalling.DefaultToolCallDetector;
 import com.saaspaymentsolutions.axion.toolcalling.ToolCall;
-import com.saaspaymentsolutions.axion.toolcalling.ToolCallResponse;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -35,7 +33,6 @@ public final class AxionAgentGateway implements AgentLlmGateway {
 
     private final AiProviderService aiService;
     private final String chatMode;
-    private final DefaultToolCallDetector textToolDetector = new DefaultToolCallDetector();
     private final java.util.function.Consumer<String> deltaListenerHook;
     private volatile boolean cancelRequested;
 
@@ -49,6 +46,11 @@ public final class AxionAgentGateway implements AgentLlmGateway {
     }
 
     private List<Tool> xmlFallbackTools;
+
+    /** Stream listener that ALSO declares the native-only tool protocol. */
+    private interface NativeOnlyStreamListener extends
+            AiProviderService.StreamListener, AiProviderService.NativeToolCallsOnly {
+    }
 
     /**
      * @param deltaListenerHook optional bridge from provider content deltas to
@@ -92,7 +94,12 @@ public final class AxionAgentGateway implements AgentLlmGateway {
         final List<ToolCall> toolCalls = java.util.Collections.synchronizedList(new ArrayList<>());
         final AtomicReference<String> error = new AtomicReference<>(null);
 
-        AiProviderService.StreamListener listener = new AiProviderService.StreamListener() {
+        /**
+         * Declares the native-only tool protocol (item 7 of the tool-call
+         * contract): tool calls arrive ONLY from the provider envelope —
+         * assistant text is never mined and never re-emitted as tool calls.
+         */
+        AiProviderService.StreamListener listener = new NativeOnlyStreamListener() {
             @Override
             public void onContent(String delta) {
                 if (delta == null || delta.isEmpty()) {
@@ -140,6 +147,11 @@ public final class AxionAgentGateway implements AgentLlmGateway {
             }
         };
 
+        // Tool-call execution contract (item 7): this listener declares the
+        // NATIVE_TOOL_CALLS_ONLY protocol — the provider delivers structured
+        // calls from its envelope and NEVER mines assistant text for tool
+        // calls. Request-scoped: the shared chat transport is untouched for
+        // other callers.
         aiService.sendStreamingMessage(request, tools, chatMode, operationContext, listener);
         try {
             if (!done.await(10, TimeUnit.MINUTES)) {
@@ -156,16 +168,18 @@ public final class AxionAgentGateway implements AgentLlmGateway {
             return timeoutTurn("Turn cancelled by user.");
         }
 
-        // Native tool calls win; otherwise parse text-embedded calls
-        // (XML/DSML/JSON) exactly like the legacy chat fallback.
-        List<ToolCall> parsed = toolCalls;
-        if (parsed.isEmpty()) {
-            parsed = textToolDetector
-                    .detect(new ToolCallResponse(content.toString(), reasoning.toString(), null))
-                    .getToolCalls();
+        // Provider-structured calls only (tool-call execution contract):
+        // the gateway normalizes the provider envelope into StructuredToolCall
+        // equivalents and NEVER re-derives calls from assistant text. A
+        // JSON/XML/DSML block in the text is text, and stays text.
+        List<ToolCall> structured = new ArrayList<>();
+        for (ToolCall call : toolCalls) {
+            if (call != null && call.isValid() && !containsCallId(structured, call)) {
+                structured.add(call);
+            }
         }
         return new LlmTurnOutput(content.toString(), reasoning.toString(),
-                finishReason.get(), parsed);
+                finishReason.get(), structured);
     }
 
     private static LlmTurnOutput timeoutTurn(String message) {
@@ -185,5 +199,15 @@ public final class AxionAgentGateway implements AgentLlmGateway {
             }
         }
         return "";
+    }
+
+    /** Dedupe by callId (never by name) across provider retries/duplicates. */
+    private static boolean containsCallId(List<ToolCall> calls, ToolCall candidate) {
+        for (ToolCall call : calls) {
+            if (call.getId().equals(candidate.getId())) {
+                return true;
+            }
+        }
+        return false;
     }
 }

@@ -525,8 +525,96 @@ Exemplo de case (o do documento original, formalizado):
 [ ] Fase 3: ContextBudget model-aware (extrair constantes do ContextBuilder)
 [ ] Fase 4: ToolRegistry unificado (ToolManager + AgentTool + MCP)
 [ ] Fase 4: MCP conformance suite (9 cenários, mock server)
-[ ] Fase 5: FakeAgentLlmGateway + evals versionados (5 níveis)
+[x] Fase 5: FakeAgentLlmGateway + evals versionados (5 níveis) — implementado (FakeAgentLlmGateway + 24 evals)
 [ ] Fase 5: métrica de % evals passando no CI
 [ ] Geral: definir licença do projeto
 [ ] Geral: revisar TLS relaxado no cliente MCP
 ```
+
+---
+
+## 9. Contrato de execução de tool calls (Codex router parity) — IMPLEMENTADO
+
+**Data:** 19/09/2026 · **Referência:** `codex-rs/core/src/tools/router.rs`,
+`codex-rs/protocol/src/protocol.rs` (ResponseItem), `codex-rs/codex-api/src/sse/responses.rs`.
+
+### Problema corrigido
+
+O pipeline antigo permitia que texto do assistant fosse reinterpretado como tool call
+em três camadas independentes (`AiProviderService.detectAndEmitToolCalls`,
+`AxionAgentGateway.textToolDetector`, `AgentTurnParser` + `DefaultToolCallDetector`).
+Um JSON/XML/DSML escrito pelo modelo como TEXTO executava ferramenta.
+
+### Novo fluxo (única cadeia canônica)
+
+```
+Provider (envelope estruturado)
+  |— function_call (OpenAI) / tool_use (Anthropic) → ToolCallAccumulator (streaming) → ToolCall
+  |— message → assistantText (display)
+        ↓
+LlmTurnOutput { assistantText, reasoning, toolCalls, finishReason }   ← normalização do gateway
+        ↓
+AgentRuntime (fonte única: structuredToolCalls = executável; assistantText = display)
+        ↓
+AgentToolRouter.route()  ← ÚNICO ponto de execução
+  dedupe por callId → lookup → PermissionLayer → SandboxAwareTool.preExecute
+  → ToolExecutor → AgentToolResult → publishCompleted (ToolCallCompleted/FileChanged/TaskMemory)
+        ↓
+próximo turno
+```
+
+### Regras do contrato
+
+1. **Texto ≠ tool call.** Nenhuma camada do caminho v2 deriva execução de texto.
+2. **Fonte única:** `structuredToolCalls` do `LlmTurnOutput`; `assistantText` nunca entra no executor.
+3. **Dedupe por `callId`** (nunca por nome): `call_1`/`call_2` com o mesmo nome executam as duas;
+   o mesmo `call_id` entregue duas vezes executa uma só (inclui chamadas que falharam).
+4. **Streaming:** argumentos acumulados no `ToolCallAccumulator` por índice/id; nada parcial é
+   publicado como `AssistantMessageDelta` nem executado.
+5. **Erros controlados:** tool desconhecida e argumentos inválidos produzem
+   `AgentToolResult.error` + `ToolCallCompleted` (o modelo pode se corrigir; runtime nunca crasha).
+6. **Recovery:** com `expectFileMutations(true)`, texto puro sem mutation recebe UM nudge e,
+   persistindo o texto, o run encerra sem mutação (sem loop).
+
+### Caminhos classificados após auditoria
+
+| Componente | Classe | Papel |
+|---|---|---|
+| `AgentToolRouter` | **V2 (canonical)** | única via de execução; dedupe por callId |
+| `AgentRuntime` (loop v2) | **V2** | fonte de verdade estruturada; zero parsing textual |
+| `AiProviderService` (envelope nativo) | **V2** | acumula `function_call`/`tool_use` por id/índice |
+| `AiProviderService.detectAndEmitToolCalls` + `DefaultToolCallDetector` (DSML/XML/JSON/MCP) | **LEGACY** | apenas para listeners legados do chat que não declaram `NativeToolCallsOnly`; o listener do gateway v2 declara o modo nativo, e o texto passa intacto |
+| `AgentTurnParser` | **LEGACY (isolado)** | conversor nativo-only no caminho principal; detecção textual só com `legacyTextEmbeddedEnabled=true` (opt-in explícito) |
+| `ToolCallDetectorTest` | TEST ONLY | cobre os parsers legados |
+
+### Deduplicação por call_id (implementação)
+
+`AgentToolRouter.processedByCallId` (mapa de id → resultado, por run, limpo em
+`resetForNewRun()`): a primeira ocorrência executa e é registrada; qualquer reentrega
+com o mesmo id retorna o resultado original com `wasDeduplicated=true` (o histórico
+recebe o resultado uma única vez). Ids ausentes são gerados (`call_<uuid>`) — mas o
+gateway só promove ao runtime chamadas válidas do envelope.
+
+### Normalização por provider (mesmo modelo interno)
+
+| Provider | Envelope | Normalização |
+|---|---|---|
+| OpenAI Chat Completions | `tool_calls[].function` (delta por índice) | `ToolCallAccumulator` → `ToolCall(id, name, arguments)` |
+| OpenAI Responses | `function_call` / `custom_tool_call` | idem, por `call_id`/`item_id` |
+| Anthropic | `content[].tool_use` (`content_block_start/stop`) | idem, por índice do bloco |
+| Gemini | `functionCall` | idem |
+
+Todos convergem para `LlmTurnOutput.toolCalls: List<ToolCall>` — o `AgentRuntime` não sabe
+qual provider produziu a chamada.
+
+### Testes do contrato (`ToolCallContractEvalTest`, 15 evals)
+
+1. texto puro → 0 calls/0 mutations; 2. código Java no texto → 0; 3. JSON-com-tool-call no
+texto → 0 (fica texto); 4. `apply_patch` estruturado → 1 execução + 1 FileChanged;
+5. streaming parcial → argumentos nunca viram AssistantMessageDelta; 6. três calls distintas
+preservadas; 7. mesmo nome/ids diferentes → ambas executam; 8. id duplicado → executa uma vez;
+9. tool desconhecida → erro controlado, sem crash; 10. argumentos inválidos → erro estruturado;
+11. texto + call no mesmo turno → separação semântica; 12. argumentos nunca publicados como
+delta de assistant; 13. ASK_USER → para em ApprovalRequired e segue após aprovar;
+14. call opera no filesystem do RunContext (isolamento preservado); 15. recovery: um nudge
+e fim sem loop.
