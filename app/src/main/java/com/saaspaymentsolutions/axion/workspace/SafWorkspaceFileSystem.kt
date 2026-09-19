@@ -140,24 +140,43 @@ class SafWorkspaceFileSystem(
 
     override fun move(sourceRelativePath: String, destinationRelativePath: String): Boolean {
         val src = findDocument(sourceRelativePath) ?: return false
-        val dst = getOrCreateDocument(destinationRelativePath, isDirectory = src.isDirectory)
-        if (src.isFile) {
-            val bytes = readBytes(sourceRelativePath)
-            writeBytes(destinationRelativePath, bytes)
-            src.delete()
-            return true
+        if (!src.isFile) return false
+        // Copy the bytes first, verify the destination, and only then remove
+        // the source: a failed verification must not destroy the original.
+        val bytes = try {
+            readBytes(sourceRelativePath)
+        } catch (_: Exception) {
+            return false
         }
-        return false
+        return try {
+            writeBytes(destinationRelativePath, bytes)
+            val written = findDocument(destinationRelativePath) ?: return false
+            val stream = context.contentResolver.openInputStream(written.uri) ?: return false
+            val writtenBytes = stream.use { it.readBytes() }
+            if (!writtenBytes.contentEquals(bytes)) return false
+            src.delete()
+        } catch (_: Exception) {
+            false
+        }
     }
 
     override fun copy(sourceRelativePath: String, destinationRelativePath: String): Boolean {
         val src = findDocument(sourceRelativePath) ?: return false
-        if (src.isFile) {
-            val bytes = readBytes(sourceRelativePath)
-            writeBytes(destinationRelativePath, bytes)
-            return true
+        if (!src.isFile) return false
+        val bytes = try {
+            readBytes(sourceRelativePath)
+        } catch (_: Exception) {
+            return false
         }
-        return false
+        return try {
+            writeBytes(destinationRelativePath, bytes)
+            val written = findDocument(destinationRelativePath) ?: return false
+            val stream = context.contentResolver.openInputStream(written.uri) ?: return false
+            val writtenBytes = stream.use { it.readBytes() }
+            writtenBytes.contentEquals(bytes)
+        } catch (_: Exception) {
+            false
+        }
     }
 
     override fun exists(relativePath: String): Boolean {

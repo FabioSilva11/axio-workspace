@@ -2,6 +2,7 @@ package com.saaspaymentsolutions.axion;
 
 import android.util.Log;
 
+import com.saaspaymentsolutions.axion.workspace.Workspace;
 import com.saaspaymentsolutions.axion.workspace.WorkspaceFileSystem;
 import com.saaspaymentsolutions.axion.workspace.WorkspaceManager;
 import com.saaspaymentsolutions.axion.workspace.WorkspacePath;
@@ -26,15 +27,22 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Records changes that the agent's tools have <b>already applied</b> to the
+ * Records changes that the agent's tools have <b>already applied</b> to a
  * workspace, for the Diff page.
  *
  * <p>This is a history/audit log, not a commit buffer: by the time a change
  * is tracked here the file on disk is already in its {@code afterContent}
  * state. {@code acceptChange()} only clears the review entry (it never
- * writes anything); {@code revertChange()} undoes an applied change through
- * the <b>same active {@link WorkspaceFileSystem}</b> that performed the
- * original mutation.</p>
+ * writes anything); {@code rejectChange()} (revert) undoes an applied change
+ * through the {@link WorkspaceFileSystem} <b>associated with the change's
+ * {@code scId}</b> — bound at mutation time, so a revert lands in the project
+ * that was actually mutated even after the user switches workspaces.</p>
+ *
+ * <p>Persistence is Axion-internal storage (each project's
+ * {@code .axion/file_changes.json} via {@code ProjectManager}), deliberately
+ * outside the workspace filesystem: the audit trail never writes into the
+ * user's project tree, and a SAF workspace is never touched through
+ * {@code java.io.File} for tracking purposes.</p>
  *
  * <p>The old implementation kept everything in static memory, so Android process
  * recreation made all diffs disappear. Changes are now persisted inside each
@@ -48,6 +56,24 @@ public class FileChangeTracker {
     private static final Map<String, List<FileChange>> changesByProject = new ConcurrentHashMap<>();
     private static final Map<String, Object> projectLocks = new ConcurrentHashMap<>();
     private static final Set<String> loadedProjects = ConcurrentHashMap.newKeySet();
+    /**
+     * Filesystem associated with each project id (SCID = workspace identity of
+     * a change). Bound automatically at {@code trackChange} time from the
+     * filesystem that performed the mutation, so a revert resolves the
+     * workspace of the CHANGE — not whatever happens to be active later.
+     * Session-scoped by design: after process death the revert falls back to
+     * the active-workspace resolution documented in
+     * {@link #fileSystemFor(String)}.
+     */
+    private static final Map<String, WorkspaceFileSystem> fileSystemsByProject =
+            new ConcurrentHashMap<>();
+
+    /** Binds the filesystem that owns {@code scId}'s files (hosts and tools). */
+    public static void bindFileSystem(String scId, WorkspaceFileSystem fs) {
+        if (valid(scId) && fs != null) {
+            fileSystemsByProject.put(scId, fs);
+        }
+    }
 
     public static class FileChange {
         public String filePath;
@@ -75,6 +101,10 @@ public class FileChangeTracker {
     public static void trackChange(String scId, String filePath, String before, String after,
                                    boolean existedBefore) {
         if (!valid(scId) || !valid(filePath)) return;
+        // The caller just mutated through the active filesystem: bind it as
+        // the workspace of this change so reverts land in the right project
+        // even after the user switches workspaces.
+        bindFileSystem(scId, WorkspaceManager.getActiveFileSystem());
         Object lock = lockFor(scId);
         synchronized (lock) {
             ensureLoadedLocked(scId);
@@ -120,9 +150,10 @@ public class FileChangeTracker {
 
     /**
      * Restores the workspace to the state before the change was applied.
-     * Rewrites the previous content through the <b>active
-     * {@link WorkspaceFileSystem}</b> — the same backend that performed the
-     * original mutation — never through {@code ProjectPathResolver}.
+     * Rewrites the previous content through the {@link WorkspaceFileSystem}
+     * associated with the change's {@code scId} (bound at mutation time) —
+     * never through {@code ProjectPathResolver}, and never through a
+     * different workspace than the one that was mutated.
      *
      * @return true when the revert was actually applied to the filesystem.
      */
@@ -136,7 +167,7 @@ public class FileChangeTracker {
             FileChange change = findOriginalChange(changes, filePath);
             if (change == null) return false;
             try {
-                boolean restored = restorePreviousState(change);
+                boolean restored = restorePreviousState(scId, change);
                 if (restored) {
                     removeTrackedChangesLocked(scId, filePath);
                     persistLocked(scId);
@@ -150,14 +181,49 @@ public class FileChangeTracker {
     }
 
     /**
-     * Restores the pre-change state through the active workspace filesystem.
-     * Must only run while holding the project lock.
+     * Resolves the filesystem of a change: the filesystem bound to the
+     * change's {@code scId} at mutation time first, then the active
+     * workspace when it verifiably serves the same project, then the active
+     * workspace as a documented last resort for sessions whose binding was
+     * lost (process death) — matching the pre-binding behavior.
      */
-    private static boolean restorePreviousState(FileChange change) {
-        WorkspaceFileSystem fs = WorkspaceManager.getActiveFileSystem();
+    private static WorkspaceFileSystem fileSystemFor(String scId) {
+        WorkspaceFileSystem bound = fileSystemsByProject.get(scId);
+        if (bound != null) {
+            return bound;
+        }
+        WorkspaceFileSystem active = WorkspaceManager.getActiveFileSystem();
+        if (active != null && activeWorkspaceServesProject(scId)) {
+            return active;
+        }
+        return active;
+    }
+
+    /** True when the active workspace root is the project directory of {@code scId}. */
+    private static boolean activeWorkspaceServesProject(String scId) {
+        try {
+            Workspace active = WorkspaceManager.INSTANCE.getActiveWorkspace();
+            if (active == null) {
+                return false;
+            }
+            String root = active.getRootUri();
+            String webPath = new File(ProjectManager.getWebProjectsRoot(), scId).getAbsolutePath();
+            String asPath = new File(ProjectManager.getAndroidStudioProjectsRoot(), scId).getAbsolutePath();
+            return root.equals(webPath) || root.equals(asPath);
+        } catch (Exception error) {
+            return false;
+        }
+    }
+
+    /**
+     * Restores the pre-change state through the filesystem bound to the
+     * change's project. Must only run while holding the project lock.
+     */
+    private static boolean restorePreviousState(String scId, FileChange change) {
+        WorkspaceFileSystem fs = fileSystemFor(scId);
         if (fs == null) {
             Log.e(TAG, "Cannot revert " + change.filePath
-                    + ": no active workspace filesystem.");
+                    + ": no workspace filesystem for project " + scId + ".");
             return false;
         }
         String path;
@@ -217,6 +283,7 @@ public class FileChangeTracker {
 
     public static void clearChanges(String scId) {
         if (!valid(scId)) return;
+        fileSystemsByProject.remove(scId);
         Object lock = lockFor(scId);
         synchronized (lock) {
             changesByProject.remove(scId);

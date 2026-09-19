@@ -90,12 +90,16 @@ class LocalFolderWorkspaceFileSystem(val rootDir: File) : WorkspaceFileSystem {
         val dst = resolveFile(destinationRelativePath)
         if (!src.exists()) return false
         dst.parentFile?.mkdirs()
-        if (src.isDirectory) {
-            src.copyRecursively(dst, overwrite = true)
-        } else {
-            src.copyTo(dst, overwrite = true)
+        return try {
+            if (src.isDirectory) {
+                src.copyRecursively(dst, overwrite = true)
+            } else {
+                src.copyTo(dst, overwrite = true)
+                dst.exists() && dst.length() == src.length()
+            }
+        } catch (_: Exception) {
+            false
         }
-        return true
     }
 
     override fun exists(relativePath: String): Boolean {

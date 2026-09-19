@@ -116,10 +116,8 @@ public class FileChangeTrackerWorkspaceTest {
                 FileChangeTracker.rejectChange("sc_tracker", "src/created.txt"));
         // The entry stays tracked so the user can retry the revert.
         assertTrue(FileChangeTracker.getAllRecentChanges("sc_tracker").containsKey("src/created.txt"));
-    }
-
-    @Test
-    public void revert_whenWorkspaceWriteFails_reportsFailure() {
+    }        @Test
+        public void revert_whenWorkspaceWriteFails_reportsFailure() {
         fs.writeText("src/A.java", "class A\n// agent edit\n");
         FileChangeTracker.trackChange("sc_tracker", "src/A.java", "class A\n", "class A\n// agent edit\n");
         fs.failWrites = true;
@@ -145,6 +143,10 @@ public class FileChangeTrackerWorkspaceTest {
         public boolean failDeletes = false;
         public boolean failWrites = false;
         public boolean failCreates = false;
+        /** Deletion is refused for these specific paths (rollback hardening tests). */
+        public final java.util.Set<String> failDeletesFor = new java.util.HashSet<>();
+        /** Writes to these paths silently lose the content (verifies read-back checks). */
+        public final java.util.Set<String> loseContentOnWriteFor = new java.util.HashSet<>();
 
         private String key(String relativePath) {
             return com.saaspaymentsolutions.axion.workspace.WorkspacePath
@@ -173,7 +175,7 @@ public class FileChangeTrackerWorkspaceTest {
             }
             missingPaths.remove(key);
             writeTextCalls.add(key);
-            files.put(key, content);
+            files.put(key, loseContentOnWriteFor.contains(key) ? "" : content);
         }
 
         @Override
@@ -201,7 +203,9 @@ public class FileChangeTrackerWorkspaceTest {
         public boolean delete(String relativePath) {
             String key = key(relativePath);
             deleteCalls.add(key);
-            if (failDeletes || missingPaths.contains(key)) return false;
+            if (failDeletes || failDeletesFor.contains(key) || missingPaths.contains(key)) {
+                return false;
+            }
             if (directories.remove(key)) return true;
             return files.remove(key) != null;
         }

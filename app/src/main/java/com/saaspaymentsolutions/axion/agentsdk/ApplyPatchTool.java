@@ -183,12 +183,28 @@ public final class ApplyPatchTool implements AgentTool {
                 report.append(mutation.reportLine()).append('\n');
             }
         } catch (Exception e) {
-            // Roll back in reverse order; a failed patch must look like it
-            // never ran: no tracker entries, no FileChanged events.
-            rollback(fs, applied);
-            return AgentToolResult.error("Error: write failed after validation — "
-                    + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage())
-                    + " (already-applied changes were rolled back; no changes were kept).");
+            // Roll back in reverse order and VERIFY the restored state; a
+            // failed patch with a complete rollback must look like it never
+            // ran: no tracker entries, no FileChanged events.
+            String incompleteRollback = rollback(fs, applied);
+            String cause = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+            if (incompleteRollback.isEmpty()) {
+                return AgentToolResult.error("Error: patch failed and was fully rolled back — "
+                        + cause + ". No changes were kept.");
+            }
+            // Rollback itself failed: the filesystem may be partially patched.
+            // Never claim a clean revert, never fake tracker entries or commit
+            // events — surface the inconsistency as an explicit error.
+            if (events != null) {
+                events.emit(new AgentEvent.Error(scId,
+                        "apply_patch rollback incomplete for: " + incompleteRollback.trim()
+                                + "; filesystem state may be partially patched."));
+            }
+            android.util.Log.e("ApplyPatchTool", "Rollback incomplete after patch failure (" + cause
+                    + ") for: " + incompleteRollback.trim());
+            return AgentToolResult.error("Error: patch failed and rollback was incomplete ("
+                    + cause + "). Some filesystem changes may remain applied: "
+                    + incompleteRollback.trim());
         }
 
         // ---- Pass 3: commit-ordered announcement. The patch is fully on disk:
@@ -207,8 +223,14 @@ public final class ApplyPatchTool implements AgentTool {
         return AgentToolResult.success(report.toString().trim());
     }
 
-    /** Restores the already-applied mutations, newest first. Best-effort. */
-    private static void rollback(WorkspaceFileSystem fs, List<PatchMutation> applied) {
+    /**
+     * Restores the already-applied mutations, newest first, verifying the
+     * real filesystem state after each restore (not trusting void calls).
+     *
+     * @return the paths whose rollback could not be verified; empty when the
+     *         rollback completed for every mutation.
+     */
+    private static String rollback(WorkspaceFileSystem fs, List<PatchMutation> applied) {
         StringBuilder problems = new StringBuilder();
         for (int i = applied.size() - 1; i >= 0; i--) {
             try {
@@ -217,9 +239,7 @@ public final class ApplyPatchTool implements AgentTool {
                 problems.append(applied.get(i).path).append("; ");
             }
         }
-        if (problems.length() > 0) {
-            android.util.Log.e("ApplyPatchTool", "Rollback incomplete for: " + problems);
-        }
+        return problems.toString();
     }
 
     /**
@@ -273,16 +293,34 @@ public final class ApplyPatchTool implements AgentTool {
             }
         }
 
-        /** Restores the pre-patch state of this mutation. */
+        /**
+         * Restores the pre-patch state of this mutation and verifies the
+         * real filesystem outcome. A rollback is only considered done when
+         * the on-disk state matches the pre-patch content again.
+         *
+         * @throws IllegalStateException when the restore did not stick.
+         */
         void restoreFrom(WorkspaceFileSystem fs) {
             switch (kind) {
                 case CREATED:
                     // The patch created it: remove it again.
-                    fs.delete(path);
+                    boolean deleted = fs.delete(path);
+                    if (!deleted || fs.exists(path)) {
+                        throw new IllegalStateException("rollback could not delete '" + path + "'");
+                    }
                     break;
                 case MODIFIED:
                 case DELETED:
-                    fs.writeText(path, previousContent == null ? "" : previousContent);
+                    String restoredContent = previousContent == null ? "" : previousContent;
+                    fs.writeText(path, restoredContent);
+                    if (!fs.exists(path)) {
+                        throw new IllegalStateException("rollback did not recreate '" + path + "'");
+                    }
+                    String restored = fs.readText(path);
+                    if (!restoredContent.equals(restored)) {
+                        throw new IllegalStateException("rollback left '" + path
+                                + "' with different content than the pre-patch state");
+                    }
                     break;
                 default:
                     break;

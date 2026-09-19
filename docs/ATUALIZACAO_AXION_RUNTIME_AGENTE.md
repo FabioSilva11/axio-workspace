@@ -5,6 +5,35 @@
 
 ---
 
+## Contrato de mutação de arquivos
+
+> Contrato arquitetural do Axion. Qualquer PR ou agente que toque o fluxo de
+> edição deve preservá-lo; violações são bugs.
+
+1. **Approval nunca escreve.** A decisão do `PermissionLayer`/usuário precede a execução e não toca no disco.
+2. **Tool execution escreve uma única vez.** Não existe segunda etapa de commit; se a tool reportou sucesso, o arquivo já está no estado final.
+3. **`WorkspaceFileSystem` é a abstração principal.** Toda mutação passa pelo filesystem associado ao projeto; `ProjectPathResolver`/`java.io.File` são fallback explícito para sessões sem workspace.
+4. **`FileChangeTracker` registra uma alteração já aplicada** — é histórico/auditoria para revisão e revert, nunca buffer de commit.
+5. **`FileChanged` significa side effect confirmado.** Só é emitido depois de a mutação estar real e integralmente no disco (patches: após commit-ordered de todas as operações).
+6. **Accept nunca escreve.** É ação de revisão: limpa a entrada da lista de revisão.
+7. **Revert escreve somente para desfazer** uma alteração registrada.
+8. **Revert resolve o filesystem pelo workspace/scId da alteração** (bindado no momento da mutação) — não pelo workspace que estiver ativo no momento do revert.
+9. **Falha de patch com rollback completo deixa zero rastros de commit** — sem tracker, sem `FileChanged`.
+10. **Rollback incompleto gera erro explícito e estado potencialmente parcial** — nunca falso "totalmente revertido", nunca commit fake; a resposta nomeia os arquivos afetados.
+
+Ordem contratada de eventos (sucesso e falha):
+
+```
+ApprovalRequired → PermissionResolved → ToolCallStarted → mutação real →
+FileChangeTracker → FileChanged → ToolCallCompleted
+```
+
+```
+ToolCallStarted → mutation failure → rollback → [Error] → ToolCallCompleted(error)
+                                                     └─ rollback incompleto:
+                                                        Error(partial/unknown filesystem state)
+```
+
 ## Estado atual (atualizado): fluxo de mutação de arquivos
 
 > Esta seção reflete o código implementado (não o plano original abaixo). O fluxo
@@ -107,12 +136,12 @@ Antes de listar o que falta, o que **já existe** — e que a análise externa n
 | **Memória/agentes múltiplos** | `AgentMemory`, `MultiAgentOrchestrator`, `TaskPlanner`, `ToolSequenceValidator`, `RetryManager` | `agent/` |
 | **Testes** | 43 arquivos de teste unitário (parser, streaming, contexto, dependências) | `app/src/test/` |
 
-**Lacunas reais**, confirmadas no código:
+**Lacunas reais confirmadas no código neste levantamento (ESTADO ANTERIOR — setembro/2026; todas já endereçadas pelo runtime atual, ver "Estado atual" no topo deste documento):**
 
 1. **Não há fluxo de permissões humano-no-loop**: `Runner` consulta `listeners.onToolApproval()` de forma **bloqueante e síncrona** — a UI não consegue mostrar um diálogo e retomar depois; e `ToolManager` só conhece o booleano `mutationsAllowed`.
 2. **Não há `AgentEvent` tipado**: `RunListeners` são callbacks de método (não um stream observável), a UI deduz progresso pelo texto, e não existe `ToolCallStarted/Completed`, `FileChanged`, `CommandStarted/Finished` como eventos consumíveis.
 3. **Não há retomada/interrupção de run** (`pause/resume/cancel`): cancelar hoje mata o serviço (`ChatRunForegroundService`) e perde o estado do turno.
-4. **Sem `apply_patch` unificado**: o Axion usa `edit_file`/`rewrite_file` + `SearchReplaceEngine`, mas não há um patch formatado, validável e exibível como diff antes de aplicar.
+4. **Sem `apply_patch` unificado**: *(estado anterior)* hoje o `ApplyPatchTool` existe no toolset padrão, valida o patch inteiro antes de escrever e registra o histórico no `FileChangeTracker`; o diff da aba Diferenças é revisão de algo já aplicado.
 5. **Sem sandbox/limites de execução por ferramenta**: comandos shell rodam com a confiança do workspace; não há política `read-only`/`network`/`workspace-write` por turno.
 6. **Sem evals/regression harness**: nenhum teste valida "o agente resolveu a tarefa fim-a-fim" — os 43 testes são unitários de componentes.
 7. **Two tool systems paralelos** (`ToolManager` + `AgentTool` do agentsdk) sem convergência — o `Runner` não enxerga as tools do `ToolManager`.
@@ -274,9 +303,9 @@ data class ToolPolicy(
 - Extrair as constantes hardcoded do `ContextBuilder` para `ContextBudget` configurável (model-aware: `VoidPortProviderMaxTokens` já existe e deve alimentar os orçamentos).
 
 **Critério de aceite:**
-- [ ] `apply_patch` rejeita patch inválido com erro estruturado (não corrompe arquivo)
-- [ ] Diff preview aparece na aba Diferenças antes de aplicar
-- [ ] Orçamentos de contexto são model-aware e configuráveis (sem constantes mágicas)
+- [x] `apply_patch` rejeita patch inválido com erro estruturado (não corrompe arquivo) — implementado
+- [x] Mudanças aparecem na aba Diferenças como revisão após a aplicação real (o diff não é etapa de commit) — implementado
+- [ ] Orçamentos de contexto são model-aware e configuráveis (sem constantes mágicas) — pendente
 
 ---
 
@@ -424,7 +453,7 @@ Exemplo de case (o do documento original, formalizado):
 [ ] Fase 1: requestApproval suspend (fim da aprovação bloqueante)
 [ ] Fase 2: ToolPolicy + PermissionLayer (ALLOW/ALLOW_ONCE/ASK_USER/DENY)
 [ ] Fase 2: Sandbox mínimo shell (workspace jail + deny-list + timeout)
-[ ] Fase 3: apply_patch (validação prévia + diff preview)
+[x] Fase 3: apply_patch (validação prévia; o diff é revisão, não etapa de aplicação) — implementado
 [ ] Fase 3: ContextBudget model-aware (extrair constantes do ContextBuilder)
 [ ] Fase 4: ToolRegistry unificado (ToolManager + AgentTool + MCP)
 [ ] Fase 4: MCP conformance suite (9 cenários, mock server)
