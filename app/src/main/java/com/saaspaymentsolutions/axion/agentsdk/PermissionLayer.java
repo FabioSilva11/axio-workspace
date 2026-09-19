@@ -1,0 +1,115 @@
+package com.saaspaymentsolutions.axion.agentsdk;
+
+import com.saaspaymentsolutions.axion.toolcalling.ToolCall;
+
+/**
+ * Enforces the {@link ToolPolicy} on every tool call before execution,
+ * porting Codex's decision model (Skip / NeedsApproval / Forbidden) to the
+ * Axion runtime: DENY short-circuits, ASK_USER parks the run on the
+ * {@link ApprovalHandler}, ALLOW passes through. The model never decides.
+ */
+public final class PermissionLayer {
+
+    private final ToolPolicy policy;
+    private final ApprovalHandler approvalHandler;
+    private final EventStream events;
+
+    public PermissionLayer(ToolPolicy policy, ApprovalHandler approvalHandler, EventStream events) {
+        this.policy = policy == null ? ToolPolicy.permissive() : policy;
+        this.approvalHandler = approvalHandler;
+        this.events = events;
+    }
+
+    /** Outcome of a policy check for one tool call. */
+    public enum Outcome {
+        /** Execute the tool. */
+        PROCEED,
+        /** Do not execute; the model receives an error result. */
+        BLOCKED
+    }
+
+    /**
+     * Decides whether {@code call} may run. Blocking when the policy asks
+     * the user; emits {@code ApprovalRequired} / {@code PermissionResolved}
+     * / {@code PolicyDenied} events.
+     */
+    public Outcome check(AgentTool tool, ToolCall call, String scId) {
+        if (tool == null) {
+            return Outcome.PROCEED; // unknown tool handled by the Runner
+        }
+        ToolPolicy.Rule rule = ruleFor(tool);
+        if (rule == ToolPolicy.Rule.DENY) {
+            String reason = "Policy denies tool '" + tool.name() + "' in this mode.";
+            emitEvent(new AgentEvent.PolicyDenied(scId, tool.name(), reason));
+            return Outcome.BLOCKED;
+        }
+        if (rule == ToolPolicy.Rule.ALLOW) {
+            return Outcome.PROCEED;
+        }
+        // ASK_USER
+        if (approvalHandler == null) {
+            // No host to ask: fail closed instead of silently executing.
+            String reason = "Tool '" + tool.name() + "' requires approval but no approval handler is configured.";
+            emitEvent(new AgentEvent.PolicyDenied(scId, tool.name(), reason));
+            return Outcome.BLOCKED;
+        }
+        PermissionRequest request = new PermissionRequest(
+                "perm_" + java.util.UUID.randomUUID(), tool.name(), call,
+                "A política pede confirmação para executar '" + tool.name() + "'.");
+        emitEvent(new AgentEvent.ApprovalRequired(scId, tool.name(), call, request));
+        boolean allowed;
+        try {
+            PermissionDecision decision = approvalHandler.awaitDecision(request);
+            allowed = decision == PermissionDecision.ALLOW || decision == PermissionDecision.ALLOW_ONCE;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            allowed = false;
+        } catch (Exception e) {
+            allowed = false;
+        }
+        emitEvent(new AgentEvent.PermissionResolved(scId, tool.name(),
+                allowed ? PermissionDecision.ALLOW_ONCE : PermissionDecision.DENY, allowed));
+        if (!allowed) {
+            return Outcome.BLOCKED;
+        }
+        return Outcome.PROCEED;
+    }
+
+    private ToolPolicy.Rule ruleFor(AgentTool tool) {
+        if (tool instanceof SandboxAwareTool) {
+            return ((SandboxAwareTool) tool).policyRule();
+        }
+        if (isShellTool(tool.name())) {
+            return policy.shell();
+        }
+        if (isNetworkTool(tool)) {
+            return policy.network();
+        }
+        if (tool.isDestructive()) {
+            return policy.destructive();
+        }
+        if (tool.isFileMutation()) {
+            return policy.mutation();
+        }
+        return policy.unknown();
+    }
+
+    /** Terminal/persistent-terminal tool names used by the Void registry. */
+    public static boolean isShellTool(String toolName) {
+        return "run_command".equals(toolName)
+                || "run_persistent_command".equals(toolName)
+                || "open_persistent_terminal".equals(toolName)
+                || "kill_persistent_terminal".equals(toolName);
+    }
+
+    /** Remote MCP tools are treated as network tools. */
+    public static boolean isNetworkTool(AgentTool tool) {
+        return tool instanceof McpAgentTool;
+    }
+
+    private void emitEvent(AgentEvent event) {
+        if (events != null) {
+            events.emit(event);
+        }
+    }
+}

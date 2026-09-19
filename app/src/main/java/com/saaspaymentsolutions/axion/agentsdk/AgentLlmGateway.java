@@ -36,4 +36,12 @@ public interface AgentLlmGateway {
     /** Cancels the in-flight request, if any. */
     default void cancel() {
     }
+
+    /**
+     * Optional streaming route (M6): the runtime registers a consumer that
+     * receives assistant text deltas during the turn; it clears the listener
+     * afterwards. Default: no streaming support.
+     */
+    default void setDeltaListener(java.util.function.Consumer<String> listener) {
+    }
 }

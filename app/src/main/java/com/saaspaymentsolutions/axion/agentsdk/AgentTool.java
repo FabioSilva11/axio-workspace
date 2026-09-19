@@ -35,4 +35,14 @@ public interface AgentTool {
     default boolean requiresApproval() {
         return false;
     }
+
+    /** True when the tool writes/deletes workspace files (policy category). */
+    default boolean isFileMutation() {
+        return false;
+    }
+
+    /** True when the tool's effect is irreversible (policy category). */
+    default boolean isDestructive() {
+        return false;
+    }
 }

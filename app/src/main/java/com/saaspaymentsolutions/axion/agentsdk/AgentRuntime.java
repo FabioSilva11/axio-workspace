@@ -1,0 +1,428 @@
+package com.saaspaymentsolutions.axion.agentsdk;
+
+import com.saaspaymentsolutions.axion.ChatMessage;
+import com.saaspaymentsolutions.axion.toolcalling.ToolCall;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Locale;
+
+/**
+ * Stateful agent run loop (v2), porting the Codex session/turn cycle to the
+ * Axion stack on top of the {@link Runner} concepts:
+ *
+ * <pre>Session → Turn → Model → Tool calls → Permission/Sandbox → Result → next Turn</pre>
+ *
+ * <p>Differences from {@link Runner}: emits typed {@link AgentEvent}s to an
+ * {@link EventStream}, consults the {@link PermissionLayer} before every
+ * tool (async human-in-the-loop instead of a blocking boolean callback),
+ * keeps an {@link AgentSession} audit trail, and supports cooperative
+ * cancellation. Legacy hosts keep using {@link Runner}; new hosts and the
+ * migrating UI use this class.</p>
+ */
+public final class AgentRuntime {
+
+    public static final int DEFAULT_MAX_TURNS = 16;
+
+    private static final long DIRECTORY_CACHE_TTL_MS = 5000L; // parity with ContextBuilder
+
+    private final AgentLlmGateway gateway;
+    private final EventStream events;
+    private final PermissionLayer permissions;
+    private final List<Guardrail> inputGuardrails;
+    private final int maxTurns;
+    private final RunBudget budget;
+    private final int maxOutputTokensPerTurn;
+    private final boolean includeProjectInstructions;
+    private final AgentTurnParser turnParser = new AgentTurnParser();
+    private final ToolExecutor toolExecutor = new ToolExecutor();
+    private volatile boolean cancelRequested;
+
+    private AgentRuntime(Builder builder) {
+        this.gateway = builder.gateway;
+        this.events = builder.events;
+        this.permissions = builder.permissions;
+        this.inputGuardrails = Collections.unmodifiableList(new ArrayList<>(builder.inputGuardrails));
+        this.maxTurns = Math.max(1, builder.maxTurns);
+        this.budget = builder.budget;
+        this.maxOutputTokensPerTurn = builder.maxOutputTokensPerTurn;
+        this.includeProjectInstructions = builder.includeProjectInstructions;
+    }
+
+    /** Single-shot run: user input in, final assistant text out. */
+    public RunResult run(Agent agent, String userInput, String scId) {
+        List<ChatMessage> history = new ArrayList<>();
+        history.add(new ChatMessage(userInput, ChatMessage.TYPE_USER, System.currentTimeMillis()));
+        return run(agent, history, scId);
+    }
+
+    /** Resumable run over caller-owned history (appended with this run's turns). */
+    public RunResult run(Agent agent, List<ChatMessage> history, String scId) {
+        if (agent == null) {
+            return RunResult.failure("No agent was provided.");
+        }
+        if (history == null || history.isEmpty()) {
+            return RunResult.failure("No user input was provided.");
+        }
+        cancelRequested = false;
+
+        AgentSession session = new AgentSession(scId, agent.name(), history);
+        session.setStatus(AgentSession.Status.RUNNING);
+        lastSession = session;
+
+        emit(new AgentEvent.RunStarted(scId));
+
+        // Input guardrails run before the first LLM call (openai-agents semantics).
+        String latestUserText = latestUserText(history);
+        for (Guardrail guardrail : inputGuardrails) {
+            GuardrailResult result = guardrail.checkInput(latestUserText);
+            if (result.isTripwireTriggered()) {
+                session.setStatus(AgentSession.Status.FAILED);
+                emit(new AgentEvent.RunCompleted(scId, false, "Blocked by input guardrail"));
+                return RunResult.blockedByGuardrail(result);
+            }
+        }
+
+        RunContext context = new RunContext(scId, agent.name());
+        Agent activeAgent = agent;
+        int turns = 0;
+        try {
+            while (turns++ < maxTurns) {
+                if (cancelRequested) {
+                    session.setStatus(AgentSession.Status.CANCELLED);
+                    emit(new AgentEvent.RunCompleted(scId, false, "Run cancelled"));
+                    return RunResult.failure("Run cancelled.");
+                }
+
+                final String activeAgentName = activeAgent.name();
+                final int turnNumber = turns;
+                emit(new AgentEvent.TurnStarted(scId, activeAgentName, turnNumber));
+
+                // M3: reserve the worst-case cost of this turn before the request.
+                RunBudget.Handle reservation = null;
+                if (budget != null) {
+                    try {
+                        long estimate = estimatedInputTokens(history) + maxOutputTokensPerTurn;
+                        budget.ensureActive(estimate);
+                        reservation = budget.reserve(estimate);
+                    } catch (RunBudget.BudgetExceededException e) {
+                        String reason = e.getMessage();
+                        emit(new AgentEvent.Error(scId, reason));
+                        session.setStatus(AgentSession.Status.FAILED);
+                        emit(new AgentEvent.RunCompleted(scId, false, reason));
+                        return RunResult.failure(reason);
+                    }
+                }
+
+                final LlmTurnOutput turn;
+                try {
+                    gateway.setDeltaListener(delta -> {
+                        if (delta != null && !delta.isEmpty()) {
+                            emit(new AgentEvent.AssistantMessageDelta(scId, delta));
+                        }
+                    });
+                    turn = gateway.completeTurn(
+                            resolveSystemPrompt(activeAgent),
+                            toolSchemasFor(activeAgent),
+                            history,
+                            null);
+                } catch (Exception e) {
+                    String reason = "LLM turn failed: " + e.getMessage();
+                    emit(new AgentEvent.Error(scId, reason));
+                    session.setStatus(AgentSession.Status.FAILED);
+                    emit(new AgentEvent.RunCompleted(scId, false, reason));
+                    return RunResult.failure(reason);
+                } finally {
+                    gateway.setDeltaListener(null);
+                    if (reservation != null) {
+                        // No usage report available yet: settle with the full
+                        // estimate so the budget reflects it (conservative).
+                        try {
+                            budget.settle(reservation, reservation.reserved());
+                        } catch (RunBudget.UncertainChargeException ignored) {
+                            // Estimate >= reserved by construction; cannot happen here.
+                        }
+                    }
+                }
+                context.incrementLlmCalls();
+
+                AgentTurnParser.ParsedTurn parsed = turnParser.parse(
+                        turn.content(), turn.reasoning(), turn.finishReason(), turn.toolCalls());
+
+                if (!parsed.hasToolCalls()) {
+                    String output = parsed.content().trim();
+                    emit(new AgentEvent.AssistantMessage(scId, output));
+                    for (Guardrail guardrail : activeAgent.outputGuardrails()) {
+                        GuardrailResult result = guardrail.checkOutput(output);
+                        if (result.isTripwireTriggered()) {
+                            session.setStatus(AgentSession.Status.FAILED);
+                            emit(new AgentEvent.RunCompleted(scId, false, "Blocked by output guardrail"));
+                            return RunResult.blockedByGuardrail(result);
+                        }
+                    }
+                    session.setStatus(AgentSession.Status.COMPLETED);
+                    emit(new AgentEvent.RunCompleted(scId, true, ""));
+                    return RunResult.success(output, context);
+                }
+
+                boolean handedOff = false;
+                for (ToolCall call : parsed.toolCalls()) {
+                    if (cancelRequested) {
+                        session.setStatus(AgentSession.Status.CANCELLED);
+                        emit(new AgentEvent.RunCompleted(scId, false, "Run cancelled"));
+                        return RunResult.failure("Run cancelled.");
+                    }
+                    AgentTool tool = findTool(activeAgent, call.getName());
+                    if (tool == null) {
+                        String message = "Error: unknown tool '" + call.getName() + "'.";
+                        emit(new AgentEvent.Error(scId, message));
+                        appendToolResult(history, call, message);
+                        continue;
+                    }
+
+                    // Permission layer first: DENY never reaches the user,
+                    // ASK_USER parks the run until the host decides.
+                    if (permissions != null) {
+                        PermissionLayer.Outcome outcome = permissions.check(tool, call, scId);
+                        if (outcome == PermissionLayer.Outcome.BLOCKED) {
+                            appendToolResult(history, call,
+                                    "Error: execution of '" + call.getName()
+                                            + "' was denied by policy or user.");
+                            continue;
+                        }
+                    }
+
+                    context.incrementToolCalls();
+                    emit(new AgentEvent.ToolCallStarted(scId, tool.name(), call));
+
+                    // Sandbox pre-check for tools that enforce their own rules
+                    // (e.g. shell deny-list). A non-null result blocks execution.
+                    if (tool instanceof SandboxAwareTool) {
+                        AgentToolResult pre = ((SandboxAwareTool) tool).preExecute(call);
+                        if (pre != null) {
+                            emit(new AgentEvent.ToolCallCompleted(scId, tool.name(), call, pre));
+                            appendToolResult(history, call, pre.output());
+                            continue;
+                        }
+                    }
+
+                    JSONObject args = toolExecutor.parseArguments(call.getArguments());
+                    AgentToolResult result = args == null
+                            ? AgentToolResult.error("Error: invalid JSON arguments for '"
+                            + call.getName() + "'.")
+                            : toolExecutor.run(tool, context, args);
+                    emit(new AgentEvent.ToolCallCompleted(scId, tool.name(), call, result));
+                    emitFileChangedIfAny(scId, tool, args, result);
+                    appendToolResult(history, call, result.output());
+
+                    if (tool instanceof HandoffTool) {
+                        Agent target = findHandoffTarget(activeAgent, call.getName());
+                        if (target != null && target != activeAgent) {
+                            context.recordHandoff(activeAgent, target, "");
+                            activeAgent = target;
+                        }
+                        handedOff = true;
+                        break;
+                    }
+                }
+                // With tools executed (or a handoff), loop for the next LLM turn.
+            }
+            session.setStatus(AgentSession.Status.FAILED);
+            emit(new AgentEvent.RunCompleted(scId, false, "Max turns reached"));
+            return RunResult.failure("Max turns reached.");
+        } finally {
+            sessionSnapshot = session;
+        }
+    }
+
+    /** Cooperative cancellation: checked between turns and tool calls. */
+    public void cancel() {
+        cancelRequested = true;
+        gateway.cancel();
+    }
+
+    private AgentSession lastSession;
+    private AgentSession sessionSnapshot;
+
+    /** Session of the most recent run on this runtime (audit/telemetry). */
+    public AgentSession lastSession() {
+        return sessionSnapshot != null ? sessionSnapshot : lastSession;
+    }
+
+    // ------------------------------------------------------------------
+    // helpers
+    // ------------------------------------------------------------------
+
+    /** M7: agent instructions + durable project memory (AGENTS.md). */
+    private String resolveSystemPrompt(Agent agent) {
+        if (!includeProjectInstructions) {
+            return agent.instructions();
+        }
+        String agents = ProjectInstructions.load(PROJECT_INSTRUCTIONS_MAX_CHARS);
+        if (agents.isEmpty()) {
+            return agent.instructions();
+        }
+        return agent.instructions()
+                + "\n\n## AGENTS.md do workspace\n\n"
+                + agents;
+    }
+
+    /** ~4 chars per token, same estimate used by AgentManager. */
+    private static long estimatedInputTokens(List<ChatMessage> history) {
+        long chars = 0;
+        for (ChatMessage message : history) {
+            String content = message.getLlmContent();
+            if (content != null) {
+                chars += content.length();
+            }
+        }
+        return chars / 4 + 1;
+    }
+
+    /** Upper bound for AGENTS.md injection (~600 tokens). */
+    private static final int PROJECT_INSTRUCTIONS_MAX_CHARS = 2400;
+
+    private void emit(AgentEvent event) {
+        events.emit(event);
+    }
+
+    /** Emits FileChanged for registry file tools (best-effort attribution). */
+    private void emitFileChangedIfAny(String scId, AgentTool tool, JSONObject args, AgentToolResult result) {
+        if (result == null || result.isError() || args == null || !tool.isFileMutation()) {
+            return;
+        }
+        String path = args.optString("uri", args.optString("path", ""));
+        if (path.isEmpty()) {
+            return;
+        }
+        AgentEvent.FileChangeKind kind = tool.name().toLowerCase(Locale.ROOT).contains("delete")
+                ? AgentEvent.FileChangeKind.DELETED
+                : AgentEvent.FileChangeKind.MODIFIED;
+        emit(new AgentEvent.FileChanged(scId, path, kind, tool.name()));
+    }
+
+    private JSONArray toolSchemasFor(Agent agent) {
+        JSONArray schemas = new JSONArray();
+        for (AgentTool tool : agent.tools()) {
+            try {
+                schemas.put(new JSONObject()
+                        .put("type", "function")
+                        .put("function", new JSONObject()
+                                .put("name", tool.name())
+                                .put("description", tool.description())
+                                .put("parameters", tool.parameters())));
+            } catch (org.json.JSONException e) {
+                // A malformed tool schema must not kill the run; skip the tool.
+            }
+        }
+        return schemas;
+    }
+
+    private static AgentTool findTool(Agent agent, String toolName) {
+        for (AgentTool tool : agent.tools()) {
+            if (tool.name().equals(toolName)) {
+                return tool;
+            }
+        }
+        return null;
+    }
+
+    private static Agent findHandoffTarget(Agent activeAgent, String toolName) {
+        for (Agent candidate : activeAgent.handoffs()) {
+            if (HandoffTool.toolNameFor(candidate).equals(toolName)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    private static void appendToolResult(List<ChatMessage> history, ToolCall call, String output) {
+        ChatMessage toolMessage = new ChatMessage("", ChatMessage.TYPE_TOOL, System.currentTimeMillis());
+        toolMessage.setToolName(call.getName());
+        toolMessage.setToolArgs(call.getArguments());
+        toolMessage.setToolId(call.getId());
+        toolMessage.setToolRunning(false);
+        toolMessage.setToolResult(output);
+        toolMessage.setToolError(output != null && output.startsWith("Error"));
+        history.add(toolMessage);
+    }
+
+    private static String latestUserText(List<ChatMessage> messages) {
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            ChatMessage message = messages.get(i);
+            if (message.getType() == ChatMessage.TYPE_USER) {
+                return message.getMessage();
+            }
+        }
+        return "";
+    }
+
+    /** Fluent builder for {@link AgentRuntime}. */
+    public static final class Builder {
+        private final AgentLlmGateway gateway;
+        private EventStream events = new EventStream();
+        private PermissionLayer permissions;
+        private final List<Guardrail> inputGuardrails = new ArrayList<>();
+        private int maxTurns = DEFAULT_MAX_TURNS;
+        private RunBudget budget;
+        private int maxOutputTokensPerTurn = 2048;
+        private boolean includeProjectInstructions = true;
+
+        public Builder(AgentLlmGateway gateway) {
+            if (gateway == null) {
+                throw new IllegalArgumentException("gateway is required");
+            }
+            this.gateway = gateway;
+        }
+
+        public Builder events(EventStream events) {
+            this.events = events == null ? new EventStream() : events;
+            return this;
+        }
+
+        public Builder permissions(PermissionLayer permissions) {
+            this.permissions = permissions;
+            return this;
+        }
+
+        public Builder inputGuardrails(Guardrail... guardrails) {
+            for (Guardrail guardrail : guardrails) {
+                if (guardrail != null) {
+                    inputGuardrails.add(guardrail);
+                }
+            }
+            return this;
+        }
+
+        public Builder maxTurns(int maxTurns) {
+            this.maxTurns = maxTurns;
+            return this;
+        }
+
+        /** M3: per-run token budget (reserve/settle/block). */
+        public Builder budget(RunBudget budget) {
+            this.budget = budget;
+            return this;
+        }
+
+        /** M3: worst-case output reservation per turn. */
+        public Builder maxOutputTokensPerTurn(int maxOutputTokensPerTurn) {
+            this.maxOutputTokensPerTurn = Math.max(16, maxOutputTokensPerTurn);
+            return this;
+        }
+
+        /** M7: inject workspace AGENTS.md into the system prompt (default true). */
+        public Builder includeProjectInstructions(boolean include) {
+            this.includeProjectInstructions = include;
+            return this;
+        }
+
+        public AgentRuntime build() {
+            return new AgentRuntime(this);
+        }
+    }
+}
