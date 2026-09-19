@@ -46,6 +46,26 @@ AgentEvent.FileChanged          ← side effect real, consumido pela UI
 ToolCallCompleted
 ```
 
+### Emissão é commit-ordered
+
+O `ApplyPatchTool` valida tudo (Pass 1), aplica todas as operações (Pass 2,
+com rollback em falha) e só então (Pass 3) registra no `FileChangeTracker` e
+emite `AgentEvent.FileChanged`. Um patch revertido por rollback não deixa
+rastro: sem tracker, sem eventos. O runtime **empresta** seu próprio
+`EventStream`/scId ao patch tool (`boundTo`), e `apply_patch` está excluído do
+heurístico `emitFileChangedIfAny` do runtime — 1 mutação real = 1 registro =
+1 conjunto de eventos. A ordem contratada é:
+
+```
+ApprovalRequired → PermissionResolved → ToolCallStarted →
+mutação real → FileChangeTracker → FileChanged → ToolCallCompleted
+```
+
+Todos os mutators do registry (`create/edit/rewrite/delete/move/rename/copy`)
+usam o `WorkspaceFileSystem` ativo como caminho principal;
+`ProjectPathResolver` permanece só como fallback de sessões sem workspace
+(nesse fallback, `deleteRecursive` retorna boolean e o resultado é validado).
+
 ### Semântica dos três verbos
 
 | Verbo | O que faz | Toca o disco? |

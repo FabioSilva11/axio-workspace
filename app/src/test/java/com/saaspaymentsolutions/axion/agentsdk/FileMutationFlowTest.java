@@ -141,7 +141,8 @@ public class FileMutationFlowTest {
     @Test
     public void applyPatch_rollsBackEarlierWrites_whenALaterDeleteFails() throws Exception {
         fs.writeText("src/B.kt", "val b = 2\n");
-        fs.failDeletes = true; // the DELETE op will fail mid-application
+        fs.writeText("src/C.kt", "val c = 3\n"); // passes validation, fails on apply
+        fs.failDeletes = true;
         ApplyPatchTool tool = new ApplyPatchTool("sc_mutation", null, fs);
 
         AgentToolResult result = tool.execute(null, new JSONObject().put("patch",
@@ -231,6 +232,70 @@ public class FileMutationFlowTest {
         assertEquals(ToolPolicy.Rule.ASK_USER, layer.ruleForPublicForTest(patch));
         assertEquals("read-only tools must not be classified by the name fallback",
                 ToolPolicy.Rule.DENY, layer.ruleForPublicForTest(read));
+    }
+
+    // ------------------------------------------------------------------
+    // create_file_or_folder through the workspace filesystem
+    // ------------------------------------------------------------------
+
+    @Test
+    public void createFile_viaWorkspace_createsAndTracksTheFile() throws Exception {
+        String output = executeVoidTool("create_file_or_folder",
+                new JSONObject().put("uri", "src/brand-new.txt"));
+
+        assertFalse("creation must succeed: " + output, output.contains("Error"));
+        assertTrue("the file must exist in the workspace filesystem",
+                fs.exists("src/brand-new.txt"));
+        FileChangeTracker.FileChange change = FileChangeTracker
+                .getAllRecentChanges("sc_mutation").get("src/brand-new.txt");
+        assertNotNull("creation must appear in the diff review", change);
+        assertFalse("a created file did not exist before", change.existedBefore);
+    }
+
+    @Test
+    public void createFolder_viaWorkspace_createsTheDirectory() throws Exception {
+        String output = executeVoidTool("create_file_or_folder",
+                new JSONObject().put("uri", "src/newpkg/"));
+
+        assertFalse("folder creation must succeed: " + output, output.contains("Error"));
+        assertTrue("the folder must exist", fs.isDirectory("src/newpkg"));
+        // Folders are not tracked: the diff review is for file contents.
+        assertTrue(FileChangeTracker.getAllRecentChanges("sc_mutation").isEmpty());
+    }
+
+    @Test
+    public void createFile_whenFilesystemRefuses_reportsErrorAndTracksNothing() throws Exception {
+        fs.failCreates = true;
+
+        String output = executeVoidTool("create_file_or_folder",
+                new JSONObject().put("uri", "src/doomed.txt"));
+
+        assertTrue("a refused creation must be an error", output.contains("Error"));
+        assertFalse(fs.exists("src/doomed.txt"));
+        assertTrue("failed creation must not enter the diff review",
+                FileChangeTracker.getAllRecentChanges("sc_mutation").isEmpty());
+    }
+
+    @Test
+    public void create_rejectsTraversalAndAbsolutePaths() throws Exception {
+        assertTrue(executeVoidTool("create_file_or_folder",
+                new JSONObject().put("uri", "../escape.txt")).contains("Error"));
+        assertTrue(executeVoidTool("create_file_or_folder",
+                new JSONObject().put("uri", "/abs/path.txt")).contains("Error"));
+        assertTrue(executeVoidTool("create_file_or_folder",
+                new JSONObject().put("uri", "C:\\tmp\\x.txt")).contains("Error"));
+        assertFalse(fs.exists("escape.txt"));
+    }
+
+    @Test
+    public void createFolder_existingDirectory_isIdempotentSuccess() throws Exception {
+        fs.createDirectory("src/already");
+
+        String output = executeVoidTool("create_file_or_folder",
+                new JSONObject().put("uri", "src/already/"));
+
+        assertFalse(output.contains("Error"));
+        assertTrue(fs.isDirectory("src/already"));
     }
 
     @Test

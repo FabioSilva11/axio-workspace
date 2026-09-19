@@ -96,14 +96,15 @@ public class FileMutationE2EEvalTest {
 
         // Event order: the approval decision fully precedes the execution of
         // the mutation (Codex: approval before the tool runtime runs), and the
-        // FileChanged reflects a real side effect after completion.
+        // FileChanged announces the real side effect BEFORE the call is
+        // declared complete — the file is final when Completed is emitted.
         int asked = firstIndexOf(AgentEvent.ApprovalRequired.class);
         int resolved = firstIndexOf(AgentEvent.PermissionResolved.class);
         int started = firstIndexOf(AgentEvent.ToolCallStarted.class);
-        int completed = firstIndexOf(AgentEvent.ToolCallCompleted.class);
         int changed = firstIndexOf(AgentEvent.FileChanged.class);
+        int completed = firstIndexOf(AgentEvent.ToolCallCompleted.class);
         assertTrue(asked >= 0 && resolved > asked && started > resolved
-                && completed > started && changed > completed);
+                && changed > started && completed > changed);
         AgentEvent.FileChanged fileChanged =
                 (AgentEvent.FileChanged) received.get(changed);
         assertEquals("src/Config.java", fileChanged.getPath());

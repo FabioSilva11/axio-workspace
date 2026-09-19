@@ -1,5 +1,6 @@
 package com.saaspaymentsolutions.axion.agentsdk;
 
+import com.saaspaymentsolutions.axion.FileChangeTracker;
 import com.saaspaymentsolutions.axion.workspace.WorkspaceFileSystem;
 import com.saaspaymentsolutions.axion.workspace.WorkspaceManager;
 import com.saaspaymentsolutions.axion.workspace.WorkspacePath;
@@ -16,11 +17,13 @@ import java.util.List;
  * is written. Validation is all-or-nothing: if any op fails validation, no
  * file is touched and the model receives a structured error it can retry on.
  *
- * <p>Application is best-effort with <b>rollback</b>: writes happen through the
- * active workspace filesystem first, and if a later write or delete fails, the
- * already-applied ops are restored from their pre-patch content (failures here
- * are reported honestly). Deleted files' previous content is kept in memory
- * for the duration of the patch so a rollback can recreate them.</p>
+ * <p>Announcement is commit-ordered: {@link AgentEvent.FileChanged} events and
+ * {@link FileChangeTracker} entries are produced ONLY after every operation of
+ * the patch is confirmed on the workspace filesystem. If a write or delete
+ * fails mid-patch, the already-applied ops are rolled back from their captured
+ * pre-patch content and the tool returns an error with no events and no
+ * tracked changes — a rolled-back patch is indistinguishable from one that
+ * never ran.</p>
  *
  * <p>Path security: every path goes through {@link WorkspacePath#normalize}
  * (rejects traversal) and must not be absolute or contain a drive letter —
@@ -42,6 +45,24 @@ public final class ApplyPatchTool implements AgentTool {
         this.scId = scId == null ? "" : scId;
         this.events = events;
         this.injectedFs = injectedFs;
+    }
+
+    /** True when no EventStream was provided and the runtime must lend its own. */
+    boolean hasNoStream() {
+        return events == null;
+    }
+
+    /**
+     * Returns a view of this tool bound to the runtime's own stream and
+     * session id, so {@code FileChanged} events and tracker records flow on
+     * the same channel as every other event of the run — never a detached
+     * stream. The injected filesystem (if any) is preserved.
+     */
+    ApplyPatchTool boundTo(EventStream runtimeEvents, String runtimeScId) {
+        return new ApplyPatchTool(
+                runtimeScId == null || runtimeScId.isEmpty() ? this.scId : runtimeScId,
+                runtimeEvents,
+                this.injectedFs);
     }
 
     @Override
@@ -102,9 +123,7 @@ public final class ApplyPatchTool implements AgentTool {
         if (fs == null) {
             return AgentToolResult.error("Error: no active workspace is open.");
         }
-        List<String[]> writes = new ArrayList<>(); // [relativePath, newContent, originalContentOrNull]
-        List<String> deletes = new ArrayList<>();
-        List<AgentEvent.FileChangeKind> kinds = new ArrayList<>();
+        List<PatchMutation> mutations = new ArrayList<>();
 
         try {
             for (PatchParser.PatchOp op : ops) {
@@ -118,8 +137,7 @@ public final class ApplyPatchTool implements AgentTool {
                             return AgentToolResult.error("Error: Add File '" + path
                                     + "' but the file already exists.");
                         }
-                        writes.add(new String[]{path, renderContent(op.getHunks()), null});
-                        kinds.add(AgentEvent.FileChangeKind.CREATED);
+                        mutations.add(PatchMutation.created(path, renderContent(op.getHunks())));
                         break;
                     }
                     case UPDATE: {
@@ -133,8 +151,7 @@ public final class ApplyPatchTool implements AgentTool {
                             return AgentToolResult.error("Error: patch does not apply cleanly to '"
                                     + path + "'.");
                         }
-                        writes.add(new String[]{path, updated, original});
-                        kinds.add(AgentEvent.FileChangeKind.MODIFIED);
+                        mutations.add(PatchMutation.modified(path, original, updated));
                         break;
                     }
                     case DELETE: {
@@ -142,8 +159,9 @@ public final class ApplyPatchTool implements AgentTool {
                             return AgentToolResult.error("Error: Delete File '" + path
                                     + "' but the file does not exist.");
                         }
-                        deletes.add(path);
-                        kinds.add(AgentEvent.FileChangeKind.DELETED);
+                        // Capture the previous content now: it feeds both the
+                        // tracker entry and the rollback on failure.
+                        mutations.add(PatchMutation.deleted(path, fs.readText(path)));
                         break;
                     }
                     default:
@@ -155,80 +173,48 @@ public final class ApplyPatchTool implements AgentTool {
                     + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
         }
 
-        // ---- Pass 2: apply with rollback. Every op captures enough state to
-        // restore what it touched, so a mid-patch failure undoes the patch. ----
+        // ---- Pass 2: apply everything; announce only after full success ----
         StringBuilder report = new StringBuilder();
-        List<String> appliedWrites = new ArrayList<>();
-        List<String[]> restoredDeletes = new ArrayList<>(); // [path, previousContent]
+        List<PatchMutation> applied = new ArrayList<>();
         try {
-            for (int i = 0; i < writes.size(); i++) {
-                String[] write = writes.get(i);
-                fs.writeText(write[0], write[1]);
-                appliedWrites.add(write[0]);
-                report.append("Updated ").append(write[0]).append('\n');
-                if (events != null) {
-                    events.emit(new AgentEvent.FileChanged(scId, write[0], kinds.get(i), name()));
-                }
-            }
-            for (String path : deletes) {
-                String previous = null;
-                try {
-                    previous = fs.readText(path);
-                } catch (Exception readFailure) {
-                    previous = null;
-                }
-                boolean deleted = fs.delete(path);
-                if (!deleted || fs.exists(path)) {
-                    throw new IllegalStateException("filesystem did not delete '" + path + "'");
-                }
-                restoredDeletes.add(new String[]{path, previous});
-                report.append("Deleted ").append(path).append('\n');
-                if (events != null) {
-                    events.emit(new AgentEvent.FileChanged(scId, path,
-                            AgentEvent.FileChangeKind.DELETED, name()));
-                }
+            for (PatchMutation mutation : mutations) {
+                mutation.applyTo(fs);
+                applied.add(mutation);
+                report.append(mutation.reportLine()).append('\n');
             }
         } catch (Exception e) {
-            rollback(fs, appliedWrites, restoredDeletes, writes);
+            // Roll back in reverse order; a failed patch must look like it
+            // never ran: no tracker entries, no FileChanged events.
+            rollback(fs, applied);
             return AgentToolResult.error("Error: write failed after validation — "
                     + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage())
-                    + " (already-applied changes were rolled back).");
+                    + " (already-applied changes were rolled back; no changes were kept).");
+        }
+
+        // ---- Pass 3: commit-ordered announcement. The patch is fully on disk:
+        // record history for the diff review page and emit FileChanged. ----
+        if (scId != null && !scId.isEmpty()) {
+            for (PatchMutation mutation : applied) {
+                mutation.trackIn(scId);
+            }
+        }
+        if (events != null) {
+            for (PatchMutation mutation : applied) {
+                events.emit(new AgentEvent.FileChanged(scId, mutation.path,
+                        mutation.kind, name()));
+            }
         }
         return AgentToolResult.success(report.toString().trim());
     }
 
-    /**
-     * Restores the workspace state from before the failing patch: written
-     * files go back to their pre-patch content (or are removed when they were
-     * created by this patch), deleted files are recreated with their previous
-     * content. Rollback failures are collected but never mask the original
-     * error; the returned message lists anything that could not be restored.
-     */
-    private static void rollback(WorkspaceFileSystem fs, List<String> appliedWrites,
-                                 List<String[]> restoredDeletes, List<String[]> plannedWrites) {
+    /** Restores the already-applied mutations, newest first. Best-effort. */
+    private static void rollback(WorkspaceFileSystem fs, List<PatchMutation> applied) {
         StringBuilder problems = new StringBuilder();
-        // Remove files this patch created, restore the ones it overwrote.
-        for (int i = appliedWrites.size() - 1; i >= 0; i--) {
-            String path = appliedWrites.get(i);
+        for (int i = applied.size() - 1; i >= 0; i--) {
             try {
-                String original = originalContentFor(plannedWrites, path);
-                if (original == null) {
-                    // CREATED by this patch: remove it again.
-                    fs.delete(path);
-                } else {
-                    fs.writeText(path, original);
-                }
+                applied.get(i).restoreFrom(fs);
             } catch (Exception rollbackFailure) {
-                problems.append(path).append("; ");
-            }
-        }
-        // Recreate files this patch deleted.
-        for (int i = restoredDeletes.size() - 1; i >= 0; i--) {
-            String[] entry = restoredDeletes.get(i);
-            try {
-                fs.writeText(entry[0], entry[1] == null ? "" : entry[1]);
-            } catch (Exception rollbackFailure) {
-                problems.append(entry[0]).append("; ");
+                problems.append(applied.get(i).path).append("; ");
             }
         }
         if (problems.length() > 0) {
@@ -236,14 +222,102 @@ public final class ApplyPatchTool implements AgentTool {
         }
     }
 
-    /** Pre-patch content for a written path, or null when the patch created it. */
-    private static String originalContentFor(List<String[]> plannedWrites, String path) {
-        for (String[] planned : plannedWrites) {
-            if (planned[0].equals(path)) {
-                return planned[2];
+    /**
+     * One planned/applied file mutation: the single structure used for
+     * validation, execution, rollback, tracker records and events. Carries
+     * the pre-patch content so failures can undo exactly what was touched.
+     */
+    private static final class PatchMutation {
+        final String path;
+        final AgentEvent.FileChangeKind kind;
+        final String previousContent; // null when the patch creates the file
+        final String newContent;      // null when the patch deletes the file
+
+        private PatchMutation(String path, AgentEvent.FileChangeKind kind,
+                              String previousContent, String newContent) {
+            this.path = path;
+            this.kind = kind;
+            this.previousContent = previousContent;
+            this.newContent = newContent;
+        }
+
+        static PatchMutation created(String path, String newContent) {
+            return new PatchMutation(path, AgentEvent.FileChangeKind.CREATED, null, newContent);
+        }
+
+        static PatchMutation modified(String path, String previousContent, String newContent) {
+            return new PatchMutation(path, AgentEvent.FileChangeKind.MODIFIED,
+                    previousContent, newContent);
+        }
+
+        static PatchMutation deleted(String path, String previousContent) {
+            return new PatchMutation(path, AgentEvent.FileChangeKind.DELETED,
+                    previousContent, null);
+        }
+
+        /** Performs the real filesystem mutation; throws when it did not stick. */
+        void applyTo(WorkspaceFileSystem fs) {
+            switch (kind) {
+                case CREATED:
+                case MODIFIED:
+                    fs.writeText(path, newContent);
+                    break;
+                case DELETED:
+                    boolean deleted = fs.delete(path);
+                    if (!deleted || fs.exists(path)) {
+                        throw new IllegalStateException("filesystem did not delete '" + path + "'");
+                    }
+                    break;
+                default:
+                    throw new IllegalStateException("unsupported mutation kind: " + kind);
             }
         }
-        return null;
+
+        /** Restores the pre-patch state of this mutation. */
+        void restoreFrom(WorkspaceFileSystem fs) {
+            switch (kind) {
+                case CREATED:
+                    // The patch created it: remove it again.
+                    fs.delete(path);
+                    break;
+                case MODIFIED:
+                case DELETED:
+                    fs.writeText(path, previousContent == null ? "" : previousContent);
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        /** Records the applied change in the diff review history. */
+        void trackIn(String scId) {
+            switch (kind) {
+                case CREATED:
+                    FileChangeTracker.trackChange(scId, path, "", newContent, false);
+                    break;
+                case MODIFIED:
+                    FileChangeTracker.trackChange(scId, path, previousContent, newContent, true);
+                    break;
+                case DELETED:
+                    FileChangeTracker.trackChange(scId, path, previousContent, "", true);
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        String reportLine() {
+            switch (kind) {
+                case CREATED:
+                    return "Created " + path;
+                case MODIFIED:
+                    return "Updated " + path;
+                case DELETED:
+                    return "Deleted " + path;
+                default:
+                    return path;
+            }
+        }
     }
 
     /** Normalizes and rejects unsafe paths; returns {@code null} when unsafe. */

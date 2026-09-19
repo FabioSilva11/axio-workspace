@@ -24,7 +24,7 @@ public final class WorkspaceAgents {
 
     /** All Void-ported tools available in agent mode, as {@link AgentTool}s. */
     public static List<AgentTool> defaultWorkspaceTools(ToolManager manager) {
-        return defaultWorkspaceTools(manager, null, "", null);
+        return defaultWorkspaceTools(manager, null, "");
     }
 
     /**
@@ -33,15 +33,17 @@ public final class WorkspaceAgents {
      * is available).
      */
     public static List<AgentTool> defaultWorkspaceTools(ToolManager manager, ApprovalHandler inputChannel) {
-        return defaultWorkspaceTools(manager, inputChannel, "", null);
+        return defaultWorkspaceTools(manager, inputChannel, "");
     }
 
     /**
-     * Full default toolset. {@code apply_patch} (Codex's canonical edit tool)
-     * is registered here so every agent mutates files through the same
+     * Full default toolset with the runtime's own {@link EventStream}.
+     * {@code apply_patch} (Codex's canonical edit tool) is registered here so
+     * every agent mutates files through the same
      * {@link com.saaspaymentsolutions.axion.workspace.WorkspaceFileSystem}
      * infrastructure, approval flow and {@code FileChanged} events as the
-     * rest of the toolset — a single mutation runtime, no parallel path.
+     * rest of the toolset — a single mutation runtime, no parallel path, and
+     * never a detached EventStream.
      */
     public static List<AgentTool> defaultWorkspaceTools(ToolManager manager, ApprovalHandler inputChannel,
                                                         String scId, EventStream events) {
@@ -55,6 +57,12 @@ public final class WorkspaceAgents {
             tools.add(new RequestUserInputTool(inputChannel));
         }
         return tools;
+    }
+
+    /** Convenience overload: the runtime's own EventStream reaches its tools. */
+    public static List<AgentTool> defaultWorkspaceTools(ToolManager manager, ApprovalHandler inputChannel,
+                                                        String scId) {
+        return defaultWorkspaceTools(manager, inputChannel, scId, null);
     }
 
     /** Read-only toolset: only tools that never mutate files. */

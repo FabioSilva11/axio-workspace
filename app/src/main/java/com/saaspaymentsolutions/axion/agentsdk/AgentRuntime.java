@@ -193,6 +193,14 @@ public final class AgentRuntime {
                         continue;
                     }
 
+                    // The runtime lends its own EventStream and scId to patch
+                    // tools built without one, so FileChanged events and the
+                    // FileChangeTracker records flow on THIS run's channel —
+                    // never a detached stream.
+                    if (tool instanceof ApplyPatchTool && ((ApplyPatchTool) tool).hasNoStream()) {
+                        tool = ((ApplyPatchTool) tool).boundTo(events, scId);
+                    }
+
                     // Permission layer first: DENY never reaches the user,
                     // ASK_USER parks the run until the host decides.
                     if (permissions != null) {
@@ -224,8 +232,11 @@ public final class AgentRuntime {
                             ? AgentToolResult.error("Error: invalid JSON arguments for '"
                             + call.getName() + "'.")
                             : toolExecutor.run(tool, context, args);
-                    emit(new AgentEvent.ToolCallCompleted(scId, tool.name(), call, result));
+                    // Side-effect announcement first, then the call completion:
+                    // by the time the model and the UI see "completed", the
+                    // filesystem change and its FileChanged already happened.
                     emitFileChangedIfAny(scId, tool, args, result);
+                    emit(new AgentEvent.ToolCallCompleted(scId, tool.name(), call, result));
                     appendToolResult(history, call, result.output());
 
                     if (tool instanceof HandoffTool) {
@@ -373,6 +384,11 @@ public final class AgentRuntime {
     /** Emits FileChanged for registry file tools (best-effort attribution). */
     private void emitFileChangedIfAny(String scId, AgentTool tool, JSONObject args, AgentToolResult result) {
         if (result == null || result.isError() || args == null || !tool.isFileMutation()) {
+            return;
+        }
+        // apply_patch announces its own committed mutations per file; the
+        // heuristic below cannot attribute them (it looks at uri/path args).
+        if ("apply_patch".equals(tool.name())) {
             return;
         }
         String path = args.optString("uri", args.optString("path", ""));

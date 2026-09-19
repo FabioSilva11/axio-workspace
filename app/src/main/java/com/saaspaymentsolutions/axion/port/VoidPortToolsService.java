@@ -617,9 +617,18 @@ public final class VoidPortToolsService {
             String uriStr = validateStr("uri", uriObj);
             boolean isFolder = checkIfIsFolder(uriStr);
 
+            // Single source of truth: creations go through the active
+            // WorkspaceFileSystem (SAF or local folder), never through
+            // java.io.File. ProjectPathResolver below is only a fallback for
+            // sessions with no workspace open.
+            WorkspaceFileSystem ws = WorkspaceManager.getActiveFileSystem();
+            if (ws != null) {
+                return createThroughWorkspace(scId, ws, uriStr, isFolder);
+            }
+
             ProjectPathResolver.ResolvedPath resolved = ProjectPathResolver.resolveForWrite(scId, uriStr);
             if (resolved == null || !resolved.isAuthorized()) {
-                return new ToolCallResult("Cannot create outside the workspace: " + uriStr);
+                return new ToolCallResult("Error: cannot create outside the workspace: " + uriStr);
             }
 
             File file = resolved.getFile();
@@ -629,21 +638,65 @@ public final class VoidPortToolsService {
             }
 
             if (isFolder) {
-                if (!file.exists()) {
-                    file.mkdirs();
+                if (!file.exists() && !file.mkdirs()) {
+                    return new ToolCallResult("Error: failed to create folder: " + uriStr);
                 }
             } else {
-                if (!file.exists()) {
-                    file.createNewFile();
-                    // existedBefore=false: rejecting this change must delete the file.
-                    FileChangeTracker.trackChange(scId, uriStr, "", "", false);
+                if (!file.exists() && !file.createNewFile()) {
+                    return new ToolCallResult("Error: failed to create file: " + uriStr);
                 }
+                // existedBefore=false: rejecting this change must delete the file.
+                FileChangeTracker.trackChange(scId, uriStr, "", "", false);
             }
 
             return new ToolCallResult("{}");
         } catch (Exception e) {
             return new ToolCallResult("Error creating file/folder: " + e.getMessage());
         }
+    }
+
+    /**
+     * Workspace-first creation: resolves through the active
+     * {@link WorkspaceFileSystem}, validates the boolean result and verifies
+     * the entry really exists before reporting success. Returns error (never
+     * silent success) when the filesystem refuses the operation.
+     */
+    private static ToolCallResult createThroughWorkspace(String scId, WorkspaceFileSystem ws,
+                                                         String uriStr, boolean isFolder) {
+        // The workspace filesystem only serves relative paths: absolute paths,
+        // drive letters and backslashes never name a workspace entry.
+        if (uriStr.startsWith("/") || uriStr.contains(":") || uriStr.contains("\\")) {
+            return new ToolCallResult("Error: refusing to create an absolute or unsafe path: " + uriStr);
+        }
+        if (WorkspacePath.hasParentTraversal(uriStr)) {
+            return new ToolCallResult("Error: unsafe path: " + uriStr);
+        }
+        String path = WorkspacePath.normalize(uriStr);
+        if (path.isEmpty()) {
+            return new ToolCallResult("Error: refusing to create the workspace root.");
+        }
+        if (ws.exists(path)) {
+            // Already exists: idempotent success, nothing was mutated.
+            return new ToolCallResult("{}");
+        }
+
+        boolean created;
+        if (isFolder) {
+            created = ws.createDirectory(path);
+        } else {
+            created = ws.createFile(path);
+        }
+        if (!created || !ws.exists(path)) {
+            return new ToolCallResult("Error: failed to create "
+                    + (isFolder ? "folder" : "file") + ": " + uriStr
+                    + " (the filesystem did not create the entry).");
+        }
+
+        if (!isFolder) {
+            // existedBefore=false: reverting this change must delete the file.
+            FileChangeTracker.trackChange(scId, uriStr, "", "", false);
+        }
+        return new ToolCallResult("{}");
     }
 
     public static ToolCallResult deleteFileOrFolder(String scId, Object uriObj, Object isRecursiveObj) {
@@ -691,7 +744,11 @@ public final class VoidPortToolsService {
                 if (oldContent == null) oldContent = "";
             }
 
-            deleteRecursive(file);
+            boolean deleted = deleteRecursive(file);
+            if (!deleted || file.exists()) {
+                return new ToolCallResult("Error: failed to delete " + uriStr
+                        + " (the filesystem did not remove the entry).");
+            }
 
             if (isFile) {
                 FileChangeTracker.trackChange(scId, uriStr, oldContent, "");
@@ -1301,16 +1358,21 @@ public final class VoidPortToolsService {
                 c.matches("(?s).*\\bmkdir\\b.*");
     }
 
-    private static void deleteRecursive(File file) {
+    /**
+     * Deletes recursively and reports whether EVERY required deletion
+     * succeeded. Never treated as success by callers without checking.
+     */
+    private static boolean deleteRecursive(File file) {
+        boolean allDeleted = true;
         if (file.isDirectory()) {
             File[] children = file.listFiles();
             if (children != null) {
                 for (File child : children) {
-                    deleteRecursive(child);
+                    allDeleted &= deleteRecursive(child);
                 }
             }
         }
-        file.delete();
+        return file.delete() && allDeleted;
     }
 
     // ============================================

@@ -64,6 +64,19 @@ public class FileChangeTrackerWorkspaceTest {
     }
 
     @Test
+    public void accept_performsNoFilesystemOperationAtAll() {
+        fs.writeText("src/A.java", "final content\n");
+        FileChangeTracker.trackChange("sc_tracker", "src/A.java", "original\n", "final content\n");
+        int writesBefore = fs.writeTextCalls.size();
+        int deletesBefore = fs.deleteCalls.size();
+
+        assertTrue(FileChangeTracker.acceptChange("sc_tracker", "src/A.java"));
+
+        assertEquals("accept must never write", writesBefore, fs.writeTextCalls.size());
+        assertEquals("accept must never delete", deletesBefore, fs.deleteCalls.size());
+    }
+
+    @Test
     public void revert_restoresPreviousContent_throughTheActiveWorkspace() {
         String original = "class A\n";
         String modified = "class A\n// agent edit\n";
@@ -125,11 +138,13 @@ public class FileChangeTrackerWorkspaceTest {
     /** In-memory WorkspaceFileSystem that records which mutations were asked of it. */
     public static final class FakeWorkspaceFileSystem implements WorkspaceFileSystem {
         public final Map<String, String> files = new HashMap<>();
+        public final java.util.Set<String> directories = new java.util.HashSet<>();
         public final List<String> writeTextCalls = new ArrayList<>();
         public final List<String> deleteCalls = new ArrayList<>();
         public final List<String> missingPaths = new ArrayList<>();
         public boolean failDeletes = false;
         public boolean failWrites = false;
+        public boolean failCreates = false;
 
         private String key(String relativePath) {
             return com.saaspaymentsolutions.axion.workspace.WorkspacePath
@@ -169,6 +184,7 @@ public class FileChangeTrackerWorkspaceTest {
         @Override
         public boolean createFile(String relativePath) {
             String key = key(relativePath);
+            if (failCreates) return false;
             if (files.containsKey(key)) return true;
             files.put(key, "");
             return true;
@@ -176,6 +192,8 @@ public class FileChangeTrackerWorkspaceTest {
 
         @Override
         public boolean createDirectory(String relativePath) {
+            if (failCreates) return false;
+            directories.add(key(relativePath));
             return true;
         }
 
@@ -184,6 +202,7 @@ public class FileChangeTrackerWorkspaceTest {
             String key = key(relativePath);
             deleteCalls.add(key);
             if (failDeletes || missingPaths.contains(key)) return false;
+            if (directories.remove(key)) return true;
             return files.remove(key) != null;
         }
 
@@ -205,12 +224,13 @@ public class FileChangeTrackerWorkspaceTest {
         @Override
         public boolean exists(String relativePath) {
             String key = key(relativePath);
-            return !missingPaths.contains(key) && files.containsKey(key);
+            return !missingPaths.contains(key)
+                    && (files.containsKey(key) || directories.contains(key));
         }
 
         @Override
         public boolean isDirectory(String relativePath) {
-            return false;
+            return directories.contains(key(relativePath));
         }
 
         @Override
