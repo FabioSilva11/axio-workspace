@@ -19,11 +19,20 @@ import java.util.List;
  *
  * <p>Announcement is commit-ordered: {@link AgentEvent.FileChanged} events and
  * {@link FileChangeTracker} entries are produced ONLY after every operation of
- * the patch is confirmed on the workspace filesystem. If a write or delete
- * fails mid-patch, the already-applied ops are rolled back from their captured
- * pre-patch content and the tool returns an error with no events and no
- * tracked changes — a rolled-back patch is indistinguishable from one that
- * never ran.</p>
+ * the patch is confirmed on the workspace filesystem.</p>
+ *
+ * <p>Failure semantics are honest about the two possible outcomes:</p>
+ * <ul>
+ *   <li><b>Rollback complete</b> — the already-applied ops are restored from
+ *   their captured pre-patch content and the restore is verified against the
+ *   real filesystem. The tool returns an error with no events and no tracked
+ *   changes: the failed patch leaves zero traces of a commit.</li>
+ *   <li><b>Rollback incomplete</b> — a restore itself failed verification. The
+ *   filesystem may be PARTIALLY patched: the tool emits an
+ *   {@link AgentEvent.Error}, names the affected files, and the error message
+ *   explicitly says changes may remain applied. It never claims a clean
+ *   revert and never fakes tracker entries or commit events.</li>
+ * </ul>
  *
  * <p>Path security: every path goes through {@link WorkspacePath#normalize}
  * (rejects traversal) and must not be absolute or contain a drive letter —

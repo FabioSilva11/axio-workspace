@@ -75,6 +75,11 @@ public class FileChangeTracker {
         }
     }
 
+    /** Test hook: simulates process death by dropping the in-memory bindings. */
+    public static void clearFileSystemBindings() {
+        fileSystemsByProject.clear();
+    }
+
     public static class FileChange {
         public String filePath;
         public String beforeContent;
@@ -181,11 +186,22 @@ public class FileChangeTracker {
     }
 
     /**
-     * Resolves the filesystem of a change: the filesystem bound to the
-     * change's {@code scId} at mutation time first, then the active
-     * workspace when it verifiably serves the same project, then the active
-     * workspace as a documented last resort for sessions whose binding was
-     * lost (process death) — matching the pre-binding behavior.
+     * Resolves the filesystem of a change. Fail-closed:
+     *
+     * <pre>
+     * filesystem bound to scId (mutation time)
+     *     ↓
+     * active workspace, only when it provably belongs to scId
+     *     (workspace id == scId, or a local rootUri that IS the project dir;
+     *      content:// roots are matched by identity only, never by path)
+     *     ↓
+     * null — the revert must NOT run
+     * </pre>
+     *
+     * A change can never be reverted using a workspace different from the
+     * one identified by the change's {@code scId}: with the binding lost
+     * (process death) and another workspace active, this returns
+     * {@code null} instead of silently writing into the wrong project.
      */
     private static WorkspaceFileSystem fileSystemFor(String scId) {
         WorkspaceFileSystem bound = fileSystemsByProject.get(scId);
@@ -196,21 +212,39 @@ public class FileChangeTracker {
         if (active != null && activeWorkspaceServesProject(scId)) {
             return active;
         }
-        return active;
+        return null;
     }
 
-    /** True when the active workspace root is the project directory of {@code scId}. */
+    /**
+     * True only when the active workspace provably owns {@code scId}'s
+     * files. Identity first (workspace id), real path for local roots,
+     * and never a path inference for SAF ({@code content://}) roots.
+     */
     private static boolean activeWorkspaceServesProject(String scId) {
         try {
             Workspace active = WorkspaceManager.INSTANCE.getActiveWorkspace();
             if (active == null) {
                 return false;
             }
+            // Direct identity: hosts that key workspaces by project id.
+            if (scId.equals(active.getId())) {
+                return true;
+            }
             String root = active.getRootUri();
-            String webPath = new File(ProjectManager.getWebProjectsRoot(), scId).getAbsolutePath();
-            String asPath = new File(ProjectManager.getAndroidStudioProjectsRoot(), scId).getAbsolutePath();
-            return root.equals(webPath) || root.equals(asPath);
+            if (root == null) {
+                return false;
+            }
+            // SAF trees are matched by identity only — converting a
+            // content:// URI into a File would be a fragile guess.
+            if (root.startsWith("content://")) {
+                return false;
+            }
+            String canonicalRoot = new File(root).getCanonicalPath();
+            String webPath = new File(ProjectManager.getWebProjectsRoot(), scId).getCanonicalPath();
+            String asPath = new File(ProjectManager.getAndroidStudioProjectsRoot(), scId).getCanonicalPath();
+            return canonicalRoot.equals(webPath) || canonicalRoot.equals(asPath);
         } catch (Exception error) {
+            // Unresolvable storage roots: refuse the inference, fail closed.
             return false;
         }
     }
@@ -222,8 +256,9 @@ public class FileChangeTracker {
     private static boolean restorePreviousState(String scId, FileChange change) {
         WorkspaceFileSystem fs = fileSystemFor(scId);
         if (fs == null) {
-            Log.e(TAG, "Cannot revert " + change.filePath
-                    + ": no workspace filesystem for project " + scId + ".");
+            Log.e(TAG, "Revert refused for " + change.filePath + " (project " + scId
+                    + "): the change's workspace is not bound and the active workspace"
+                    + " does not provably belong to this project. Fail-closed.");
             return false;
         }
         String path;

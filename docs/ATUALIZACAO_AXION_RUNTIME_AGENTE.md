@@ -18,8 +18,10 @@
 6. **Accept nunca escreve.** É ação de revisão: limpa a entrada da lista de revisão.
 7. **Revert escreve somente para desfazer** uma alteração registrada.
 8. **Revert resolve o filesystem pelo workspace/scId da alteração** (bindado no momento da mutação) — não pelo workspace que estiver ativo no momento do revert.
-9. **Falha de patch com rollback completo deixa zero rastros de commit** — sem tracker, sem `FileChanged`.
-10. **Rollback incompleto gera erro explícito e estado potencialmente parcial** — nunca falso "totalmente revertido", nunca commit fake; a resposta nomeia os arquivos afetados.
+9. **REVERT DEVE SER FAIL-CLOSED.** Sem binding e sem workspace ativo comprovadamente correspondente ao scId, o revert NÃO executa — nunca há fallback silencioso para o workspace ativo.
+10. **NUNCA REVERTER UMA ALTERAÇÃO EM OUTRO WORKSPACE.** Uma alteração do projeto A jamais pode ser restaurada usando o filesystem do projeto B, em nenhuma circunstância.
+11. **Falha de patch com rollback completo deixa zero rastros de commit** — sem tracker, sem `FileChanged`.
+12. **Rollback incompleto gera erro explícito e estado potencialmente parcial** — nunca falso "totalmente revertido", nunca commit fake; a resposta nomeia os arquivos afetados.
 
 Ordem contratada de eventos (sucesso e falha):
 
@@ -32,6 +34,18 @@ FileChangeTracker → FileChanged → ToolCallCompleted
 ToolCallStarted → mutation failure → rollback → [Error] → ToolCallCompleted(error)
                                                      └─ rollback incompleto:
                                                         Error(partial/unknown filesystem state)
+```
+
+Resolução de filesystem no revert (fail-closed):
+
+```
+filesystem bound ao scId (momento da mutação)
+  ↓ (sem binding: ex. process death)
+workspace ativo, somente se comprovadamente do scId
+  (id == scId, ou rootUri local que É o diretório do projeto;
+   content:// nunca é resolvido por caminho)
+  ↓ (caso contrário)
+null → revert recusado (log de workspace incompatível)
 ```
 
 ## Estado atual (atualizado): fluxo de mutação de arquivos

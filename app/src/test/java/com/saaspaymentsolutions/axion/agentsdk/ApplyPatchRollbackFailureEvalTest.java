@@ -161,6 +161,114 @@ public class ApplyPatchRollbackFailureEvalTest {
     }
 
     // ------------------------------------------------------------------
+    // fail-closed revert: process death / binding loss
+    // ------------------------------------------------------------------
+
+    @Test
+    public void eval_processDeath_bindingLost_wrongActiveWorkspace_revertIsRefused()
+            throws Exception {
+        // Workspace A is mutated and tracked.
+        FakeWorkspaceFileSystem fsA = new FakeWorkspaceFileSystem();
+        WorkspaceManager.INSTANCE.setCustomFileSystemForTesting(fsA, fakeWorkspace("ws-a"));
+        fsA.writeText("src/File.java", "original A\n");
+        ApplyPatchTool toolA = new ApplyPatchTool(SC, null, fsA);
+        AgentToolResult r = toolA.execute(null, new JSONObject().put("patch",
+                "*** Begin Patch\n*** Update File: src/File.java\n@@\n-original A\n+patched A\n*** End Patch"));
+        assertFalse(r.isError());
+
+        // Process death: the in-memory scId→filesystem binding is gone.
+        FileChangeTracker.clearFileSystemBindings();
+
+        // A DIFFERENT workspace (B) becomes active.
+        FakeWorkspaceFileSystem fsB = new FakeWorkspaceFileSystem();
+        fsB.writeText("src/File.java", "original B\n");
+        WorkspaceManager.INSTANCE.setCustomFileSystemForTesting(fsB, fakeWorkspace("ws-b"));
+
+        // The revert must be refused: A is not bound and B is not provably A.
+        assertFalse("revert into a different workspace must fail closed",
+                FileChangeTracker.rejectChange(SC, "src/File.java"));
+        assertEquals("A must keep the applied content", "patched A\n", fsA.readText("src/File.java"));
+        assertEquals("B must never be touched", "original B\n", fsB.readText("src/File.java"));
+        assertTrue("the refused entry stays tracked for a later legitimate revert",
+                FileChangeTracker.getAllRecentChanges(SC).containsKey("src/File.java"));
+    }
+
+    @Test
+    public void eval_processDeath_bindingLost_correctWorkspaceReopened_revertSucceeds()
+            throws Exception {
+        FakeWorkspaceFileSystem fsA = new FakeWorkspaceFileSystem();
+        WorkspaceManager.INSTANCE.setCustomFileSystemForTesting(fsA, fakeWorkspace("ws-a"));
+        fsA.writeText("src/File.java", "original A\n");
+        ApplyPatchTool toolA = new ApplyPatchTool(SC, null, fsA);
+        toolA.execute(null, new JSONObject().put("patch",
+                "*** Begin Patch\n*** Update File: src/File.java\n@@\n-original A\n+patched A\n*** End Patch"));
+
+        // Process death removes the binding…
+        FileChangeTracker.clearFileSystemBindings();
+
+        // …and the user reopens Workspace A — a workspace whose identity IS
+        // the change's scId (identity path, no path inference).
+        WorkspaceManager.INSTANCE.setCustomFileSystemForTesting(fsA, fakeWorkspace(SC));
+
+        assertTrue("reverting with the correct workspace reopened must work",
+                FileChangeTracker.rejectChange(SC, "src/File.java"));
+        assertEquals("original A\n", fsA.readText("src/File.java"));
+    }
+
+    @Test
+    public void eval_safWorkspaces_bindingLost_wrongSafTreeActive_revertIsRefused()
+            throws Exception {
+        // SAF workspace A (content:// identity, no path inference possible).
+        FakeWorkspaceFileSystem fsA = new FakeWorkspaceFileSystem();
+        WorkspaceManager.INSTANCE.setCustomFileSystemForTesting(fsA,
+                safWorkspace("ws-saf-a", "content://workspaceA/tree"));
+        fsA.writeText("src/File.java", "original A\n");
+        ApplyPatchTool toolA = new ApplyPatchTool(SC, null, fsA);
+        toolA.execute(null, new JSONObject().put("patch",
+                "*** Begin Patch\n*** Update File: src/File.java\n@@\n-original A\n+patched A\n*** End Patch"));
+
+        // Binding lost; a DIFFERENT SAF tree (B) becomes active.
+        FileChangeTracker.clearFileSystemBindings();
+        FakeWorkspaceFileSystem fsB = new FakeWorkspaceFileSystem();
+        fsB.writeText("src/File.java", "original B\n");
+        int writesB = fsB.writeTextCalls.size(); // seed only
+        WorkspaceManager.INSTANCE.setCustomFileSystemForTesting(fsB,
+                safWorkspace("ws-saf-b", "content://workspaceB/tree"));
+
+        assertFalse("revert across SAF trees must fail closed",
+                FileChangeTracker.rejectChange(SC, "src/File.java"));
+        assertEquals("patched A\n", fsA.readText("src/File.java"));
+        assertEquals("original B\n", fsB.readText("src/File.java"));
+        assertEquals("B must record no revert mutation", writesB, fsB.writeTextCalls.size());
+
+        // Reopening the correct SAF workspace A (identity == scId) makes the
+        // revert legitimate — resolved by identity, never by path.
+        WorkspaceManager.INSTANCE.setCustomFileSystemForTesting(fsA,
+                safWorkspace(SC, "content://workspaceA/tree"));
+        assertTrue(FileChangeTracker.rejectChange(SC, "src/File.java"));
+        assertEquals("original A\n", fsA.readText("src/File.java"));
+    }
+
+    @Test
+    public void eval_acceptWithDifferentWorkspaceActive_neverTouchesAnyFilesystem()
+            throws Exception {
+        FakeWorkspaceFileSystem fsA = new FakeWorkspaceFileSystem();
+        WorkspaceManager.INSTANCE.setCustomFileSystemForTesting(fsA, fakeWorkspace("ws-a"));
+        fsA.writeText("src/F.java", "final\n");
+        FileChangeTracker.trackChange(SC, "src/F.java", "before\n", "final\n");
+
+        // B becomes active; accept must stay review-only regardless.
+        FakeWorkspaceFileSystem fsB = new FakeWorkspaceFileSystem();
+        WorkspaceManager.INSTANCE.setCustomFileSystemForTesting(fsB, fakeWorkspace("ws-b"));
+
+        int writesB = fsB.writeTextCalls.size();
+        assertTrue(FileChangeTracker.acceptChange(SC, "src/F.java"));
+        assertTrue(FileChangeTracker.getAllRecentChanges(SC).isEmpty());
+        assertEquals("accept must not write into B", writesB, fsB.writeTextCalls.size());
+        assertEquals("accept must not write into A", 1, fsA.writeTextCalls.size()); // seed only
+    }
+
+    // ------------------------------------------------------------------
 
     private int fileChangedCount() {
         int count = 0;
@@ -173,7 +281,17 @@ public class ApplyPatchRollbackFailureEvalTest {
     }
 
     private static Workspace fakeWorkspace() {
-        return new Workspace("ws-rollback", "Rollback", "/", "/", false,
+        return fakeWorkspace("ws-rollback");
+    }
+
+    private static Workspace fakeWorkspace(String id) {
+        return new Workspace(id, id, "", "", false,
+                Workspace.PermissionState.GRANTED, 0L, "");
+    }
+
+    /** A SAF-style workspace: content:// identity, no local path. */
+    private static Workspace safWorkspace(String id, String treeUri) {
+        return new Workspace(id, id, treeUri, "", false,
                 Workspace.PermissionState.GRANTED, 0L, "");
     }
 }
