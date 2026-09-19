@@ -135,6 +135,9 @@
     <color name="chat_diff_removed">#FDECEC</color>
     <color name="chat_diff_line_text">#1F2937</color>
     <color name="chat_diff_muted_text">#64748B</color>
+    <color name="chat_diff_added_text">#1F9D55</color>
+    <color name="chat_diff_removed_text">#DC2626</color>
+    <color name="chat_diff_modified_text">#B45309</color>
 
     <!-- Kelivo Colors -->
     <color name="kelivo_tool_surface">#F3F0FA</color>

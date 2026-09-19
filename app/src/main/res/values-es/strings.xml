@@ -324,6 +324,13 @@
     <string name="chat_diff_reject_failed">No se pudieron rechazar los cambios</string>
     <string name="chat_diff_reject_success">Cambios rechazados.</string>
     <string name="chat_diff_summary">%1$d archivo(s) con cambios</string>
+    <string name="chat_diff_files_changed">El agente modificó %1$d archivo(s)</string>
+    <string name="chat_diff_kind_added">Añadido</string>
+    <string name="chat_diff_kind_modified">Modificado</string>
+    <string name="chat_diff_kind_deleted">Eliminado</string>
+    <string name="chat_diff_expand_cd">Expandir diff del archivo</string>
+    <string name="chat_diff_collapse_cd">Contraer diff del archivo</string>
+    <string name="chat_diff_file_row_cd">Archivo modificado: %1$s. Toca para ver el diff.</string>
     <string name="chat_images_only_prompt">Solo imágenes</string>
     <string name="chat_interrupted_streaming_tool">Herramienta %1$s interrumpida</string>
     <string name="chat_menu_hide_debug">Ocultar depuración</string>

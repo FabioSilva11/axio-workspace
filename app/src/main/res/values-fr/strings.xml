@@ -324,6 +324,13 @@
     <string name="chat_diff_reject_failed">Échec du rejet des modifications</string>
     <string name="chat_diff_reject_success">Modifications rejetées.</string>
     <string name="chat_diff_summary">%1$d fichier(s) modifié(s)</string>
+    <string name="chat_diff_files_changed">L\'agent a modifié %1$d fichier(s)</string>
+    <string name="chat_diff_kind_added">Ajouté</string>
+    <string name="chat_diff_kind_modified">Modifié</string>
+    <string name="chat_diff_kind_deleted">Supprimé</string>
+    <string name="chat_diff_expand_cd">Développer le diff du fichier</string>
+    <string name="chat_diff_collapse_cd">Réduire le diff du fichier</string>
+    <string name="chat_diff_file_row_cd">Fichier modifié : %1$s. Touchez pour voir le diff.</string>
     <string name="chat_images_only_prompt">Images uniquement</string>
     <string name="chat_interrupted_streaming_tool">Outil %1$s interrompu</string>
     <string name="chat_menu_hide_debug">Masquer le débogage</string>

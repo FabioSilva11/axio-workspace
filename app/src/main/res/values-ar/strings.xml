@@ -324,6 +324,13 @@
     <string name="chat_diff_reject_failed">فشل رفض التغييرات</string>
     <string name="chat_diff_reject_success">تم رفض التغييرات.</string>
     <string name="chat_diff_summary">%1$d ملف يحتوي على تغييرات</string>
+    <string name="chat_diff_files_changed">غيّر الوكيل %1$d ملف(ملفات)</string>
+    <string name="chat_diff_kind_added">مضاف</string>
+    <string name="chat_diff_kind_modified">معدّل</string>
+    <string name="chat_diff_kind_deleted">محذوف</string>
+    <string name="chat_diff_expand_cd">توسيع الفروقات</string>
+    <string name="chat_diff_collapse_cd">طي الفروقات</string>
+    <string name="chat_diff_file_row_cd">ملف معدّل: %1$s. انقر لعرض الفروقات.</string>
     <string name="chat_images_only_prompt">الصور فقط</string>
     <string name="chat_interrupted_streaming_tool">تمت مقاطعة الأداة %1$s</string>
     <string name="chat_menu_hide_debug">إخفاء التصحيح</string>

@@ -345,6 +345,13 @@
     <string name="chat_diff_reject_failed">Failed to reject changes</string>
     <string name="chat_diff_reject_success">Changes rejected.</string>
     <string name="chat_diff_summary">%1$d file(s) with changes</string>
+    <string name="chat_diff_files_changed">Agent changed %1$d file(s)</string>
+    <string name="chat_diff_kind_added">Added</string>
+    <string name="chat_diff_kind_modified">Modified</string>
+    <string name="chat_diff_kind_deleted">Deleted</string>
+    <string name="chat_diff_expand_cd">Expand file diff</string>
+    <string name="chat_diff_collapse_cd">Collapse file diff</string>
+    <string name="chat_diff_file_row_cd">Changed file: %1$s. Tap to view the diff.</string>
     <string name="chat_images_only_prompt">Images only</string>
     <string name="chat_interrupted_streaming_tool">Tool %1$s interrupted</string>
     <string name="chat_menu_hide_debug">Hide debug</string>

@@ -16,8 +16,11 @@ import androidx.annotation.Nullable;
 import androidx.appcompat.app.AlertDialog;
 import androidx.core.content.ContextCompat;
 import androidx.fragment.app.Fragment;
+import androidx.recyclerview.widget.LinearLayoutManager;
+import androidx.recyclerview.widget.RecyclerView;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -27,6 +30,16 @@ import com.saaspaymentsolutions.axion.port.VoidPortDiffService;
 import com.saaspaymentsolutions.axion.FileChangeTracker;
 import com.saaspaymentsolutions.axion.ProjectPathResolver;
 
+/**
+ * "Files changed" review surface: a dense, collapsed-by-default list of the
+ * files the agent already changed, with the full diff opened per file on tap.
+ *
+ * <p>Pure presentation refactor: the data model
+ * ({@link FileChangeTracker.FileChange}), the actions (Open preview, Accept,
+ * Reject) and the mutation semantics (accept never writes; revert restores
+ * through the workspace filesystem bound to the change's project) are exactly
+ * the ones this fragment always used.</p>
+ */
 public class ChatDiffFragment extends Fragment {
     private static final String ARG_SC_ID = "sc_id";
     private static final int MAX_DIFF_FILES = 10;
@@ -34,8 +47,10 @@ public class ChatDiffFragment extends Fragment {
 
     private String scId;
     private TextView textDiffSummary;
-    private LinearLayout diffFilesContainer;
     private View diffBulkActions;
+    private RecyclerView recyclerFiles;
+    private View emptyView;
+    private ChangedFilesAdapter adapter;
     /** Invalidates in-flight background diff computations when a newer refresh starts. */
     private int refreshGeneration = 0;
 
@@ -64,10 +79,15 @@ public class ChatDiffFragment extends Fragment {
     @Override
     public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
         textDiffSummary = view.findViewById(R.id.text_diff_summary);
-        diffFilesContainer = view.findViewById(R.id.layout_diff_files);
         diffBulkActions = view.findViewById(R.id.layout_diff_bulk_actions);
+        recyclerFiles = view.findViewById(R.id.recycler_diff_files);
+        emptyView = view.findViewById(R.id.text_diff_empty);
         view.findViewById(R.id.btn_diff_accept_all).setOnClickListener(v -> acceptAllChanges());
         view.findViewById(R.id.btn_diff_discard_all).setOnClickListener(v -> confirmDiscardAllChanges());
+
+        adapter = new ChangedFilesAdapter();
+        recyclerFiles.setLayoutManager(new LinearLayoutManager(requireContext()));
+        recyclerFiles.setAdapter(adapter);
         refreshDiffs();
     }
 
@@ -80,13 +100,18 @@ public class ChatDiffFragment extends Fragment {
     @Override
     public void onDestroyView() {
         textDiffSummary = null;
-        diffFilesContainer = null;
         diffBulkActions = null;
+        if (recyclerFiles != null) {
+            recyclerFiles.setAdapter(null);
+            recyclerFiles = null;
+        }
+        adapter = null;
+        emptyView = null;
         super.onDestroyView();
     }
 
     public void refreshDiffs() {
-        if (!isAdded() || textDiffSummary == null || diffFilesContainer == null) {
+        if (!isAdded() || adapter == null) {
             return;
         }
 
@@ -94,188 +119,371 @@ public class ChatDiffFragment extends Fragment {
         List<FileChangeTracker.FileChange> changes = new ArrayList<>(allChanges.values());
         changes.sort((a, b) -> Long.compare(b.timestamp, a.timestamp));
         int count = changes.size();
-        textDiffSummary.setText(getString(R.string.chat_diff_summary, count));
+        textDiffSummary.setText(getString(R.string.chat_diff_files_changed, count));
         if (diffBulkActions != null) {
             diffBulkActions.setVisibility(count > 0 ? View.VISIBLE : View.GONE);
         }
+        emptyView.setVisibility(count > 0 ? View.GONE : View.VISIBLE);
+        recyclerFiles.setVisibility(count > 0 ? View.VISIBLE : View.GONE);
 
-        if (count <= 0) {
-            diffFilesContainer.removeAllViews();
-            diffFilesContainer.addView(makeEmptyView());
-            return;
-        }
-
-        // The LCS diff is O(n·m) and allocates a large matrix — compute it OFF
-        // the main thread (previously it ran twice per file on the UI thread,
-        // causing visible jank), then render the precomputed results.
+        // The LCS diff is O(n·m) — compute it OFF the main thread and only for
+        // rows the user actually expands. Collapsed rows render instantly.
         final int generation = ++refreshGeneration;
         final List<FileChangeTracker.FileChange> toRender =
                 new ArrayList<>(changes.subList(0, Math.min(count, MAX_DIFF_FILES)));
-        new Thread(() -> {
-            final List<List<VoidPortDiffService.ComputedDiff>> computed = new ArrayList<>();
-            for (FileChangeTracker.FileChange change : toRender) {
-                computed.add(VoidPortDiffService.findDiffs(change.beforeContent, change.afterContent));
-            }
-            LinearLayout container = diffFilesContainer;
-            if (container == null) {
+        adapter.submit(toRender);
+    }
+
+    private void notifyHostChanged() {
+        refreshDiffs();
+        if (getActivity() instanceof ChatActivity) {
+            ((ChatActivity) getActivity()).updateChangedFilesSummary();
+        }
+    }
+
+    // ==================================================================
+    // Adapter: one compact row per file, diff computed lazily on expand.
+    // ==================================================================
+
+    private final class ChangedFilesAdapter extends RecyclerView.Adapter<FileRowHolder> {
+
+        interface OnChangeActionListener {
+            void onOpen(FileChangeTracker.FileChange change);
+
+            void onAccept(FileChangeTracker.FileChange change);
+
+            void onReject(FileChangeTracker.FileChange change);
+        }
+
+        private final List<FileChangeTracker.FileChange> items = new ArrayList<>();
+        /** Row position currently expanded; collapsed-by-default state. */
+        private int expandedPosition = RecyclerView.NO_POSITION;
+        /** Diff rows per position, computed once on first expand. */
+        private final Map<Integer, List<VoidPortDiffService.ComputedDiff>> diffCache = new HashMap<>();
+        /** Recycled the expanded row must show while its diff is still computing. */
+        private final List<VoidPortDiffService.ComputedDiff> pendingDiffs = new ArrayList<>();
+
+        void submit(List<FileChangeTracker.FileChange> changes) {
+            items.clear();
+            items.addAll(changes);
+            expandedPosition = RecyclerView.NO_POSITION;
+            diffCache.clear();
+            notifyDataSetChanged();
+        }
+
+        @NonNull
+        @Override
+        public FileRowHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
+            View row = getLayoutInflater().inflate(R.layout.item_chat_diff_file, parent, false);
+            return new FileRowHolder(row, this);
+        }
+
+        @Override
+        public void onBindViewHolder(@NonNull FileRowHolder holder, int position) {
+            holder.bind(position);
+        }
+
+        @Override
+        public int getItemCount() {
+            return items.size();
+        }
+
+        private void toggle(int position) {
+            if (expandedPosition == position) {
+                expandedPosition = RecyclerView.NO_POSITION;
+                notifyItemChanged(position);
                 return;
             }
-            container.post(() -> {
-                if (!isAdded() || diffFilesContainer == null || generation != refreshGeneration) {
+            int previous = expandedPosition;
+            expandedPosition = position;
+            if (previous != RecyclerView.NO_POSITION) {
+                notifyItemChanged(previous);
+            }
+            if (!diffCache.containsKey(position)) {
+                computeDiffsAsync(position);
+            }
+            notifyItemChanged(position);
+        }
+
+        private void computeDiffsAsync(int position) {
+            final int generation = ++refreshGeneration;
+            diffCache.put(position, pendingDiffs); // placeholder while computing
+            final FileChangeTracker.FileChange change = items.get(position);
+            new Thread(() -> {
+                final List<VoidPortDiffService.ComputedDiff> computed =
+                        VoidPortDiffService.findDiffs(change.beforeContent, change.afterContent);
+                if (getView() == null || generation != refreshGeneration) {
+                    return; // stale refresh or the fragment went away
+                }
+                RecyclerView recycler = recyclerFiles;
+                if (recycler == null) {
                     return;
                 }
-                diffFilesContainer.removeAllViews();
-                for (int i = 0; i < toRender.size(); i++) {
-                    diffFilesContainer.addView(makeFileDiffView(toRender.get(i), computed.get(i)));
-                }
-            });
-        }, "chat-diff-worker").start();
-    }
-
-    private View makeEmptyView() {
-        TextView empty = new TextView(requireContext());
-        empty.setText(R.string.chat_diff_empty);
-        empty.setTextColor(color(R.color.chat_text_secondary));
-        empty.setTextSize(13f);
-        empty.setPadding(dp(10), dp(12), dp(10), dp(12));
-        return empty;
-    }
-
-    private View makeFileDiffView(FileChangeTracker.FileChange change,
-                                  List<VoidPortDiffService.ComputedDiff> diffs) {
-        LinearLayout fileBlock = new LinearLayout(requireContext());
-        fileBlock.setOrientation(LinearLayout.VERTICAL);
-        fileBlock.setBackground(makeRoundedBackground(color(R.color.chat_diff_background), color(R.color.chat_border)));
-
-        LinearLayout.LayoutParams blockParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-        );
-        blockParams.setMargins(0, 0, 0, dp(12));
-        fileBlock.setLayoutParams(blockParams);
-
-        VoidPortDiffService.DiffStats stats = VoidPortDiffService.statsOf(diffs);
-        TextView header = makeHeader(change.filePath, stats);
-        fileBlock.addView(header);
-        fileBlock.addView(makeActionsRow(change));
-
-        HorizontalScrollView horizontalScrollView = new HorizontalScrollView(requireContext());
-        horizontalScrollView.setFillViewport(true);
-        horizontalScrollView.setHorizontalScrollBarEnabled(true);
-
-        LinearLayout codeRows = new LinearLayout(requireContext());
-        codeRows.setOrientation(LinearLayout.VERTICAL);
-        horizontalScrollView.addView(codeRows, new HorizontalScrollView.LayoutParams(
-                HorizontalScrollView.LayoutParams.WRAP_CONTENT,
-                HorizontalScrollView.LayoutParams.WRAP_CONTENT
-        ));
-
-        appendDiffRows(codeRows, diffs);
-        fileBlock.addView(horizontalScrollView, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-        ));
-
-        return fileBlock;
-    }
-
-    private TextView makeHeader(String filePath, VoidPortDiffService.DiffStats stats) {
-        TextView header = makeCodeText();
-        header.setText(String.format(Locale.US, "%s   +%d -%d", filePath, stats.added, stats.removed));
-        header.setTextColor(color(R.color.chat_diff_line_text));
-        header.setTextSize(12f);
-        header.setTypeface(Typeface.DEFAULT_BOLD);
-        header.setBackgroundColor(color(R.color.chat_diff_header));
-        header.setPadding(dp(10), dp(8), dp(10), dp(8));
-        return header;
-    }
-
-    private View makeActionsRow(FileChangeTracker.FileChange change) {
-        LinearLayout row = new LinearLayout(requireContext());
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setPadding(dp(8), dp(7), dp(8), dp(7));
-        row.setBackgroundColor(color(R.color.chat_diff_background));
-
-        TextView open = makeActionButton(R.string.chat_diff_action_open);
-        open.setOnClickListener(v -> openFilePreview(change.filePath));
-        row.addView(open);
-
-        TextView accept = makeActionButton(R.string.chat_diff_action_accept);
-        accept.setOnClickListener(v -> acceptChange(change.filePath));
-        row.addView(accept);
-
-        TextView reject = makeActionButton(R.string.chat_diff_action_reject);
-        reject.setTextColor(color(R.color.chat_error));
-        reject.setOnClickListener(v -> confirmRejectChange(change.filePath));
-        row.addView(reject);
-
-        return row;
-    }
-
-    private TextView makeActionButton(int textRes) {
-        TextView button = new TextView(requireContext());
-        button.setText(textRes);
-        button.setTextSize(12f);
-        button.setTypeface(Typeface.DEFAULT_BOLD);
-        button.setTextColor(color(R.color.chat_accent));
-        button.setGravity(android.view.Gravity.CENTER);
-        button.setPadding(dp(10), dp(5), dp(10), dp(5));
-        button.setBackground(makeRoundedBackground(color(R.color.chat_accent_soft), color(R.color.chat_border)));
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-        );
-        params.setMargins(0, 0, dp(8), 0);
-        button.setLayoutParams(params);
-        return button;
-    }
-
-    private void openFilePreview(String filePath) {
-        // The diff shows the current on-disk state, which lives in the active
-        // workspace. Resolve through WorkspaceFileSystem first; the legacy
-        // resolver stays as a fallback for sessions without an open workspace.
-        String content = null;
-        try {
-            com.saaspaymentsolutions.axion.workspace.WorkspaceFileSystem fs =
-                    com.saaspaymentsolutions.axion.workspace.WorkspaceManager.getActiveFileSystem();
-            String norm = com.saaspaymentsolutions.axion.workspace.WorkspacePath.normalize(filePath);
-            if (fs != null && fs.exists(norm) && !fs.isDirectory(norm)) {
-                content = fs.readText(norm);
+                recycler.post(() -> {
+                    if (generation != refreshGeneration || diffCache.get(position) != pendingDiffs) {
+                        return; // superseded while computing
+                    }
+                    diffCache.put(position, computed);
+                    FileRowHolder live = (FileRowHolder) recycler.findViewHolderForAdapterPosition(position);
+                    if (live != null) {
+                        live.renderDiffRows(computed);
+                    }
+                });
+            }, "chat-diff-worker").start();
+        }
+        private String displayName(String filePath) {
+            if (filePath == null || filePath.isEmpty()) {
+                return "";
             }
-        } catch (Exception ignored) {
+            int slash = filePath.lastIndexOf('/');
+            return slash >= 0 ? filePath.substring(slash + 1) : filePath;
         }
-        if (content == null) {
-            try {
-                ProjectPathResolver.ResolvedPath resolved = ProjectPathResolver.resolveForRead(scId, filePath);
-                if (resolved != null && resolved.getFile().exists()) {
-                    content = new String(java.nio.file.Files.readAllBytes(resolved.getFile().toPath()), java.nio.charset.StandardCharsets.UTF_8);
-                }
-            } catch (Exception ignored) {
-            }
-        }
-        if (content == null) {
-            Toast.makeText(requireContext(), R.string.chat_diff_open_failed, Toast.LENGTH_SHORT).show();
-            return;
-        }
-        String preview = content.length() > 12000
-                ? content.substring(0, 12000) + "\n\n" + getString(R.string.chat_diff_content_truncated)
-                : content;
-        new AlertDialog.Builder(requireContext())
-                .setTitle(filePath)
-                .setMessage(preview)
-                .setPositiveButton(android.R.string.ok, null)
-                .show();
     }
 
-    /**
-     * Accept marks an already-applied change as reviewed and drops it from
-     * the review list. The file was written by the tool the moment it ran —
-     * accepting never rewrites it.
-     */
-    private void acceptChange(String filePath) {
-        boolean accepted = FileChangeTracker.acceptChange(scId, filePath);
+    private final class FileRowHolder extends RecyclerView.ViewHolder {
+            private final ChangedFilesAdapter adapter;
+            private final View row;
+            private final TextView badge;
+            private final TextView name;
+            private final TextView path;
+            private final TextView stats;
+            private final TextView chevron;
+            private final View details;
+            private final LinearLayout codeRows;
+            private final HorizontalScrollView codeScroll;
+            private final TextView openAction;
+            private final TextView acceptAction;
+            private final TextView rejectAction;
+
+            FileRowHolder(@NonNull View itemView, ChangedFilesAdapter adapter) {
+                super(itemView);
+                this.adapter = adapter;
+                row = itemView;
+                badge = itemView.findViewById(R.id.text_file_badge);
+                name = itemView.findViewById(R.id.text_file_name);
+                path = itemView.findViewById(R.id.text_file_path);
+                stats = itemView.findViewById(R.id.text_file_stats);
+                chevron = itemView.findViewById(R.id.text_file_chevron);
+                details = itemView.findViewById(R.id.layout_file_details);
+                codeRows = itemView.findViewById(R.id.layout_diff_code_rows);
+                codeScroll = itemView.findViewById(R.id.scroll_diff_code);
+                openAction = itemView.findViewById(R.id.action_file_open);
+                acceptAction = itemView.findViewById(R.id.action_file_accept);
+                rejectAction = itemView.findViewById(R.id.action_file_reject);
+
+                // Keep these alive after onDestroyView nulls the fields.
+                View.OnClickListener toggleListener = v -> {
+                    int position = getBindingAdapterPosition();
+                    if (position != RecyclerView.NO_POSITION) {
+                        adapter.toggle(position);
+                    }
+                };
+                row.setOnClickListener(toggleListener);
+                openAction.setOnClickListener(v -> {
+                    int position = getBindingAdapterPosition();
+                    if (position != RecyclerView.NO_POSITION) {
+                        onOpen(adapter.items.get(position));
+                    }
+                });
+                acceptAction.setOnClickListener(v -> {
+                    int position = getBindingAdapterPosition();
+                    if (position != RecyclerView.NO_POSITION) {
+                        onAccept(adapter.items.get(position));
+                    }
+                });
+                rejectAction.setOnClickListener(v -> {
+                    int position = getBindingAdapterPosition();
+                    if (position != RecyclerView.NO_POSITION) {
+                        confirmReject(adapter.items.get(position));
+                    }
+                });
+            }
+
+            void bind(int position) {
+                FileChangeTracker.FileChange change = adapter.items.get(position);
+                boolean expanded = adapter.expandedPosition == position;
+
+                name.setText(adapter.displayName(change.filePath));
+                path.setText(change.filePath);
+                bindBadge(change);
+                bindStats(change);
+                chevron.setText(expanded ? "▾" : "▸");
+                chevron.setContentDescription(getString(expanded
+                        ? R.string.chat_diff_collapse_cd : R.string.chat_diff_expand_cd));
+                row.setContentDescription(getString(R.string.chat_diff_file_row_cd,
+                        change.filePath));
+
+                details.setVisibility(expanded ? View.VISIBLE : View.GONE);
+                codeRows.removeAllViews();
+                if (expanded) {
+                    List<VoidPortDiffService.ComputedDiff> computed = adapter.diffCache.get(position);
+                    if (computed == adapter.pendingDiffs) {
+                        renderDiffRows(adapter.pendingDiffs); // "computing…" placeholder
+                    } else if (computed != null) {
+                        renderDiffRows(computed);
+                    } else {
+                        // First inflate raced the async compute: stats stay
+                        // pending and fill in when the worker posts back.
+                        renderDiffRows(adapter.pendingDiffs);
+                    }
+                }
+            }
+
+            private void bindBadge(FileChangeTracker.FileChange change) {
+                String label;
+                int color;
+                String cd;
+                if (change.existedBefore && (change.afterContent == null
+                        || change.afterContent.isEmpty())) {
+                    label = "D";
+                    color = color(R.color.chat_error);
+                    cd = getString(R.string.chat_diff_kind_deleted);
+                } else if (!change.existedBefore) {
+                    label = "A";
+                    color = color(R.color.chat_diff_added_text);
+                    cd = getString(R.string.chat_diff_kind_added);
+                } else {
+                    label = "M";
+                    color = color(R.color.chat_diff_modified_text);
+                    cd = getString(R.string.chat_diff_kind_modified);
+                }
+                badge.setText(label);
+                badge.setTextColor(color);
+                badge.setContentDescription(cd);
+            }
+
+            private void bindStats(FileChangeTracker.FileChange change) {
+                // Collapsed rows have not computed their diff yet (lazy): the
+                // stats fill in when the row is expanded and, once cached,
+                // stay correct across rebinds. Until then show the signal
+                // from the change kind itself.
+                int added = 0;
+                int removed = 0;
+                List<VoidPortDiffService.ComputedDiff> computed = adapter.diffCache.get(
+                        getBindingAdapterPosition());
+                if (computed != null && computed != adapter.pendingDiffs) {
+                    VoidPortDiffService.DiffStats s = VoidPortDiffService.statsOf(computed);
+                    added = s.added;
+                    removed = s.removed;
+                }
+                if (added == 0 && removed == 0) {
+                    if (change.beforeContent == null) {
+                        stats.setText("");
+                        stats.setContentDescription(null);
+                        return;
+                    }
+                    stats.setText(change.afterContent == null || change.afterContent.isEmpty()
+                            ? "−" : "~");
+                    stats.setTextColor(color(change.afterContent == null
+                            || change.afterContent.isEmpty()
+                            ? R.color.chat_diff_removed_text
+                            : R.color.chat_diff_modified_text));
+                    return;
+                }
+                stats.setText(String.format(Locale.US, "+%d −%d", added, removed));
+                stats.setTextColor(added >= removed
+                        ? color(R.color.chat_diff_added_text)
+                        : color(R.color.chat_diff_removed_text));
+            }
+
+            private void confirmReject(FileChangeTracker.FileChange change) {
+                new AlertDialog.Builder(requireContext())
+                        .setTitle(R.string.chat_diff_reject_confirm_title)
+                        .setMessage(getString(R.string.chat_diff_reject_confirm_message, change.filePath))
+                        .setNegativeButton(android.R.string.cancel, null)
+                        .setPositiveButton(R.string.chat_diff_action_reject, (dialog, which) ->
+                                onReject(change))
+                        .show();
+            }
+
+            private void renderDiffRows(List<VoidPortDiffService.ComputedDiff> computed) {
+                codeRows.removeAllViews();
+                if (computed.isEmpty()) {
+                    codeRows.addView(makeDiffRow("", "", " ",
+                            getString(R.string.chat_diff_no_changes), R.color.chat_diff_background));
+                    return;
+                }
+                int rows = 0;
+                for (VoidPortDiffService.ComputedDiff diff : computed) {
+                    if (rows >= MAX_DIFF_ROWS) {
+                        codeRows.addView(makeDiffRow("", "", "...",
+                                getString(R.string.chat_diff_truncated), R.color.chat_diff_hunk));
+                        return;
+                    }
+                    String hunk = String.format(Locale.US, "@@ -%d,%d +%d,%d @@ %s",
+                            diff.originalStartLine, diff.removedLines(),
+                            diff.startLine, diff.addedLines(), diff.type);
+                    codeRows.addView(makeDiffRow("", "", "", hunk, R.color.chat_diff_hunk));
+                    rows++;
+
+                    int oldLine = diff.originalStartLine;
+                    for (String line : splitLines(diff.originalCode)) {
+                        if (rows >= MAX_DIFF_ROWS) {
+                            codeRows.addView(makeDiffRow("", "", "...",
+                                    getString(R.string.chat_diff_truncated), R.color.chat_diff_hunk));
+                            return;
+                        }
+                        codeRows.addView(makeDiffRow(String.valueOf(oldLine), "", "-",
+                                line, R.color.chat_diff_removed));
+                        oldLine++;
+                        rows++;
+                    }
+
+                    int newLine = diff.startLine;
+                    for (String line : splitLines(diff.code)) {
+                        if (rows >= MAX_DIFF_ROWS) {
+                            codeRows.addView(makeDiffRow("", "", "...",
+                                    getString(R.string.chat_diff_truncated), R.color.chat_diff_hunk));
+                            return;
+                        }
+                        codeRows.addView(makeDiffRow("", String.valueOf(newLine), "+",
+                                line, R.color.chat_diff_added));
+                        newLine++;
+                        rows++;
+                    }
+                }
+            }
+
+            private TextView makeDiffRow(String oldLine, String newLine, String marker,
+                                         String code, int backgroundColorRes) {
+                TextView textView = new TextView(requireContext());
+                textView.setTypeface(Typeface.MONOSPACE);
+                textView.setTextSize(11f);
+                textView.setIncludeFontPadding(false);
+                textView.setText(String.format(Locale.US, "%4s %4s  %-3s %s",
+                        oldLine == null ? "" : oldLine,
+                        newLine == null ? "" : newLine,
+                        marker == null ? "" : marker,
+                        code == null ? "" : code));
+                textView.setTextColor(color(R.color.chat_diff_line_text));
+                textView.setBackgroundColor(color(backgroundColorRes));
+                textView.setPadding(dp(8), dp(3), dp(10), dp(3));
+                textView.setMinWidth(getResources().getDisplayMetrics().widthPixels - dp(24));
+                textView.setSingleLine(false);
+                return textView;
+            }
+        }
+
+    // ==================================================================
+    // Actions — same semantics as before, only re-wired to the adapter.
+    // ==================================================================
+
+    private void onOpen(FileChangeTracker.FileChange change) {
+        openFilePreview(change.filePath);
+    }
+
+    private void onAccept(FileChangeTracker.FileChange change) {
+        boolean accepted = FileChangeTracker.acceptChange(scId, change.filePath);
         Toast.makeText(requireContext(),
                 accepted ? R.string.chat_diff_accept_success : R.string.chat_diff_accept_missing,
+                Toast.LENGTH_SHORT).show();
+        notifyHostChanged();
+    }
+
+    private void onReject(FileChangeTracker.FileChange change) {
+        boolean reverted = FileChangeTracker.rejectChange(scId, change.filePath);
+        Toast.makeText(requireContext(),
+                reverted ? R.string.chat_diff_reject_success : R.string.chat_diff_reject_failed,
                 Toast.LENGTH_SHORT).show();
         notifyHostChanged();
     }
@@ -318,102 +526,46 @@ public class ChatDiffFragment extends Fragment {
         notifyHostChanged();
     }
 
-    private void confirmRejectChange(String filePath) {
+    private void openFilePreview(String filePath) {
+        // The diff shows the current on-disk state, which lives in the active
+        // workspace. Resolve through WorkspaceFileSystem first; the legacy
+        // resolver stays as a fallback for sessions without an open workspace.
+        String content = null;
+        try {
+            com.saaspaymentsolutions.axion.workspace.WorkspaceFileSystem fs =
+                    com.saaspaymentsolutions.axion.workspace.WorkspaceManager.getActiveFileSystem();
+            String norm = com.saaspaymentsolutions.axion.workspace.WorkspacePath.normalize(filePath);
+            if (fs != null && fs.exists(norm) && !fs.isDirectory(norm)) {
+                content = fs.readText(norm);
+            }
+        } catch (Exception ignored) {
+        }
+        if (content == null) {
+            try {
+                ProjectPathResolver.ResolvedPath resolved = ProjectPathResolver.resolveForRead(scId, filePath);
+                if (resolved != null && resolved.getFile().exists()) {
+                    content = new String(java.nio.file.Files.readAllBytes(resolved.getFile().toPath()), java.nio.charset.StandardCharsets.UTF_8);
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        if (content == null) {
+            Toast.makeText(requireContext(), R.string.chat_diff_open_failed, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        String preview = content.length() > 12000
+                ? content.substring(0, 12000) + "\n\n" + getString(R.string.chat_diff_content_truncated)
+                : content;
         new AlertDialog.Builder(requireContext())
-                .setTitle(R.string.chat_diff_reject_confirm_title)
-                .setMessage(getString(R.string.chat_diff_reject_confirm_message, filePath))
-                .setNegativeButton(android.R.string.cancel, null)
-                .setPositiveButton(R.string.chat_diff_action_reject, (dialog, which) -> rejectChange(filePath))
+                .setTitle(filePath)
+                .setMessage(preview)
+                .setPositiveButton(android.R.string.ok, null)
                 .show();
     }
 
-    /**
-     * Reject/Revert undoes an already-applied change: the pre-change content
-     * is restored through the same active workspace filesystem that the
-     * agent's tool used for the original mutation.
-     */
-    private void rejectChange(String filePath) {
-        boolean reverted = FileChangeTracker.rejectChange(scId, filePath);
-        Toast.makeText(requireContext(),
-                reverted ? R.string.chat_diff_reject_success : R.string.chat_diff_reject_failed,
-                Toast.LENGTH_SHORT).show();
-        notifyHostChanged();
-    }
-
-    private void notifyHostChanged() {
-        refreshDiffs();
-        if (getActivity() instanceof ChatActivity) {
-            ((ChatActivity) getActivity()).updateChangedFilesSummary();
-        }
-    }
-
-    private void appendDiffRows(LinearLayout codeRows, List<VoidPortDiffService.ComputedDiff> diffs) {
-        if (diffs.isEmpty()) {
-            codeRows.addView(makeDiffRow("", "", " ", getString(R.string.chat_diff_no_changes), R.color.chat_diff_background));
-            return;
-        }
-
-        int rows = 0;
-        for (VoidPortDiffService.ComputedDiff diff : diffs) {
-            if (rows >= MAX_DIFF_ROWS) {
-                codeRows.addView(makeDiffRow("", "", "...", getString(R.string.chat_diff_truncated), R.color.chat_diff_hunk));
-                return;
-            }
-            String hunk = String.format(Locale.US, "@@ -%d,%d +%d,%d @@ %s",
-                    diff.originalStartLine,
-                    diff.removedLines(),
-                    diff.startLine,
-                    diff.addedLines(),
-                    diff.type);
-            codeRows.addView(makeDiffRow("", "", "", hunk, R.color.chat_diff_hunk));
-            rows++;
-
-            int oldLine = diff.originalStartLine;
-            for (String line : splitLines(diff.originalCode)) {
-                if (rows >= MAX_DIFF_ROWS) {
-                    codeRows.addView(makeDiffRow("", "", "...", getString(R.string.chat_diff_truncated), R.color.chat_diff_hunk));
-                    return;
-                }
-                codeRows.addView(makeDiffRow(String.valueOf(oldLine), "", "-", line, R.color.chat_diff_removed));
-                oldLine++;
-                rows++;
-            }
-
-            int newLine = diff.startLine;
-            for (String line : splitLines(diff.code)) {
-                if (rows >= MAX_DIFF_ROWS) {
-                    codeRows.addView(makeDiffRow("", "", "...", getString(R.string.chat_diff_truncated), R.color.chat_diff_hunk));
-                    return;
-                }
-                codeRows.addView(makeDiffRow("", String.valueOf(newLine), "+", line, R.color.chat_diff_added));
-                newLine++;
-                rows++;
-            }
-        }
-    }
-
-    private TextView makeDiffRow(String oldLine, String newLine, String marker, String code, int backgroundColorRes) {
-        TextView row = makeCodeText();
-        row.setText(String.format(Locale.US, "%4s %4s  %-3s %s",
-                oldLine == null ? "" : oldLine,
-                newLine == null ? "" : newLine,
-                marker == null ? "" : marker,
-                code == null ? "" : code));
-        row.setTextColor(color(R.color.chat_diff_line_text));
-        row.setBackgroundColor(color(backgroundColorRes));
-        row.setPadding(dp(8), dp(3), dp(10), dp(3));
-        row.setMinWidth(getResources().getDisplayMetrics().widthPixels - dp(24));
-        row.setSingleLine(false);
-        return row;
-    }
-
-    private TextView makeCodeText() {
-        TextView textView = new TextView(requireContext());
-        textView.setTypeface(Typeface.MONOSPACE);
-        textView.setTextSize(11f);
-        textView.setIncludeFontPadding(false);
-        return textView;
-    }
+    // ==================================================================
+    // shared helpers
+    // ==================================================================
 
     private String[] splitLines(String value) {
         if (value == null || value.isEmpty()) {
@@ -429,14 +581,6 @@ public class ChatDiffFragment extends Fragment {
         return lines;
     }
 
-    private GradientDrawable makeRoundedBackground(int fillColor, int strokeColor) {
-        GradientDrawable drawable = new GradientDrawable();
-        drawable.setColor(fillColor);
-        drawable.setStroke(dp(1), strokeColor);
-        drawable.setCornerRadius(dp(6));
-        return drawable;
-    }
-
     private int color(int colorRes) {
         return ContextCompat.getColor(requireContext(), colorRes);
     }
@@ -445,5 +589,3 @@ public class ChatDiffFragment extends Fragment {
         return Math.round(value * getResources().getDisplayMetrics().density);
     }
 }
-
-

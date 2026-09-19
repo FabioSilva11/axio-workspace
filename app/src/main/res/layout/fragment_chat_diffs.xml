@@ -14,8 +14,9 @@
         android:id="@+id/text_diff_summary"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:textColor="@color/chat_text_secondary"
-        android:textSize="12sp" />
+        android:textColor="@color/chat_diff_line_text"
+        android:textSize="13sp"
+        android:textStyle="bold" />
 
     <LinearLayout
         android:id="@+id/layout_diff_bulk_actions"
@@ -58,17 +59,25 @@
             app:strokeColor="@color/chat_error" />
     </LinearLayout>
 
-    <ScrollView
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/recycler_diff_files"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_marginTop="10dp"
         android:layout_weight="1"
-        android:fillViewport="true">
+        android:clipToPadding="false"
+        android:overScrollMode="ifContentScrolls"
+        android:scrollbars="vertical" />
 
-        <LinearLayout
-            android:id="@+id/layout_diff_files"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical" />
-    </ScrollView>
+    <TextView
+        android:id="@+id/text_diff_empty"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_marginTop="10dp"
+        android:layout_weight="1"
+        android:gravity="center"
+        android:text="@string/chat_diff_empty"
+        android:textColor="@color/chat_diff_muted_text"
+        android:textSize="13sp"
+        android:visibility="gone" />
 </LinearLayout>
