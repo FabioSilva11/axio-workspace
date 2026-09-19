@@ -49,7 +49,7 @@ public final class PermissionLayer {
      */
     public Outcome check(AgentTool tool, ToolCall call, String scId) {
         if (tool == null) {
-            return Outcome.PROCEED; // unknown tool handled by the Runner
+            return Outcome.PROCEED; // unknown tool handled by the caller
         }
         ToolPolicy.Rule rule = ruleFor(tool);
         if (rule == ToolPolicy.Rule.DENY) {
@@ -106,13 +106,40 @@ public final class PermissionLayer {
         if (isNetworkTool(tool)) {
             return policy.network();
         }
+        // Tool metadata (from the registry wrapper or the SDK tool) is the
+        // single source of truth for mutation/destructive classification.
         if (tool.isDestructive()) {
             return policy.destructive();
         }
         if (tool.isFileMutation()) {
             return policy.mutation();
         }
+        // Name-based fallback only covers known mutating tool names whose
+        // adapter lost the original metadata; everything else stays unknown.
+        if (isKnownMutatingToolName(tool.name())) {
+            return tool.name().startsWith("delete")
+                    ? policy.destructive()
+                    : policy.mutation();
+        }
         return policy.unknown();
+    }
+
+    /** Package-private test hook exposing the classification of a tool. */
+    ToolPolicy.Rule ruleForPublicForTest(AgentTool tool) {
+        return ruleFor(tool);
+    }
+
+    /**
+     * Mutating tool names from the Void registry. Used as a safety net when a
+     * {@code Tool} implementation does not carry the metadata flags, so
+     * mutating tools are never classified as {@code unknown} by accident.
+     */
+    public static boolean isKnownMutatingToolName(String toolName) {
+        return "edit_file".equals(toolName)
+                || "rewrite_file".equals(toolName)
+                || "create_file_or_folder".equals(toolName)
+                || "delete_file_or_folder".equals(toolName)
+                || "apply_patch".equals(toolName);
     }
 
     /** Terminal/persistent-terminal tool names used by the Void registry. */

@@ -231,13 +231,27 @@ public class ChatDiffFragment extends Fragment {
     }
 
     private void openFilePreview(String filePath) {
+        // The diff shows the current on-disk state, which lives in the active
+        // workspace. Resolve through WorkspaceFileSystem first; the legacy
+        // resolver stays as a fallback for sessions without an open workspace.
         String content = null;
         try {
-            ProjectPathResolver.ResolvedPath resolved = ProjectPathResolver.resolveForRead(scId, filePath);
-            if (resolved != null && resolved.getFile().exists()) {
-                content = new String(java.nio.file.Files.readAllBytes(resolved.getFile().toPath()), java.nio.charset.StandardCharsets.UTF_8);
+            com.saaspaymentsolutions.axion.workspace.WorkspaceFileSystem fs =
+                    com.saaspaymentsolutions.axion.workspace.WorkspaceManager.getActiveFileSystem();
+            String norm = com.saaspaymentsolutions.axion.workspace.WorkspacePath.normalize(filePath);
+            if (fs != null && fs.exists(norm) && !fs.isDirectory(norm)) {
+                content = fs.readText(norm);
             }
         } catch (Exception ignored) {
+        }
+        if (content == null) {
+            try {
+                ProjectPathResolver.ResolvedPath resolved = ProjectPathResolver.resolveForRead(scId, filePath);
+                if (resolved != null && resolved.getFile().exists()) {
+                    content = new String(java.nio.file.Files.readAllBytes(resolved.getFile().toPath()), java.nio.charset.StandardCharsets.UTF_8);
+                }
+            } catch (Exception ignored) {
+            }
         }
         if (content == null) {
             Toast.makeText(requireContext(), R.string.chat_diff_open_failed, Toast.LENGTH_SHORT).show();
@@ -253,6 +267,11 @@ public class ChatDiffFragment extends Fragment {
                 .show();
     }
 
+    /**
+     * Accept marks an already-applied change as reviewed and drops it from
+     * the review list. The file was written by the tool the moment it ran —
+     * accepting never rewrites it.
+     */
     private void acceptChange(String filePath) {
         boolean accepted = FileChangeTracker.acceptChange(scId, filePath);
         Toast.makeText(requireContext(),
@@ -308,10 +327,15 @@ public class ChatDiffFragment extends Fragment {
                 .show();
     }
 
+    /**
+     * Reject/Revert undoes an already-applied change: the pre-change content
+     * is restored through the same active workspace filesystem that the
+     * agent's tool used for the original mutation.
+     */
     private void rejectChange(String filePath) {
-        boolean rejected = FileChangeTracker.rejectChange(scId, filePath);
+        boolean reverted = FileChangeTracker.rejectChange(scId, filePath);
         Toast.makeText(requireContext(),
-                rejected ? R.string.chat_diff_reject_success : R.string.chat_diff_reject_failed,
+                reverted ? R.string.chat_diff_reject_success : R.string.chat_diff_reject_failed,
                 Toast.LENGTH_SHORT).show();
         notifyHostChanged();
     }

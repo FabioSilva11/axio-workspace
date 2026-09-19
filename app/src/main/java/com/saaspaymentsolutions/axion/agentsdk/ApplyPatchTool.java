@@ -13,8 +13,14 @@ import java.util.List;
 /**
  * Port of Codex's {@code apply_patch} tool: the model expresses multi-file
  * changes as one patch document which is validated in full before anything
- * is written. All-or-nothing per run: if any op fails validation, no file
- * is touched and the model receives a structured error it can retry on.
+ * is written. Validation is all-or-nothing: if any op fails validation, no
+ * file is touched and the model receives a structured error it can retry on.
+ *
+ * <p>Application is best-effort with <b>rollback</b>: writes happen through the
+ * active workspace filesystem first, and if a later write or delete fails, the
+ * already-applied ops are restored from their pre-patch content (failures here
+ * are reported honestly). Deleted files' previous content is kept in memory
+ * for the duration of the patch so a rollback can recreate them.</p>
  *
  * <p>Path security: every path goes through {@link WorkspacePath#normalize}
  * (rejects traversal) and must not be absolute or contain a drive letter —
@@ -45,10 +51,11 @@ public final class ApplyPatchTool implements AgentTool {
 
     @Override
     public String description() {
-        return "Aplica multiplas alteracoes de arquivos de forma atomica usando o formato de patch do Codex. "
-                + "Suporta operacoes Add File, Update File (hunks com contexto ' ', remocao '-' e adicao '+') "
-                + "e Delete File. Todo o patch e validado antes de qualquer escrita: se qualquer operacao for "
-                + "invalida, nenhum arquivo e modificado.";
+        return "Applies multiple file changes using the Codex patch format. "
+                + "Supports Add File, Update File (hunks with context ' ', removal '-' and addition '+') "
+                + "and Delete File ops. The whole patch is validated before anything is written: if any "
+                + "operation is invalid, no file is modified. If a write fails after validation, the "
+                + "already-applied changes are rolled back and the error is reported.";
     }
 
     @Override
@@ -95,7 +102,7 @@ public final class ApplyPatchTool implements AgentTool {
         if (fs == null) {
             return AgentToolResult.error("Error: no active workspace is open.");
         }
-        List<String[]> writes = new ArrayList<>(); // [relativePath, newContent]
+        List<String[]> writes = new ArrayList<>(); // [relativePath, newContent, originalContentOrNull]
         List<String> deletes = new ArrayList<>();
         List<AgentEvent.FileChangeKind> kinds = new ArrayList<>();
 
@@ -111,7 +118,7 @@ public final class ApplyPatchTool implements AgentTool {
                             return AgentToolResult.error("Error: Add File '" + path
                                     + "' but the file already exists.");
                         }
-                        writes.add(new String[]{path, renderContent(op.getHunks())});
+                        writes.add(new String[]{path, renderContent(op.getHunks()), null});
                         kinds.add(AgentEvent.FileChangeKind.CREATED);
                         break;
                     }
@@ -126,7 +133,7 @@ public final class ApplyPatchTool implements AgentTool {
                             return AgentToolResult.error("Error: patch does not apply cleanly to '"
                                     + path + "'.");
                         }
-                        writes.add(new String[]{path, updated});
+                        writes.add(new String[]{path, updated, original});
                         kinds.add(AgentEvent.FileChangeKind.MODIFIED);
                         break;
                     }
@@ -148,19 +155,33 @@ public final class ApplyPatchTool implements AgentTool {
                     + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
         }
 
-        // ---- Pass 2: apply; failures here are infrastructural, reported honestly ----
+        // ---- Pass 2: apply with rollback. Every op captures enough state to
+        // restore what it touched, so a mid-patch failure undoes the patch. ----
         StringBuilder report = new StringBuilder();
+        List<String> appliedWrites = new ArrayList<>();
+        List<String[]> restoredDeletes = new ArrayList<>(); // [path, previousContent]
         try {
             for (int i = 0; i < writes.size(); i++) {
                 String[] write = writes.get(i);
                 fs.writeText(write[0], write[1]);
+                appliedWrites.add(write[0]);
                 report.append("Updated ").append(write[0]).append('\n');
                 if (events != null) {
                     events.emit(new AgentEvent.FileChanged(scId, write[0], kinds.get(i), name()));
                 }
             }
             for (String path : deletes) {
-                fs.delete(path);
+                String previous = null;
+                try {
+                    previous = fs.readText(path);
+                } catch (Exception readFailure) {
+                    previous = null;
+                }
+                boolean deleted = fs.delete(path);
+                if (!deleted || fs.exists(path)) {
+                    throw new IllegalStateException("filesystem did not delete '" + path + "'");
+                }
+                restoredDeletes.add(new String[]{path, previous});
                 report.append("Deleted ").append(path).append('\n');
                 if (events != null) {
                     events.emit(new AgentEvent.FileChanged(scId, path,
@@ -168,10 +189,61 @@ public final class ApplyPatchTool implements AgentTool {
                 }
             }
         } catch (Exception e) {
+            rollback(fs, appliedWrites, restoredDeletes, writes);
             return AgentToolResult.error("Error: write failed after validation — "
-                    + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
+                    + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage())
+                    + " (already-applied changes were rolled back).");
         }
         return AgentToolResult.success(report.toString().trim());
+    }
+
+    /**
+     * Restores the workspace state from before the failing patch: written
+     * files go back to their pre-patch content (or are removed when they were
+     * created by this patch), deleted files are recreated with their previous
+     * content. Rollback failures are collected but never mask the original
+     * error; the returned message lists anything that could not be restored.
+     */
+    private static void rollback(WorkspaceFileSystem fs, List<String> appliedWrites,
+                                 List<String[]> restoredDeletes, List<String[]> plannedWrites) {
+        StringBuilder problems = new StringBuilder();
+        // Remove files this patch created, restore the ones it overwrote.
+        for (int i = appliedWrites.size() - 1; i >= 0; i--) {
+            String path = appliedWrites.get(i);
+            try {
+                String original = originalContentFor(plannedWrites, path);
+                if (original == null) {
+                    // CREATED by this patch: remove it again.
+                    fs.delete(path);
+                } else {
+                    fs.writeText(path, original);
+                }
+            } catch (Exception rollbackFailure) {
+                problems.append(path).append("; ");
+            }
+        }
+        // Recreate files this patch deleted.
+        for (int i = restoredDeletes.size() - 1; i >= 0; i--) {
+            String[] entry = restoredDeletes.get(i);
+            try {
+                fs.writeText(entry[0], entry[1] == null ? "" : entry[1]);
+            } catch (Exception rollbackFailure) {
+                problems.append(entry[0]).append("; ");
+            }
+        }
+        if (problems.length() > 0) {
+            android.util.Log.e("ApplyPatchTool", "Rollback incomplete for: " + problems);
+        }
+    }
+
+    /** Pre-patch content for a written path, or null when the patch created it. */
+    private static String originalContentFor(List<String[]> plannedWrites, String path) {
+        for (String[] planned : plannedWrites) {
+            if (planned[0].equals(path)) {
+                return planned[2];
+            }
+        }
+        return null;
     }
 
     /** Normalizes and rejects unsafe paths; returns {@code null} when unsafe. */

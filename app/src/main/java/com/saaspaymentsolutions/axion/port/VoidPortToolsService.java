@@ -28,6 +28,9 @@ import com.saaspaymentsolutions.axion.PromptConstants;
 import com.saaspaymentsolutions.axion.StringHelpers;
 import com.saaspaymentsolutions.axion.ChatToolLog;
 import com.saaspaymentsolutions.axion.ProjectPathResolver;
+import com.saaspaymentsolutions.axion.workspace.WorkspaceFileSystem;
+import com.saaspaymentsolutions.axion.workspace.WorkspaceManager;
+import com.saaspaymentsolutions.axion.workspace.WorkspacePath;
 import com.saaspaymentsolutions.axion.SemanticFileSearcher;
 import com.saaspaymentsolutions.axion.FileChangeTracker;
 
@@ -648,6 +651,15 @@ public final class VoidPortToolsService {
             String uriStr = validateStr("uri", uriObj);
             boolean isRecursive = validateBoolean(isRecursiveObj, false);
 
+            // Single source of truth: mutations go through the active WorkspaceFileSystem
+            // (SAF or local folder), never straight through java.io.File. The legacy
+            // ProjectPathResolver path below is only a fallback for sessions with no
+            // workspace open.
+            WorkspaceFileSystem ws = WorkspaceManager.getActiveFileSystem();
+            if (ws != null) {
+                return deleteThroughWorkspace(scId, ws, uriStr, isRecursive);
+            }
+
             // Root aliases are useful for project discovery, but must never be accepted by
             // a destructive tool. In particular, "/" resolves to the active project root
             // for read-only tools such as get_dir_tree.
@@ -689,6 +701,55 @@ public final class VoidPortToolsService {
         } catch (Exception e) {
             return new ToolCallResult("Error deleting file/folder: " + e.getMessage());
         }
+    }
+
+    /**
+     * Workspace-first delete: resolves through the active {@link WorkspaceFileSystem},
+     * validates the boolean result and re-checks existence so a failed delete is never
+     * reported as success. Returns {@code null} when the path is out of scope so the
+     * caller can fall back to the legacy resolver.
+     */
+    private static ToolCallResult deleteThroughWorkspace(String scId, WorkspaceFileSystem ws,
+                                                         String uriStr, boolean isRecursive) {
+        // The workspace filesystem only serves relative paths: absolute paths,
+        // drive letters and backslashes never name a workspace entry.
+        if (uriStr.startsWith("/") || uriStr.contains(":") || uriStr.contains("\\")) {
+            return new ToolCallResult("Error: refusing to delete an absolute or unsafe path: " + uriStr);
+        }
+        if (WorkspacePath.hasParentTraversal(uriStr)) {
+            return new ToolCallResult("Error: unsafe path: " + uriStr);
+        }
+        String path = WorkspacePath.normalize(uriStr);
+        if (path.isEmpty()) {
+            return new ToolCallResult("Error: refusing to delete the workspace root.");
+        }
+        if (!ws.exists(path)) {
+            return new ToolCallResult("Error: file/folder not found: " + uriStr);
+        }
+        if (ws.isDirectory(path) && !isRecursive && !ws.list(path).isEmpty()) {
+            return new ToolCallResult("Error: cannot delete non-empty directory without is_recursive=true");
+        }
+
+        String oldContent = "";
+        boolean isFile = !ws.isDirectory(path);
+        if (isFile) {
+            try {
+                oldContent = ws.readText(path);
+            } catch (Exception readError) {
+                oldContent = "";
+            }
+        }
+
+        boolean deleted = ws.delete(path);
+        if (!deleted || ws.exists(path)) {
+            return new ToolCallResult("Error: failed to delete " + uriStr
+                    + " (the filesystem did not remove the entry).");
+        }
+
+        if (isFile) {
+            FileChangeTracker.trackChange(scId, uriStr, oldContent, "");
+        }
+        return new ToolCallResult("{}");
     }
 
     public static ToolCallResult readFiles(String scId, Object urisObj) {

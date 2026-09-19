@@ -24,7 +24,7 @@ public final class WorkspaceAgents {
 
     /** All Void-ported tools available in agent mode, as {@link AgentTool}s. */
     public static List<AgentTool> defaultWorkspaceTools(ToolManager manager) {
-        return defaultWorkspaceTools(manager, null);
+        return defaultWorkspaceTools(manager, null, "", null);
     }
 
     /**
@@ -33,10 +33,23 @@ public final class WorkspaceAgents {
      * is available).
      */
     public static List<AgentTool> defaultWorkspaceTools(ToolManager manager, ApprovalHandler inputChannel) {
+        return defaultWorkspaceTools(manager, inputChannel, "", null);
+    }
+
+    /**
+     * Full default toolset. {@code apply_patch} (Codex's canonical edit tool)
+     * is registered here so every agent mutates files through the same
+     * {@link com.saaspaymentsolutions.axion.workspace.WorkspaceFileSystem}
+     * infrastructure, approval flow and {@code FileChanged} events as the
+     * rest of the toolset — a single mutation runtime, no parallel path.
+     */
+    public static List<AgentTool> defaultWorkspaceTools(ToolManager manager, ApprovalHandler inputChannel,
+                                                        String scId, EventStream events) {
         List<AgentTool> tools = new ArrayList<>();
         for (Tool tool : manager.getToolsForChatMode("agent")) {
             tools.add(fromRegistryTool(tool, manager));
         }
+        tools.add(new ApplyPatchTool(scId, events));
         tools.add(new ContextRemainingTool());
         if (inputChannel != null) {
             tools.add(new RequestUserInputTool(inputChannel));
@@ -84,7 +97,7 @@ public final class WorkspaceAgents {
                                 + "For multi-step tasks keep the plan tool updated as steps finish. "
                                 + "When a requirement is ambiguous and the decision belongs to the user, "
                                 + "ask once via request_user_input instead of guessing.")
-                .tools(defaultWorkspaceTools(manager, inputChannel).toArray(new AgentTool[0]))
+                .tools(defaultWorkspaceTools(manager, inputChannel, scId, null).toArray(new AgentTool[0]))
                 .tools(reviewerHandoff)
                 .handoffs(reviewer)
                 .build();
@@ -123,6 +136,16 @@ public final class WorkspaceAgents {
         @Override
         public boolean requiresApproval() {
             return delegate.requiresApproval();
+        }
+
+        @Override
+        public boolean isFileMutation() {
+            return delegate.isFileMutation();
+        }
+
+        @Override
+        public boolean isDestructive() {
+            return delegate.isDestructive();
         }
 
         @Override

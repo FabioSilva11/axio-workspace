@@ -2,6 +2,10 @@ package com.saaspaymentsolutions.axion;
 
 import android.util.Log;
 
+import com.saaspaymentsolutions.axion.workspace.WorkspaceFileSystem;
+import com.saaspaymentsolutions.axion.workspace.WorkspaceManager;
+import com.saaspaymentsolutions.axion.workspace.WorkspacePath;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -22,7 +26,15 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Tracks pending file changes for the Diff page.
+ * Records changes that the agent's tools have <b>already applied</b> to the
+ * workspace, for the Diff page.
+ *
+ * <p>This is a history/audit log, not a commit buffer: by the time a change
+ * is tracked here the file on disk is already in its {@code afterContent}
+ * state. {@code acceptChange()} only clears the review entry (it never
+ * writes anything); {@code revertChange()} undoes an applied change through
+ * the <b>same active {@link WorkspaceFileSystem}</b> that performed the
+ * original mutation.</p>
  *
  * <p>The old implementation kept everything in static memory, so Android process
  * recreation made all diffs disappear. Changes are now persisted inside each
@@ -73,6 +85,13 @@ public class FileChangeTracker {
         }
     }
 
+    /**
+     * Marks an already-applied change as reviewed and drops it from the diff
+     * review list. Never touches the filesystem: the tool that tracked this
+     * change has already written {@code afterContent} to the workspace.
+     *
+     * @return true when a tracked change existed for {@code filePath}.
+     */
     public static boolean acceptChange(String scId, String filePath) {
         if (!valid(scId) || !valid(filePath)) return false;
         Object lock = lockFor(scId);
@@ -82,21 +101,31 @@ public class FileChangeTracker {
             if (changes == null) return false;
             FileChange change = findLatestChange(changes, filePath);
             if (change == null) return false;
-            try {
-                File file = ProjectPathResolver.resolveForWrite(scId, filePath).getFile();
-                File parent = file.getParentFile();
-                if (parent != null && !parent.exists() && !parent.mkdirs()) return false;
-                writeUtf8(file, change.afterContent == null ? "" : change.afterContent);
-                removeTrackedChangesLocked(scId, filePath);
-                persistLocked(scId);
-                return true;
-            } catch (Exception error) {
-                Log.e(TAG, "Could not accept diff for " + filePath, error);
-                return false;
-            }
+            removeTrackedChangesLocked(scId, filePath);
+            persistLocked(scId);
+            return true;
         }
     }
 
+    /**
+     * Legacy alias. The mutation is applied the moment the tool runs, so
+     * "accepting" a change can no longer apply anything.
+     *
+     * @deprecated use {@link #acceptChange(String, String)}.
+     */
+    @Deprecated
+    public static boolean applyChange(String scId, String filePath) {
+        return acceptChange(scId, filePath);
+    }
+
+    /**
+     * Restores the workspace to the state before the change was applied.
+     * Rewrites the previous content through the <b>active
+     * {@link WorkspaceFileSystem}</b> — the same backend that performed the
+     * original mutation — never through {@code ProjectPathResolver}.
+     *
+     * @return true when the revert was actually applied to the filesystem.
+     */
     public static boolean rejectChange(String scId, String filePath) {
         if (!valid(scId) || !valid(filePath)) return false;
         Object lock = lockFor(scId);
@@ -107,22 +136,50 @@ public class FileChangeTracker {
             FileChange change = findOriginalChange(changes, filePath);
             if (change == null) return false;
             try {
-                File file = ProjectPathResolver.resolveForWrite(scId, filePath).getFile();
-                if (change.existedBefore && change.beforeContent != null) {
-                    File parent = file.getParentFile();
-                    if (parent != null && !parent.exists() && !parent.mkdirs()) return false;
-                    writeUtf8(file, change.beforeContent);
-                } else if (file.exists() && !file.delete()) {
-                    return false;
+                boolean restored = restorePreviousState(change);
+                if (restored) {
+                    removeTrackedChangesLocked(scId, filePath);
+                    persistLocked(scId);
                 }
-                removeTrackedChangesLocked(scId, filePath);
-                persistLocked(scId);
-                return true;
+                return restored;
             } catch (Exception error) {
-                Log.e(TAG, "Could not reject diff for " + filePath, error);
+                Log.e(TAG, "Could not revert diff for " + filePath, error);
                 return false;
             }
         }
+    }
+
+    /**
+     * Restores the pre-change state through the active workspace filesystem.
+     * Must only run while holding the project lock.
+     */
+    private static boolean restorePreviousState(FileChange change) {
+        WorkspaceFileSystem fs = WorkspaceManager.getActiveFileSystem();
+        if (fs == null) {
+            Log.e(TAG, "Cannot revert " + change.filePath
+                    + ": no active workspace filesystem.");
+            return false;
+        }
+        String path;
+        try {
+            path = WorkspacePath.normalize(change.filePath);
+        } catch (Exception error) {
+            Log.e(TAG, "Cannot revert unsafe path " + change.filePath, error);
+            return false;
+        }
+        if (change.existedBefore) {
+            String previous = change.beforeContent == null ? "" : change.beforeContent;
+            fs.writeText(path, previous);
+            return fs.exists(path) && !fs.isDirectory(path);
+        }
+        if (!fs.exists(path)) {
+            return true; // already gone: revert is idempotent
+        }
+        if (!fs.delete(path) || fs.exists(path)) {
+            Log.e(TAG, "Could not revert (delete) " + path + " through the active workspace.");
+            return false;
+        }
+        return true;
     }
 
     public static Map<String, FileChange> getAllRecentChanges(String scId) {
@@ -247,6 +304,10 @@ public class FileChangeTracker {
 
     private static void persistLocked(String scId) {
         File target = stateFile(scId);
+        if (target == null) {
+            Log.e(TAG, "Diff state unavailable: project directory cannot be resolved.");
+            return;
+        }
         List<FileChange> changes = changesByProject.get(scId);
         if (changes == null || changes.isEmpty()) {
             deleteStateFiles(scId);
@@ -300,21 +361,36 @@ public class FileChangeTracker {
         }
     }
 
+    /** Null when the project directory cannot be resolved (e.g. storage unmounted). */
     private static File stateFile(String scId) {
-        return new File(new File(ProjectManager.getProjectDir(scId), STATE_DIR), STATE_FILE);
+        try {
+            return new File(new File(ProjectManager.getProjectDir(scId), STATE_DIR), STATE_FILE);
+        } catch (Exception error) {
+            Log.w(TAG, "Could not resolve diff state file", error);
+            return null;
+        }
     }
 
     private static File backupFile(String scId) {
-        return new File(stateFile(scId).getParentFile(), STATE_FILE + ".bak");
+        File target = stateFile(scId);
+        return target == null ? null : new File(target.getParentFile(), STATE_FILE + ".bak");
     }
 
     private static void deleteStateFiles(String scId) {
         // Do not resolve through getProjectDir() here: after project deletion it
         // would create a new empty Android project directory for a former web ID.
-        File[] projectRoots = new File[]{
-                new File(ProjectManager.getWebProjectsRoot(), scId),
-                new File(ProjectManager.getAndroidStudioProjectsRoot(), scId)
-        };
+        // Storage roots may be unavailable (unmounted storage); cleanup must
+        // never crash its callers.
+        File[] projectRoots;
+        try {
+            projectRoots = new File[]{
+                    new File(ProjectManager.getWebProjectsRoot(), scId),
+                    new File(ProjectManager.getAndroidStudioProjectsRoot(), scId)
+            };
+        } catch (Exception error) {
+            Log.w(TAG, "Could not resolve diff state locations for cleanup", error);
+            return;
+        }
         for (File projectRoot : projectRoots) {
             File parent = new File(projectRoot, STATE_DIR);
             File state = new File(parent, STATE_FILE);
@@ -325,15 +401,6 @@ public class FileChangeTracker {
             if (temp.exists()) temp.delete();
             File[] leftovers = parent.listFiles();
             if (parent.isDirectory() && (leftovers == null || leftovers.length == 0)) parent.delete();
-        }
-    }
-
-    private static void writeUtf8(File file, String text) throws Exception {
-        try (FileOutputStream output = new FileOutputStream(file, false);
-             BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(
-                     output, StandardCharsets.UTF_8))) {
-            writer.write(text == null ? "" : text);
-            writer.flush();
         }
     }
 

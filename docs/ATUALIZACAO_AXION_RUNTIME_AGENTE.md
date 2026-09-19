@@ -5,6 +5,71 @@
 
 ---
 
+## Estado atual (atualizado): fluxo de mutação de arquivos
+
+> Esta seção reflete o código implementado (não o plano original abaixo). O fluxo
+> de edição segue a separação conceitual do Codex (`apply_patch.rs` +
+> `approvals.rs` + `orchestrator.rs`): **uma aprovação, uma mutação real**.
+
+### Componentes
+
+```
+AgentRuntime           loop de turnos (v2), emite AgentEvent tipados
+PermissionLayer        decide ANTES de executar: ALLOW / ASK_USER / DENY
+ApprovalHandler        canal humano-no-loop (pode bloquear o turno até a decisão)
+WorkspaceFileSystem    fonte única de E/S (LocalFolderWorkspaceFileSystem | SafWorkspaceFileSystem)
+ApplyPatchTool         apply_patch (ADD/UPDATE/DELETE) com validação total + rollback
+VoidPortToolsService   registry de tools; mutações passam pelo WorkspaceFileSystem ativo
+FileChangeTracker      histórico/auditoria do que JÁ FOI aplicado (persistido em .axion/)
+ChatDiffFragment       visualização before/after + revert
+```
+
+### Fluxo de uma mutação
+
+```
+Tool call do modelo
+  ↓
+PermissionLayer.check()          ← aprovação acontece AQUI, antes de tocar o disco
+  ├─ ALLOW  → segue
+  ├─ ASK_USER → ApprovalRequired → o usuário decide → PermissionResolved
+  └─ DENY   → PolicyDenied, a tool não executa
+  ↓
+ToolCallStarted
+  ↓
+Executor da mutação (apply_patch / edit_file / rewrite_file / delete_file_or_folder)
+  ↓
+WorkspaceFileSystem (ativo)     ← UMA única escrita real
+  ↓
+FileChangeTracker.trackChange() ← registra o que já está aplicado (auditoria/diff)
+AgentEvent.FileChanged          ← side effect real, consumido pela UI
+  ↓
+ToolCallCompleted
+```
+
+### Semântica dos três verbos
+
+| Verbo | O que faz | Toca o disco? |
+|---|---|---|
+| **Approval** | decisão ANTES da execução (política + usuário) | nunca |
+| **Diff (accept)** | marca uma mudança já aplicada como revisada; limpa a entrada da lista de revisão | **nunca** — o arquivo já está no estado `after` |
+| **Revert (reject)** | desfaz uma mudança já aplicada, restaurando o conteúdo anterior **pelo mesmo `WorkspaceFileSystem` ativo** da mutação original | sim (só aqui) |
+
+Não existe mais "segunda etapa de commit": se a tool reportou sucesso, o arquivo
+já está alterado. Nenhuma ferramenta reporta sucesso sem verificar o retorno do
+filesystem (`delete() == false` ou arquivo ainda existente ⇒ resultado de erro).
+
+### Garantias cobertas por testes
+
+- `FileChangeTrackerWorkspaceTest` — accept não reescreve; revert restaura via workspace; falha de delete/write falha o revert (fail-closed).
+- `FileMutationFlowTest` — delete via workspace (com validação de retorno, traversal rejeitado, audit trail); `apply_patch` com delete validado e rollback de escritas parciais; `RegistryToolAdapter` preserva `isFileMutation/isDestructive/requiresApproval`; `PermissionLayer` classifica por metadata (fallback por nome só cobre adapters sem metadata).
+- `FileMutationE2EEvalTest` — fluxo completo no runtime real: aprovação → execução → filesystem → `FileChanged`; negação ⇒ zero mutação e zero evento; **accept não é necessário para a alteração existir**.
+
+### Divergência conhecida
+
+O `ProjectPathResolver` (java.io.File) permanece apenas como **fallback** para
+sessões sem workspace aberto. Todo o caminho principal (SAF ou pasta local)
+passa pelo `WorkspaceFileSystem` ativo.
+
 ## 0. Estado real do código (inventário, setembro/2026)
 
 Antes de listar o que falta, o que **já existe** — e que a análise externa não capturou:
