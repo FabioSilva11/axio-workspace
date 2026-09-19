@@ -36,6 +36,7 @@ public final class AgentRuntime {
     private final List<Guardrail> inputGuardrails;
     private final int maxTurns;
     private final RunBudget budget;
+    private final ApprovalHandler inputChannel;
     private final int maxOutputTokensPerTurn;
     private final boolean includeProjectInstructions;
     private final AgentTurnParser turnParser = new AgentTurnParser();
@@ -49,6 +50,7 @@ public final class AgentRuntime {
         this.inputGuardrails = Collections.unmodifiableList(new ArrayList<>(builder.inputGuardrails));
         this.maxTurns = Math.max(1, builder.maxTurns);
         this.budget = builder.budget;
+        this.inputChannel = builder.inputChannel;
         this.maxOutputTokensPerTurn = builder.maxOutputTokensPerTurn;
         this.includeProjectInstructions = builder.includeProjectInstructions;
     }
@@ -87,7 +89,7 @@ public final class AgentRuntime {
             }
         }
 
-        RunContext context = new RunContext(scId, agent.name());
+        RunContext context = new RunContext(scId, agent.name(), new ContextTracker(budget));
         Agent activeAgent = agent;
         int turns = 0;
         try {
@@ -127,7 +129,7 @@ public final class AgentRuntime {
                     });
                     turn = gateway.completeTurn(
                             resolveSystemPrompt(activeAgent),
-                            toolSchemasFor(activeAgent),
+                            toolSchemasFor(withParityTools(activeAgent)),
                             history,
                             null);
                 } catch (Exception e) {
@@ -143,11 +145,15 @@ public final class AgentRuntime {
                         // estimate so the budget reflects it (conservative).
                         try {
                             budget.settle(reservation, reservation.reserved());
+                            context.contextTracker().recordSettled(reservation.reserved());
                         } catch (RunBudget.UncertainChargeException ignored) {
                             // Estimate >= reserved by construction; cannot happen here.
                         }
                     }
                 }
+                // Input as the model will see it on the NEXT turn: the
+                // history now includes this turn's tool results.
+                context.contextTracker().recordInputEstimate(estimatedInputTokens(history));
                 context.incrementLlmCalls();
 
                 AgentTurnParser.ParsedTurn parsed = turnParser.parse(
@@ -177,6 +183,9 @@ public final class AgentRuntime {
                         return RunResult.failure("Run cancelled.");
                     }
                     AgentTool tool = findTool(activeAgent, call.getName());
+                    if (tool == null) {
+                        tool = findParityTool(call.getName());
+                    }
                     if (tool == null) {
                         String message = "Error: unknown tool '" + call.getName() + "'.";
                         emit(new AgentEvent.Error(scId, message));
@@ -233,7 +242,7 @@ public final class AgentRuntime {
             }
             session.setStatus(AgentSession.Status.FAILED);
             emit(new AgentEvent.RunCompleted(scId, false, "Max turns reached"));
-            return RunResult.failure("Max turns reached.");
+            return RunResult.maxTurnsReached(context, "");
         } finally {
             sessionSnapshot = session;
         }
@@ -251,6 +260,50 @@ public final class AgentRuntime {
     /** Session of the most recent run on this runtime (audit/telemetry). */
     public AgentSession lastSession() {
         return sessionSnapshot != null ? sessionSnapshot : lastSession;
+    }
+
+    // ------------------------------------------------------------------
+    // Host-visible pending approval (Codex ReviewDecision parity)
+    // ------------------------------------------------------------------
+
+    /**
+     * A tool call currently parked waiting for a human decision. Host UIs
+     * query it to render the confirmation dialog and can observe the final
+     * decision once resolved.
+     */
+    public static final class PendingApproval {
+        private final PermissionRequest request;
+        private final java.util.function.Supplier<PermissionDecision> decisionView;
+
+        PendingApproval(PermissionRequest request,
+                        java.util.function.Supplier<PermissionDecision> decisionView) {
+            this.request = request;
+            this.decisionView = decisionView;
+        }
+
+        public String getTool() {
+            return request.getTool();
+        }
+
+        public PermissionRequest getRequest() {
+            return request;
+        }
+
+        /** Current decision: {@code null} while still pending. */
+        public PermissionDecision peekDecision() {
+            return decisionView.get();
+        }
+    }
+
+    /** The approval awaiting the user, or {@code null} when nothing is parked. */
+    public PendingApproval currentPendingApproval() {
+        if (permissions == null) {
+            return null;
+        }
+        PermissionRequest request = permissions.currentPendingRequest();
+        return request == null
+                ? null
+                : new PendingApproval(request, () -> permissions.lastDecisionFor(request));
     }
 
     // ------------------------------------------------------------------
@@ -283,6 +336,33 @@ public final class AgentRuntime {
         return chars / 4 + 1;
     }
 
+    /**
+     * Codex parity: every agent implicitly gains {@code get_context_remaining}
+     * and — when an input channel is configured — {@code request_user_input},
+     * without hosts having to remember to add them.
+     */
+    private List<AgentTool> withParityTools(Agent agent) {
+        List<AgentTool> tools = new ArrayList<>(agent.tools());
+        if (findTool(agent, "get_context_remaining") == null) {
+            tools.add(new ContextRemainingTool());
+        }
+        if (inputChannel != null && findTool(agent, "request_user_input") == null) {
+            tools.add(new RequestUserInputTool(inputChannel));
+        }
+        return tools;
+    }
+
+    /** Lookup across the agent's own tools plus the implicit parity tools. */
+    private AgentTool findParityTool(String toolName) {
+        if ("get_context_remaining".equals(toolName)) {
+            return new ContextRemainingTool();
+        }
+        if (inputChannel != null && "request_user_input".equals(toolName)) {
+            return new RequestUserInputTool(inputChannel);
+        }
+        return null;
+    }
+
     /** Upper bound for AGENTS.md injection (~600 tokens). */
     private static final int PROJECT_INSTRUCTIONS_MAX_CHARS = 2400;
 
@@ -306,8 +386,12 @@ public final class AgentRuntime {
     }
 
     private JSONArray toolSchemasFor(Agent agent) {
+        return toolSchemasFor(agent.tools());
+    }
+
+    private JSONArray toolSchemasFor(List<AgentTool> tools) {
         JSONArray schemas = new JSONArray();
-        for (AgentTool tool : agent.tools()) {
+        for (AgentTool tool : tools) {
             try {
                 schemas.put(new JSONObject()
                         .put("type", "function")
@@ -369,6 +453,7 @@ public final class AgentRuntime {
         private final List<Guardrail> inputGuardrails = new ArrayList<>();
         private int maxTurns = DEFAULT_MAX_TURNS;
         private RunBudget budget;
+        private ApprovalHandler inputChannel;
         private int maxOutputTokensPerTurn = 2048;
         private boolean includeProjectInstructions = true;
 
@@ -418,6 +503,15 @@ public final class AgentRuntime {
         /** M7: inject workspace AGENTS.md into the system prompt (default true). */
         public Builder includeProjectInstructions(boolean include) {
             this.includeProjectInstructions = include;
+            return this;
+        }
+
+        /**
+         * Codex parity: human-in-the-loop channel used by the implicit
+         * {@code request_user_input} tool (and surfaced in the tool catalog).
+         */
+        public Builder inputChannel(ApprovalHandler channel) {
+            this.inputChannel = channel;
             return this;
         }
 

@@ -71,6 +71,16 @@ public interface ApprovalHandler {
         return onRequest(request);
     }
 
+    /**
+     * Free-text answer typed by the user for the most recent request — used by
+     * the {@code request_user_input} tool. Hosts that support typed answers
+     * store the text before resolving the decision; the default returns null
+     * (interpreted as "no answer provided").
+     */
+    default String lastResponseText() {
+        return null;
+    }
+
     /** Convenience: a future-based variant for hosts that resolve later. */
     static ApprovalHandler fromFuture(java.util.function.Function<PermissionRequest, CompletableFuture<PermissionDecision>> resolver,
                                       long timeoutMs) {

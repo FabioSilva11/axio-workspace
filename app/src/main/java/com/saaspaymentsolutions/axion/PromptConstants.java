@@ -155,7 +155,7 @@ public final class PromptConstants {
     public static String ctrlKStreamSystemMessage(QuickEditFimTags tags) {
         return "You are a FIM (fill-in-the-middle) coding assistant. Your task is to fill in the middle SELECTION marked by <" + tags.midTag + "> tags.\n\n"
                 + "The user will give you INSTRUCTIONS, as well as code that comes BEFORE the SELECTION, indicated with <" + tags.preTag + ">...before</" + tags.preTag + ">, and code that comes AFTER the SELECTION, indicated with <" + tags.sufTag + ">...after</" + tags.sufTag + ">.\n"
-                + "The user will also give you the existing original SELECTION that will be be replaced by the SELECTION that you output, for additional context.\n\n"
+                + "The user will also give you the existing original SELECTION that will be replaced by the SELECTION that you output, for additional context.\n\n"
                 + "Instructions:\n"
                 + "1. Your OUTPUT should be a SINGLE PIECE OF CODE of the form <" + tags.midTag + ">...new_code</" + tags.midTag + ">. Do NOT output any text or explanations before or after this.\n"
                 + "2. You may ONLY CHANGE the original SELECTION, and NOT the content in the <" + tags.preTag + ">...</" + tags.preTag + "> or <" + tags.sufTag + ">...</" + tags.sufTag + "> tags.\n"

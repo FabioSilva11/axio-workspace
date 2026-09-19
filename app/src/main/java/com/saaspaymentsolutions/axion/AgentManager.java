@@ -448,6 +448,78 @@ public class AgentManager {
     }
 
     /** Releases asynchronous agent resources with the owning chat screen. */
+    /**
+     * Legacy-free host bridge: serves the same {@link AgentListener} surface
+     * the retired loop served, but every turn is executed by the v2
+     * {@link com.saaspaymentsolutions.axion.agentsdk.AgentRuntime}. Process
+     * calls block until the run finishes (the UI already calls them off the
+     * main thread); UI callbacks are posted to the main looper.
+     */
+    public static final class HostBridge {
+        private final com.saaspaymentsolutions.axion.agentsdk.AgentRuntime runtime;
+        private final java.util.function.Supplier<com.saaspaymentsolutions.axion.agentsdk.Agent> agentSupplier;
+        private final AgentListener listener;
+        private final String scId;
+        private final java.util.concurrent.Executor uiExecutor;
+        private volatile String lastOutput = "";
+
+        /** Production constructor: UI callbacks are posted to the main looper. */
+        public HostBridge(com.saaspaymentsolutions.axion.agentsdk.AgentRuntime runtime,
+                          java.util.function.Supplier<com.saaspaymentsolutions.axion.agentsdk.Agent> agentSupplier,
+                          AgentListener listener,
+                          String scId) {
+            this(runtime, agentSupplier, listener, scId, null);
+        }
+
+        /** Test/headless constructor: inject the callback executor. */
+        public HostBridge(com.saaspaymentsolutions.axion.agentsdk.AgentRuntime runtime,
+                          java.util.function.Supplier<com.saaspaymentsolutions.axion.agentsdk.Agent> agentSupplier,
+                          AgentListener listener,
+                          String scId,
+                          java.util.concurrent.Executor uiExecutor) {
+            this.runtime = runtime;
+            this.agentSupplier = agentSupplier;
+            this.listener = listener;
+            this.scId = scId == null ? "" : scId;
+            this.uiExecutor = uiExecutor != null
+                    ? uiExecutor
+                    : command -> new Handler(Looper.getMainLooper()).post(command);
+        }
+
+        /** Runs one user turn on the calling thread; UI updates go to main. */
+        public com.saaspaymentsolutions.axion.agentsdk.RunResult processUserMessage(String userText) {
+            final String text = userText == null ? "" : userText;
+            uiExecutor.execute(() -> {
+                ChatMessage userMsg = new ChatMessage(text, true, System.currentTimeMillis());
+                listener.onMessageAdded(userMsg);
+                listener.onStatusChanged("");
+            });
+            com.saaspaymentsolutions.axion.agentsdk.RunResult result =
+                    runtime.run(agentSupplier.get(), text, scId);
+            lastOutput = result.isSuccessful() ? result.getOutput() : "";
+            uiExecutor.execute(() -> {
+                if (result.isSuccessful()) {
+                    ChatMessage botMsg = new ChatMessage(result.getOutput(), false, System.currentTimeMillis());
+                    listener.onMessageUpdated(botMsg);
+                } else {
+                    listener.onError(result.getFailureReason());
+                }
+                listener.onProcessingFinished();
+            });
+            return result;
+        }
+
+        /** Final assistant text of the most recent run (empty on failure). */
+        public String lastAssistantText() {
+            return lastOutput;
+        }
+
+        /** Cooperative cancellation of the run in flight. */
+        public void cancel() {
+            runtime.cancel();
+        }
+    }
+
     public void release() {
         resetConversationState();
         multiAgentOrchestrator.shutdown();

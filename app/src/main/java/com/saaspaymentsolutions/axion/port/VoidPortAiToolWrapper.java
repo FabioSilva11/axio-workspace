@@ -26,7 +26,7 @@ public final class VoidPortAiToolWrapper implements Tool {
     public static void registerAll(ToolManager manager) {
         manager.registerTool(new VoidPortAiToolWrapper(
                 "autocomplete_code",
-                "Gera uma sugestao FIM de codigo usando o autocomplete portado do Void.",
+                "Generates a fill-in-the-middle code suggestion using the ported Void autocomplete engine.",
                 params(new String[]{"full_text", "cursor_offset"}, new String[][]{
                         {"language", "string", "Linguagem do arquivo, por exemplo java, kotlin ou xml"},
                         {"file_path", "string", "Caminho do arquivo para contexto"},
@@ -35,7 +35,7 @@ public final class VoidPortAiToolWrapper implements Tool {
         ));
         manager.registerTool(new VoidPortAiToolWrapper(
                 "ai_regex_generate",
-                "Cria um regex Java com IA a partir de uma descricao em linguagem natural.",
+                "Creates a Java regex with AI from a natural-language description.",
                 params(new String[]{"task"}, new String[][]{
                         {"sample_text", "string", "Texto de exemplo opcional"},
                         {"replacement_task", "string", "Descricao opcional da substituicao desejada"}
@@ -43,7 +43,7 @@ public final class VoidPortAiToolWrapper implements Tool {
         ));
         manager.registerTool(new VoidPortAiToolWrapper(
                 "ai_regex_search",
-                "Gera um regex com IA e busca arquivos do projeto que combinam com ele.",
+                "Generates a regex with AI and searches project files that match it.",
                 params(new String[]{"task"}, new String[][]{
                         {"search_in_folder", "string", "Pasta para limitar a busca"},
                         {"max_files", "number", "Numero maximo de arquivos retornados"}
@@ -51,14 +51,14 @@ public final class VoidPortAiToolWrapper implements Tool {
         ));
         manager.registerTool(new VoidPortAiToolWrapper(
                 "ai_regex_replace_preview",
-                "Gera regex e replacement com IA e retorna uma pre-visualizacao de substituicoes em um arquivo.",
+                "Generates a regex and replacement with AI and returns a preview of substitutions in a file.",
                 params(new String[]{"uri", "task", "replacement_task"}, new String[][]{
                         {"max_matches", "number", "Numero maximo de ocorrencias na pre-visualizacao"}
                 })
         ));
         manager.registerTool(new VoidPortAiToolWrapper(
                 "refresh_local_models",
-                "Atualiza o cache de modelos locais do Ollama, vLLM e LM Studio.",
+                "Refreshes the local model cache for Ollama, vLLM and LM Studio.",
                 params(new String[]{}, new String[][]{
                         {"provider", "string", "ollama, vllm, lm_studio ou all"},
                         {"enable_provider_on_success", "boolean", "Se true, seleciona o provider quando houver modelos"}

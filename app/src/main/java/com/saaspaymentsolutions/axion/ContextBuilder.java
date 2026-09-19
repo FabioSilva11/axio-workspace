@@ -153,6 +153,8 @@ public class ContextBuilder {
     private String agentGuidance = "";
     private boolean includeNativeReferences = true;
     private boolean finalResponseOnly;
+    private String externalSystemPromptOverride = "";
+    private List<Tool> externalTools;
     private boolean includeProjectDocumentationGuidance;
     private String currentModelName = "";
     /** Tokens consumed outside messages/system, principally function schemas. */
@@ -182,6 +184,22 @@ public class ContextBuilder {
 
     public ContextBuilder setFinalResponseOnly(boolean finalResponseOnly) {
         this.finalResponseOnly = finalResponseOnly;
+        return this;
+    }
+
+    /**
+     * Replaces the auto-generated header/important-notes sections with a
+     * caller-provided system prompt (agentsdk runtime path). The shared
+     * sections (sysinfo, filesystem overview, budgets) still apply.
+     */
+    public ContextBuilder setExternalSystemPrompt(String systemPrompt) {
+        this.externalSystemPromptOverride = systemPrompt == null ? "" : systemPrompt.trim();
+        return this;
+    }
+
+    /** Tools declared by the caller to be used for XML-fallback tool blocks. */
+    public ContextBuilder setExternalTools(List<Tool> tools) {
+        this.externalTools = tools;
         return this;
     }
 
@@ -270,18 +288,24 @@ public class ContextBuilder {
     private String buildSystemContext(String latestUserMessage, String chatMode, String providerId,
                                       ProviderFormat providerFormat, SharedPreferences prefs) {
         String safeChatMode = normalizeChatMode(chatMode);
-        String header = "You are an expert coding " + ("agent".equals(safeChatMode) ? "agent" : "assistant") + " whose job is "
+        boolean useExternalPrompt = !externalSystemPromptOverride.isEmpty();
+        int headerTokenCap = useExternalPrompt ? 8000 : 180;
+        String header = useExternalPrompt
+                ? externalSystemPromptOverride
+                : "You are an expert coding " + ("agent".equals(safeChatMode) ? "agent" : "assistant") + " whose job is "
                 + ("agent".equals(safeChatMode)
                 ? "to help the user develop, run, and make changes to their codebase."
                 : "gather".equals(safeChatMode)
                 ? "to search, understand, and reference files in the user's codebase."
                 : "to assist the user with their coding tasks.")
-                + "\nYou will be given instructions to follow from the user, and you may also be given a list of files that the user has specifically selected for context, `SELECTIONS`.\n"
-                + "Please assist the user with their query.";
+                + "\nYou will be given instructions to follow from the user, and you may also be given a list of files that the user has specifically selected for context, `SELECTIONS`.";
 
         boolean portedPromptsEnabled = VoidPortSettings.isPortedPromptsEnabled(prefs);
         String importantDetails = trimToTokens(
-                buildVoidImportantDetails(safeChatMode, providerFormat), 760);
+                useExternalPrompt
+                        ? buildSharedImportantDetails()
+                        : buildVoidImportantDetails(safeChatMode, providerFormat),
+                760);
         String projectKindGuidance = portedPromptsEnabled
                 ? trimToTokens(buildProjectKindGuidance(), 460)
                 : "";
@@ -294,7 +318,7 @@ public class ContextBuilder {
                 : "";
 
         List<String> requiredWithoutTools = new ArrayList<>();
-        requiredWithoutTools.add(trimToTokens(header, 180));
+        requiredWithoutTools.add(trimToTokens(header, headerTokenCap));
         requiredWithoutTools.add(importantDetails);
         requiredWithoutTools.add(projectKindGuidance);
         requiredWithoutTools.add(userInstructions);
@@ -313,7 +337,7 @@ public class ContextBuilder {
                 + "\n</files_overview>";
 
         List<String> requiredSections = new ArrayList<>();
-        requiredSections.add(trimToTokens(header, 180));
+        requiredSections.add(trimToTokens(header, headerTokenCap));
         requiredSections.add(importantDetails);
         // Volatile termination/finish feedback is more important than stable
         // project and filesystem context and therefore receives budget first.
@@ -393,11 +417,7 @@ public class ContextBuilder {
         }
         builder.append("\n- Project path contract:\n");
         builder.append("Use '.' or relative paths for files in the active workspace. ")
-                .append("Never send placeholders such as <uri>, <path>, undefined, or fake absolute paths.\n\n");
-        builder.append("- Active file:\n");
-        builder.append("NOT SUPPLIED\n\n");
-        builder.append("- Open files:\n");
-        builder.append("NO OPENED FILES");
+                .append("Never send placeholders such as <uri>, <path>, undefined, or fake absolute paths.");
         if ("agent".equals(chatMode)) {
             List<String> terminalIds = VoidPortToolsService.getPersistentTerminalIds();
             if (terminalIds != null && !terminalIds.isEmpty()) {
@@ -443,10 +463,15 @@ public class ContextBuilder {
     }
 
     private String buildXmlToolDefinitions(String chatMode, int maxTokens) {
-        if ("normal".equals(chatMode) || toolManager == null || maxTokens < 180) {
+        if ("normal".equals(chatMode) || maxTokens < 180) {
             return "";
         }
-        List<Tool> availableTools = toolManager.getToolsForChatMode(chatMode);
+        if (toolManager == null && externalTools == null) {
+            return "";
+        }
+        List<Tool> availableTools = externalTools != null
+                ? externalTools
+                : (toolManager == null ? new ArrayList<>() : toolManager.getToolsForChatMode(chatMode));
         if (availableTools.isEmpty()) {
             return "";
         }
@@ -616,6 +641,17 @@ public class ContextBuilder {
         return false;
     }
 
+    /**
+     * Shared notes used when an external system prompt (agentsdk runtime)
+     * replaces the auto-generated sections. Only provider-agnostic protocol
+     * rules remain here — the agent's own instructions carry the rest.
+     */
+    private String buildSharedImportantDetails() {
+        return "Important notes:\n"
+                + "1. Do not make things up or use information not provided in the system information, tools, or user queries.\n\n"
+                + "2. Today's date is " + PromptConstants.todayDateForPrompt() + ".";
+    }
+
     private String buildVoidImportantDetails(String chatMode, ProviderFormat providerFormat) {
         List<String> details = new ArrayList<>();
         details.add("Follow the user's requested scope. If an action is blocked, explain the concrete blocker and continue with any safe work that remains possible.");
@@ -642,6 +678,9 @@ public class ContextBuilder {
                     + "When the objective is satisfied, return the final answer instead of calling another tool for reassurance.");
             details.add("Do not announce a tool by its internal name. Briefly state the immediate purpose only when a progress update is useful.");
             details.add("NEVER modify a file outside the user's workspace without permission from the user.");
+            details.add("Plan discipline: for multi-step tasks, keep the plan visible with the plan tool and update it as each step finishes. Skip the plan for straightforward tasks (roughly the easiest 25%) and never create a single-step plan.");
+            details.add("Editing constraints: default to apply_patch for single-file edits; use edit_file or rewrite_file when the patch format does not fit well. Auto-generated files and scripted multi-file changes may use run_command instead. Never revert changes you did not make, never run destructive commands such as git reset --hard, git checkout -- or git push --force without explicit user approval, and do not amend commits unless asked.");
+            details.add("Final answer contract: default to concise; for substantial work lead with the outcome, then the details (what changed and why), and finish with concrete next steps (tests, build, commit) when they exist. Reference files as workspace-relative paths. Do not dump file contents you already wrote; reference their paths.");
         } else if ("gather".equals(chatMode)) {
             details.add("Gather mode is read-only. Use reading and search tools for claims about the workspace, but do not call mutation or terminal tools.");
             details.add("A greeting or conceptual question unrelated to the workspace may be answered directly.");
@@ -803,7 +842,7 @@ public class ContextBuilder {
         }
         if (!historySummary.isEmpty() && historyStartIndex > 0) {
             simpleMessages.add(SimpleMessage.assistant(
-                    "[Resumo da conversa anterior — mensagens antigas foram compactadas]\n" + historySummary,
+                    "[Summary of the earlier conversation — older messages were compacted]\n" + historySummary,
                     ""));
         }
         for (int msgIndex = historyStartIndex; msgIndex < messages.size(); msgIndex++) {
@@ -942,10 +981,10 @@ public class ContextBuilder {
                 lines++;
             }
         }
-        return "[Resultado de ferramenta compactado: " + toolName
-                + ", " + result.length() + " caracteres, " + lines + " linhas"
-                + (isError ? ", erro" : "") + "]\n"
-                + excerpt + "\n[Use a ferramenta novamente se precisar do resultado completo.]";
+        return "[Tool result compacted: " + toolName
+                + ", " + result.length() + " chars, " + lines + " lines"
+                + (isError ? ", error" : "") + "]\n"
+                + excerpt + "\n[Call the tool again if you need the full result.]";
     }
 
     private int findLatestUserMessageIndex() {
@@ -1430,7 +1469,7 @@ public class ContextBuilder {
         if (message == null) {
             return false;
         }
-        String prefix = "[Resumo da conversa anterior";
+        String prefix = "[Summary of the earlier conversation";
         Object content = message.opt("content");
         if (content instanceof String && ((String) content).startsWith(prefix)) {
             return true;

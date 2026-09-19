@@ -1,0 +1,218 @@
+package com.saaspaymentsolutions.axion.agentsdk;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
+
+import com.saaspaymentsolutions.axion.AiOperationContext;
+import com.saaspaymentsolutions.axion.ChatMessage;
+import com.saaspaymentsolutions.axion.toolcalling.ToolCall;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+import org.junit.Test;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
+/**
+ * The former {@code RunnerTest} scenarios, ported to the v2-only
+ * {@link AgentRuntime} before the legacy Runner was deleted. Kept as the
+ * regression floor for loop semantics: history shape, max-turns and
+ * rejection paths.
+ */
+public class LegacyParityPortedTest {
+
+    /** Gateway double with scripted turns plus history recording. */
+    private static final class ScriptedHistoryGateway implements AgentLlmGateway {
+        private final List<LlmTurnOutput> script = new ArrayList<>();
+        private final List<String> systemPrompts = new ArrayList<>();
+        final List<List<ChatMessage>> receivedHistories =
+                Collections.synchronizedList(new ArrayList<>());
+        private int index;
+
+        void add(LlmTurnOutput turn) {
+            script.add(turn);
+        }
+
+        @Override
+        public LlmTurnOutput completeTurn(String systemPrompt, JSONArray tools,
+                                          List<ChatMessage> messages,
+                                          AiOperationContext operationContext) {
+            systemPrompts.add(systemPrompt);
+            receivedHistories.add(new ArrayList<>(messages));
+            if (index < script.size()) {
+                return script.get(index++);
+            }
+            return new LlmTurnOutput("done", "", "stop", Collections.emptyList());
+        }
+    }
+
+    private static ToolCall call(String name, String argsJson) {
+        return new ToolCall(name, argsJson, "call_1");
+    }
+
+    private static AgentTool echoTool() {
+        return new AgentTool() {
+            @Override
+            public String name() {
+                return "echo";
+            }
+
+            @Override
+            public String description() {
+                return "Echoes the input.";
+            }
+
+            @Override
+            public JSONObject parameters() {
+                return new JSONObject();
+            }
+
+            @Override
+            public AgentToolResult execute(RunContext context, JSONObject args) {
+                return AgentToolResult.success("echo:" + args.optString("text", ""));
+            }
+        };
+    }
+
+    private static AgentTool approvalEcho() {
+        return new AgentTool() {
+            @Override
+            public String name() {
+                return "echo";
+            }
+
+            @Override
+            public String description() {
+                return "echo";
+            }
+
+            @Override
+            public JSONObject parameters() {
+                return new JSONObject();
+            }
+
+            @Override
+            public boolean requiresApproval() {
+                return true;
+            }
+
+            @Override
+            public AgentToolResult execute(RunContext context, JSONObject args) {
+                return AgentToolResult.success("should not run");
+            }
+        };
+    }
+
+    @Test
+    public void simpleTextRunReturnsFinalOutput() {
+        ScriptedHistoryGateway gateway = new ScriptedHistoryGateway();
+        gateway.add(new LlmTurnOutput("Hello!", "", "stop", Collections.emptyList()));
+        AgentRuntime runtime = new AgentRuntime.Builder(gateway).build();
+        Agent agent = Agent.Builder.forName("a", "instructions").build();
+
+        RunResult result = runtime.run(agent, "hi", "sc1");
+
+        assertTrue(result.isSuccessful());
+        assertEquals("Hello!", result.getOutput());
+        assertTrue("agent instructions must reach the gateway",
+                gateway.systemPrompts.get(0).contains("instructions"));
+    }
+
+    @Test
+    public void toolCallIsExecutedAndResultAppendedToHistory() {
+        ScriptedHistoryGateway gateway = new ScriptedHistoryGateway();
+        gateway.add(new LlmTurnOutput("", "", "tool_calls",
+                Collections.singletonList(call("echo", "{\"text\":\"x\"}"))));
+        gateway.add(new LlmTurnOutput("finished", "", "stop", Collections.emptyList()));
+        AgentRuntime runtime = new AgentRuntime.Builder(gateway).build();
+        Agent agent = Agent.Builder.forName("a", "i").tools(echoTool()).build();
+
+        RunResult result = runtime.run(agent, "use the tool", "sc1");
+
+        assertTrue(result.isSuccessful());
+        assertEquals("finished", result.getOutput());
+        List<ChatMessage> secondTurnHistory = gateway.receivedHistories.get(1);
+        ChatMessage last = secondTurnHistory.get(secondTurnHistory.size() - 1);
+        assertEquals(ChatMessage.TYPE_TOOL, last.getType());
+        assertEquals("echo:x", last.getToolResult());
+    }
+
+    @Test
+    public void unknownToolReturnsErrorResultToModel() {
+        ScriptedHistoryGateway gateway = new ScriptedHistoryGateway();
+        gateway.add(new LlmTurnOutput("", "", "tool_calls",
+                Collections.singletonList(call("nope", "{}"))));
+        gateway.add(new LlmTurnOutput("ok", "", "stop", Collections.emptyList()));
+        AgentRuntime runtime = new AgentRuntime.Builder(gateway).build();
+        Agent agent = Agent.Builder.forName("a", "i").build();
+
+        RunResult result = runtime.run(agent, "go", "sc1");
+
+        assertTrue(result.isSuccessful());
+        List<ChatMessage> secondTurnHistory = gateway.receivedHistories.get(1);
+        ChatMessage last = secondTurnHistory.get(secondTurnHistory.size() - 1);
+        assertTrue(last.getToolResult().contains("unknown tool"));
+    }
+
+    @Test
+    public void maxTurnsCeilingStopsRun() {
+        ScriptedHistoryGateway gateway = new ScriptedHistoryGateway();
+        gateway.add(new LlmTurnOutput("", "", "tool_calls",
+                Collections.singletonList(call("echo", "{}"))));
+        gateway.add(new LlmTurnOutput("", "", "tool_calls",
+                Collections.singletonList(call("echo", "{}"))));
+        AgentRuntime runtime = new AgentRuntime.Builder(gateway).maxTurns(2).build();
+        Agent agent = Agent.Builder.forName("a", "i").tools(echoTool()).build();
+
+        RunResult result = runtime.run(agent, "loop", "sc1");
+
+        assertFalse(result.isSuccessful());
+        assertTrue(result.isMaxTurnsReached());
+    }
+
+    @Test
+    public void rejectedApprovalSkipsExecution() {
+        ScriptedHistoryGateway gateway = new ScriptedHistoryGateway();
+        gateway.add(new LlmTurnOutput("", "", "tool_calls",
+                Collections.singletonList(call("echo", "{\"text\":\"x\"}"))));
+        gateway.add(new LlmTurnOutput("done", "", "stop", Collections.emptyList()));
+        PermissionLayer layer = new PermissionLayer(ToolPolicy.interactive(),
+                request -> PermissionDecision.DENY, null);
+        AgentRuntime runtime = new AgentRuntime.Builder(gateway)
+                .permissions(layer)
+                .build();
+        Agent agent = Agent.Builder.forName("a", "i").tools(approvalEcho()).build();
+
+        RunResult result = runtime.run(agent, "go", "sc1");
+
+        assertTrue(result.isSuccessful());
+        List<ChatMessage> secondTurnHistory = gateway.receivedHistories.get(1);
+        ChatMessage last = secondTurnHistory.get(secondTurnHistory.size() - 1);
+        assertTrue(last.getToolResult().contains("denied"));
+    }
+
+    @Test
+    public void inputGuardrailBlocksBeforeFirstLlmCall() {
+        ScriptedHistoryGateway gateway = new ScriptedHistoryGateway();
+        gateway.add(new LlmTurnOutput("never", "", "stop", Collections.emptyList()));
+        AgentRuntime runtime = new AgentRuntime.Builder(gateway)
+                .inputGuardrails(new Guardrail() {
+                    @Override
+                    public GuardrailResult checkInput(String userInput) {
+                        return GuardrailResult.block("banned");
+                    }
+                })
+                .build();
+        Agent agent = Agent.Builder.forName("a", "i").build();
+
+        RunResult result = runtime.run(agent, "bad input", "sc1");
+
+        assertFalse(result.isSuccessful());
+        assertTrue(result.isBlockedByGuardrail());
+        assertEquals("banned", result.getGuardrailResult().info());
+        assertEquals(0, gateway.receivedHistories.size());
+    }
+}

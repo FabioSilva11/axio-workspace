@@ -24,9 +24,22 @@ public final class WorkspaceAgents {
 
     /** All Void-ported tools available in agent mode, as {@link AgentTool}s. */
     public static List<AgentTool> defaultWorkspaceTools(ToolManager manager) {
+        return defaultWorkspaceTools(manager, null);
+    }
+
+    /**
+     * Codex parity: the default toolset gains {@code get_context_remaining}
+     * and {@code request_user_input} (the latter only when an input channel
+     * is available).
+     */
+    public static List<AgentTool> defaultWorkspaceTools(ToolManager manager, ApprovalHandler inputChannel) {
         List<AgentTool> tools = new ArrayList<>();
         for (Tool tool : manager.getToolsForChatMode("agent")) {
             tools.add(fromRegistryTool(tool, manager));
+        }
+        tools.add(new ContextRemainingTool());
+        if (inputChannel != null) {
+            tools.add(new RequestUserInputTool(inputChannel));
         }
         return tools;
     }
@@ -47,6 +60,15 @@ public final class WorkspaceAgents {
      * agent with full tools handing off to a reviewer agent (read-only).
      */
     public static Agent workspaceCoordinator(ToolManager manager, String scId) {
+        return workspaceCoordinator(manager, scId, null);
+    }
+
+    /**
+     * Same topology with a human-in-the-loop input channel: the coordinator
+     * gains {@code request_user_input} for decisions that belong to the user
+     * and {@code get_context_remaining} for long tasks.
+     */
+    public static Agent workspaceCoordinator(ToolManager manager, String scId, ApprovalHandler inputChannel) {
         Agent reviewer = Agent.Builder.forName("reviewer",
                         "You are a code reviewer. Inspect the provided files and report issues. "
                                 + "Do not modify anything.")
@@ -58,8 +80,11 @@ public final class WorkspaceAgents {
         return Agent.Builder.forName("coordinator",
                         "You are the workspace coordinator. Use the available tools to "
                                 + "explore, read, and modify project files to complete the user's task. "
-                                + "Delegate reviews to the reviewer agent when work is complete.")
-                .tools(defaultWorkspaceTools(manager).toArray(new AgentTool[0]))
+                                + "Delegate reviews to the reviewer agent when work is complete. "
+                                + "For multi-step tasks keep the plan tool updated as steps finish. "
+                                + "When a requirement is ambiguous and the decision belongs to the user, "
+                                + "ask once via request_user_input instead of guessing.")
+                .tools(defaultWorkspaceTools(manager, inputChannel).toArray(new AgentTool[0]))
                 .tools(reviewerHandoff)
                 .handoffs(reviewer)
                 .build();

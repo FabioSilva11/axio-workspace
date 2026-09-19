@@ -14,6 +14,20 @@ public final class PermissionLayer {
     private final ApprovalHandler approvalHandler;
     private final EventStream events;
 
+    /** Currently parked request (null when no approval is pending). */
+    private volatile PermissionRequest pendingRequest;
+    private volatile PermissionDecision lastDecision;
+
+    /** The request awaiting the user, or {@code null}. */
+    public PermissionRequest currentPendingRequest() {
+        return pendingRequest;
+    }
+
+    /** Advisory view of the decision for {@code request}: null while pending. */
+    public PermissionDecision lastDecisionFor(PermissionRequest request) {
+        return request != null && request == pendingRequest ? null : lastDecision;
+    }
+
     public PermissionLayer(ToolPolicy policy, ApprovalHandler approvalHandler, EventStream events) {
         this.policy = policy == null ? ToolPolicy.permissive() : policy;
         this.approvalHandler = approvalHandler;
@@ -55,18 +69,25 @@ public final class PermissionLayer {
         }
         PermissionRequest request = new PermissionRequest(
                 "perm_" + java.util.UUID.randomUUID(), tool.name(), call,
-                "A política pede confirmação para executar '" + tool.name() + "'.");
+                "The policy requires user confirmation to execute '" + tool.name() + "'.");
+        pendingRequest = request;
+        lastDecision = null;
         emitEvent(new AgentEvent.ApprovalRequired(scId, tool.name(), call, request));
+        PermissionDecision decision;
         boolean allowed;
         try {
-            PermissionDecision decision = approvalHandler.awaitDecision(request);
+            decision = approvalHandler.awaitDecision(request);
             allowed = decision == PermissionDecision.ALLOW || decision == PermissionDecision.ALLOW_ONCE;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            decision = PermissionDecision.DENY;
             allowed = false;
         } catch (Exception e) {
+            decision = PermissionDecision.DENY;
             allowed = false;
         }
+        lastDecision = decision;
+        pendingRequest = null;
         emitEvent(new AgentEvent.PermissionResolved(scId, tool.name(),
                 allowed ? PermissionDecision.ALLOW_ONCE : PermissionDecision.DENY, allowed));
         if (!allowed) {

@@ -14,13 +14,19 @@ final class RunContext {
     private final String scId;
     private final long startedAt = System.currentTimeMillis();
     private final List<String> handoffTrail = new ArrayList<>();
+    private final ContextTracker contextTracker;
     private int llmCalls;
     private int toolCalls;
     private String currentAgentName;
 
     RunContext(String scId, String initialAgentName) {
+        this(scId, initialAgentName, null);
+    }
+
+    RunContext(String scId, String initialAgentName, ContextTracker contextTracker) {
         this.scId = scId == null ? "" : scId;
         this.currentAgentName = initialAgentName;
+        this.contextTracker = contextTracker;
     }
 
     String scId() {
@@ -29,6 +35,11 @@ final class RunContext {
 
     String currentAgentName() {
         return currentAgentName;
+    }
+
+    /** Per-run context accounting (null only in legacy {@link Runner} paths). */
+    ContextTracker contextTracker() {
+        return contextTracker;
     }
 
     void setCurrentAgentName(String name) {
@@ -43,14 +54,6 @@ final class RunContext {
 
     void incrementToolCalls() {
         toolCalls++;
-    }
-
-    int llmCalls() {
-        return llmCalls;
-    }
-
-    int toolCalls() {
-        return toolCalls;
     }
 
     void recordHandoff(Agent from, Agent to, String reason) {
