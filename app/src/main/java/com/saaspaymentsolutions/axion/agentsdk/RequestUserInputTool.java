@@ -1,7 +1,11 @@
 package com.saaspaymentsolutions.axion.agentsdk;
 
+import com.saaspaymentsolutions.axion.agentsdk.schema.ToolJsonSchema;
 import org.json.JSONArray;
 import org.json.JSONObject;
+
+import java.util.Arrays;
+import java.util.Map;
 
 /**
  * Codex parity: {@code request_user_input}. When the task is ambiguous or a
@@ -12,6 +16,11 @@ import org.json.JSONObject;
  *
  * <p>Fail-closed: with no handler attached, the tool returns an error telling
  * the model to proceed with the best default — it never blocks or crashes.</p>
+ *
+ * <p>This implementation uses {@link ToolJsonSchema} to construct the parameter
+ * schema, following the Codex pattern from
+ * {@code codex-rs/core/src/tools/handlers/request_user_input_spec.rs}.
+ * The critical fix: {@code items} is always a single schema object, never an array.</p>
  */
 public final class RequestUserInputTool implements AgentTool {
 
@@ -35,31 +44,35 @@ public final class RequestUserInputTool implements AgentTool {
 
     @Override
     public JSONObject parameters() {
-        try {
-            JSONObject question = new JSONObject().put("type", "string")
-                    .put("description", "The question to show the user. One or two sentences.");
-            JSONArray options = new JSONArray()
-                    .put(new JSONObject().put("type", "object")
-                            .put("properties", new JSONObject()
-                                    .put("label", new JSONObject().put("type", "string")
-                                            .put("description", "Short option name shown as a clickable choice."))
-                                    .put("description", new JSONObject().put("type", "string")
-                                            .put("description", "Optional. One line explaining the option.")))
-                            .put("required", new JSONArray().put("label")));
-            JSONObject schema = new JSONObject()
-                    .put("type", "object")
-                    .put("properties", new JSONObject()
-                            .put("question", question)
-                            .put("options", new JSONObject().put("type", "array").put("items", options)
-                                    .put("description", "Up to 4 concrete options. May be empty when free-form input is expected."))
-                            .put("allow_free_text", new JSONObject().put("type", "boolean")
-                                    .put("description", "True when the user may answer with their own text instead of an option.")))
-                    .put("required", new JSONArray().put("question"))
-                    .put("additionalProperties", false);
-            return schema;
-        } catch (org.json.JSONException e) {
-            return new JSONObject();
-        }
+        // Build the option schema: object with label (required) and description (optional)
+        Map<String, ToolJsonSchema> optionProps = ToolJsonSchema.properties()
+                .put("label", ToolJsonSchema.string("Short option name shown as a clickable choice."))
+                .put("description", ToolJsonSchema.string("Optional. One line explaining the option."))
+                .build();
+
+        ToolJsonSchema optionSchema = ToolJsonSchema.object(
+                optionProps,
+                Arrays.asList("label"),
+                false
+        );
+
+        // Build the main schema
+        Map<String, ToolJsonSchema> mainProps = ToolJsonSchema.properties()
+                .put("question", ToolJsonSchema.string("The question to show the user. One or two sentences."))
+                .put("options", ToolJsonSchema.array(
+                        optionSchema,
+                        "Up to 4 concrete options. May be empty when free-form input is expected."))
+                .put("allow_free_text", ToolJsonSchema.bool(
+                        "True when the user may answer with their own text instead of an option."))
+                .build();
+
+        ToolJsonSchema schema = ToolJsonSchema.object(
+                mainProps,
+                Arrays.asList("question"),
+                false
+        );
+
+        return schema.toJson();
     }
 
     @Override

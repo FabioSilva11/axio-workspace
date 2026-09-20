@@ -579,17 +579,46 @@ public final class AgentRuntime {
     }
 
     private JSONArray toolSchemasFor(List<AgentTool> tools) {
+        // Validate all tool schemas BEFORE building the payload (Codex-inspired
+        // pre-flight check). This catches schema errors like "items": [...]
+        // before they cause HTTP 400 from the provider.
+        List<String> validationErrors = com.saaspaymentsolutions.axion.agentsdk.schema.ToolSchemaNormalizer.validateToolset(tools);
+        if (!validationErrors.isEmpty()) {
+            // Log validation errors for debugging
+            android.util.Log.e("AgentRuntime", "Tool schema validation failed:");
+            for (String error : validationErrors) {
+                android.util.Log.e("AgentRuntime", error);
+            }
+            // Return empty array - this will cause the run to fail gracefully
+            // with a clear local error instead of an opaque HTTP 400
+            return new JSONArray();
+        }
+
         JSONArray schemas = new JSONArray();
         for (AgentTool tool : tools) {
             try {
+                // Normalize the schema to catch any remaining issues
+                com.saaspaymentsolutions.axion.agentsdk.schema.ToolSchemaNormalizer.ValidationResult result =
+                        com.saaspaymentsolutions.axion.agentsdk.schema.ToolSchemaNormalizer.normalize(
+                                tool.name(), tool.parameters());
+
+                if (!result.isValid()) {
+                    // Skip invalid tools (should not happen after validateToolset)
+                    android.util.Log.w("AgentRuntime",
+                            "Skipping tool " + tool.name() + ": " + result.getFullErrorMessage());
+                    continue;
+                }
+
                 schemas.put(new JSONObject()
                         .put("type", "function")
                         .put("function", new JSONObject()
                                 .put("name", tool.name())
                                 .put("description", tool.description())
-                                .put("parameters", tool.parameters())));
+                                .put("parameters", result.getSchema())));
             } catch (org.json.JSONException e) {
                 // A malformed tool schema must not kill the run; skip the tool.
+                android.util.Log.w("AgentRuntime",
+                        "Skipping tool " + tool.name() + " due to JSON error: " + e.getMessage());
             }
         }
         return schemas;
