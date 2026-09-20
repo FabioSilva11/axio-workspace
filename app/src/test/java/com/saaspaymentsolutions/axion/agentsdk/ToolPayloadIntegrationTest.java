@@ -223,7 +223,7 @@ public class ToolPayloadIntegrationTest {
         assertFalse("Must NOT have invalid items array pattern",
                 json.contains("\"items\":[{"));
         assertTrue("Must have valid items object pattern",
-                json.contains("\"items\":{"));
+                json.replaceAll("\\s+", "").contains("\"items\":{"));
     }
 
     // Helper to create default toolset

@@ -7,6 +7,7 @@ local.properties
 
 # Log/OS Files
 *.log
+logs/
 traffic_log.json
 traffic_log.jsonl
 traffic_log.txt

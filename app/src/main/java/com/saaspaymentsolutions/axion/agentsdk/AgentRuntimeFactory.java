@@ -43,7 +43,9 @@ public final class AgentRuntimeFactory {
                 .events(events)
                 .permissions(new PermissionLayer(ToolPolicy.interactive(), approvals, events))
                 .inputChannel(approvals)
-                .expectFileMutations(true)
+                // Removed: expectFileMutations(true) - Codex alignment
+                // The runtime no longer forces mutations for all chats.
+                // Text-only responses are valid for read-only queries.
                 .build();
     }
 }

@@ -42,7 +42,8 @@ public final class AgentRuntime {
     private final int maxOutputTokensPerTurn;
     private final boolean includeProjectInstructions;
     private final AgentToolRouter toolRouter;
-    private final boolean expectFileMutations;
+    // Removed: expectFileMutations (Codex alignment)
+    // The runtime no longer assumes all chats require file mutations.
     private final AiOperationContext builderOperationContext;
     private volatile boolean cancelRequested;
 
@@ -57,7 +58,7 @@ public final class AgentRuntime {
         this.inputChannel = builder.inputChannel;
         this.maxOutputTokensPerTurn = builder.maxOutputTokensPerTurn;
         this.includeProjectInstructions = builder.includeProjectInstructions;
-        this.expectFileMutations = builder.expectFileMutations;
+        // Removed: expectFileMutations assignment (Codex alignment)
         this.builderOperationContext = builder.operationContext;
     }
 
@@ -152,7 +153,7 @@ public final class AgentRuntime {
 
         Agent activeAgent = agent;
         int turns = 0;
-        int recoveryNudges = 0;
+        // Removed: recoveryNudges - Codex alignment: no artificial recovery
         toolRouter.resetForNewRun();
         try {
             while (turns++ < maxTurns) {
@@ -250,19 +251,15 @@ public final class AgentRuntime {
                         emit(new AgentEvent.RunCompleted(scId, false, reason));
                         return RunResult.failure(reason);
                     }
-                    // Recovery (item 15/test 15): the host declared this task
-                    // must end with a file mutation, and the model answered in
-                    // plain text without applying any. ONE nudge, then accept
-                    // the answer — never a loop.
-                    if (expectFileMutations
-                            && context.taskMemory() != null
-                            && context.taskMemory().appliedChanges().isEmpty()
-                            && recoveryNudges < 1) {
-                        recoveryNudges++;
-                        history.add(new ChatMessage(RECOVERY_NUDGE, ChatMessage.TYPE_USER,
-                                System.currentTimeMillis()));
-                        continue;
-                    }
+                    // Codex alignment: plain text responses are VALID completion.
+                    // The runtime does NOT fabricate tool calls or insert artificial
+                    // messages into the user history. Text-only responses are a
+                    // legitimate model decision, not an error condition.
+                    // 
+                    // Removed: expectFileMutations recovery logic that inserted
+                    // RECOVERY_NUDGE as a fake user message. This violated the
+                    // principle that the runtime should react to model behavior,
+                    // not force specific outcomes.
                     emit(new AgentEvent.AssistantMessage(scId, assistantText));
                     for (Guardrail guardrail : activeAgent.outputGuardrails()) {
                         GuardrailResult result = guardrail.checkOutput(assistantText);
@@ -562,36 +559,34 @@ public final class AgentRuntime {
     }
 
     // ------------------------------------------------------------------
-    // Recovery (item 15): plain-text answer while a mutation is expected
     // ------------------------------------------------------------------
+    // Removed: RECOVERY_NUDGE constant (Codex alignment)
+    // ------------------------------------------------------------------
+    // The runtime no longer inserts artificial user messages to force mutations.
+    // Text-only responses are valid model decisions, not error conditions.
 
-    /** Recovery nudge appended as a user message; at most ONE per run. */
-    static final String RECOVERY_NUDGE =
-            "[system] Sua resposta anterior foi apenas texto, mas a tarefa exige uma "
-                    + "alteração real de arquivo. Execute a mutation com a tool apropriada "
-                    + "(por exemplo apply_patch) em uma chamada estruturada de ferramenta. "
-                    + "Se já não houver nada a alterar, responda apenas com o texto final.";
-
-
-
-    private JSONArray toolSchemasFor(Agent agent) {
+    private JSONArray toolSchemasFor(Agent agent)
+            throws com.saaspaymentsolutions.axion.agentsdk.schema.ToolSchemaValidationException {
         return toolSchemasFor(agent.tools());
     }
 
-    private JSONArray toolSchemasFor(List<AgentTool> tools) {
+    /**
+     * Validates and builds tool schemas for provider payload.
+     * FAILS FAST if any schema is invalid - does NOT proceed with empty tools.
+     *
+     * @throws com.saaspaymentsolutions.axion.agentsdk.schema.ToolSchemaValidationException
+     *         if any tool schema is invalid
+     */
+    private JSONArray toolSchemasFor(List<AgentTool> tools)
+            throws com.saaspaymentsolutions.axion.agentsdk.schema.ToolSchemaValidationException {
         // Validate all tool schemas BEFORE building the payload (Codex-inspired
         // pre-flight check). This catches schema errors like "items": [...]
         // before they cause HTTP 400 from the provider.
         List<String> validationErrors = com.saaspaymentsolutions.axion.agentsdk.schema.ToolSchemaNormalizer.validateToolset(tools);
         if (!validationErrors.isEmpty()) {
-            // Log validation errors for debugging
-            android.util.Log.e("AgentRuntime", "Tool schema validation failed:");
-            for (String error : validationErrors) {
-                android.util.Log.e("AgentRuntime", error);
-            }
-            // Return empty array - this will cause the run to fail gracefully
-            // with a clear local error instead of an opaque HTTP 400
-            return new JSONArray();
+            // FAIL FAST: throw exception instead of returning empty array
+            // This ensures no HTTP request is made when schemas are invalid
+            throw new com.saaspaymentsolutions.axion.agentsdk.schema.ToolSchemaValidationException(validationErrors);
         }
 
         JSONArray schemas = new JSONArray();
@@ -603,10 +598,9 @@ public final class AgentRuntime {
                                 tool.name(), tool.parameters());
 
                 if (!result.isValid()) {
-                    // Skip invalid tools (should not happen after validateToolset)
-                    android.util.Log.w("AgentRuntime",
-                            "Skipping tool " + tool.name() + ": " + result.getFullErrorMessage());
-                    continue;
+                    // FAIL FAST: individual tool validation failed
+                    throw new com.saaspaymentsolutions.axion.agentsdk.schema.ToolSchemaValidationException(
+                            tool.name(), result.getErrorPath(), result.getErrorMessage());
                 }
 
                 schemas.put(new JSONObject()
@@ -616,9 +610,9 @@ public final class AgentRuntime {
                                 .put("description", tool.description())
                                 .put("parameters", result.getSchema())));
             } catch (org.json.JSONException e) {
-                // A malformed tool schema must not kill the run; skip the tool.
-                android.util.Log.w("AgentRuntime",
-                        "Skipping tool " + tool.name() + " due to JSON error: " + e.getMessage());
+                // FAIL FAST: JSON construction error
+                throw new com.saaspaymentsolutions.axion.agentsdk.schema.ToolSchemaValidationException(
+                        tool.name(), "parameters", "JSON construction error: " + e.getMessage());
             }
         }
         return schemas;
@@ -666,7 +660,7 @@ public final class AgentRuntime {
         private ApprovalHandler inputChannel;
         private int maxOutputTokensPerTurn = 2048;
         private boolean includeProjectInstructions = true;
-        private boolean expectFileMutations = false;
+        // Removed: expectFileMutations field (Codex alignment)
 
         public Builder(AgentLlmGateway gateway) {
             if (gateway == null) {
@@ -714,18 +708,6 @@ public final class AgentRuntime {
         /** M7: inject workspace AGENTS.md into the system prompt (default true). */
         public Builder includeProjectInstructions(boolean include) {
             this.includeProjectInstructions = include;
-            return this;
-        }
-
-        /**
-         * Declares that this task is expected to end with at least one file
-         * mutation (item 15 recovery): when the model finishes with plain
-         * text and nothing was mutated, the runtime sends ONE recovery nudge
-         * asking for a structured tool call, then accepts the answer. Default
-         * {@code false} — read-only flows never get nudged.
-         */
-        public Builder expectFileMutations(boolean expect) {
-            this.expectFileMutations = expect;
             return this;
         }
 

@@ -4,6 +4,8 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 import org.junit.Test;
 
+import java.util.Map;
+
 import static org.junit.Assert.*;
 
 /**
@@ -17,10 +19,15 @@ public class ToolSchemaNormalizerTest {
 
     @Test
     public void validArraySchema_withObjectItems_passes() throws Exception {
+        // Arrays appear nested inside tool-argument objects; the root itself
+        // must always be "object" for a tool parameters schema.
         JSONObject schema = new JSONObject()
-                .put("type", "array")
-                .put("items", new JSONObject()
-                        .put("type", "string"));
+                .put("type", "object")
+                .put("properties", new JSONObject()
+                        .put("items", new JSONObject()
+                                .put("type", "array")
+                                .put("items", new JSONObject()
+                                        .put("type", "string"))));
 
         ToolSchemaNormalizer.ValidationResult result =
                 ToolSchemaNormalizer.normalize("test_tool", schema);
@@ -36,8 +43,11 @@ public class ToolSchemaNormalizerTest {
                 .put(new JSONObject().put("type", "string"));
 
         JSONObject schema = new JSONObject()
-                .put("type", "array")
-                .put("items", itemsAsArray);
+                .put("type", "object")
+                .put("properties", new JSONObject()
+                        .put("items", new JSONObject()
+                                .put("type", "array")
+                                .put("items", itemsAsArray)));
 
         ToolSchemaNormalizer.ValidationResult result =
                 ToolSchemaNormalizer.normalize("test_tool", schema);

@@ -365,36 +365,39 @@ public class ToolCallContractEvalTest {
     }
 
     // ------------------------------------------------------------------
-    // Test 15: plain-text ending when a mutation is required → ONE nudge
+    // Codex alignment: plain text is a valid completion even when a
+    // mutation might have been expected. No recovery nudge, no fake
+    // user message, no loop (expectFileMutations was removed).
     // ------------------------------------------------------------------
 
     @Test
-    public void eval_recovery_plainTextWhenMutationExpected_oneNudgeThenStop() {
+    public void eval_plainText_mutationRequest_noRecoveryNoLoop() {
         RecordingApproval approvals = new RecordingApproval();
         approvals.decision = PermissionDecision.ALLOW;
-        // Turn 1: plain text, no mutation. Turn 2 (after the single nudge):
-        // plain text again → the run ends WITHOUT mutating, no loop.
+        // Turn 1: plain text with no mutation. The run ENDS immediately —
+        // no nudge is injected, the second scripted turn is never consumed.
         FakeAgentLlmGateway gateway = new FakeAgentLlmGateway(
                 FakeAgentLlmGateway.ScriptedTurn.text("Criei um patch para Main.java: ..."),
                 FakeAgentLlmGateway.ScriptedTurn.text("Não há mais nada a alterar."));
 
         AgentRuntime runtime = new AgentRuntime.Builder(gateway)
                 .events(events)
-                .expectFileMutations(true)
                 .build();
 
         RunResult result = runtime.run(agent(), "aplique o patch", SC);
 
         assertTrue(result.isSuccessful());
         assertEquals("no workspace mutation happened", 0, fs.files.size());
-        assertEquals("exactly one recovery nudge, then stop", 2, gateway.turnsConsumed());
+        assertEquals("exactly one turn, no recovery nudge", 1, gateway.turnsConsumed());
     }
 
     @Test
-    public void eval_recovery_afterNudge_structuredCallRuns() throws Exception {
+    public void eval_textResponse_mutationTask_neverRunsQueuedToolCalls() throws Exception {
         fs.writeText("src/A.java", "v1\n");
         RecordingApproval approvals = new RecordingApproval();
         approvals.decision = PermissionDecision.ALLOW;
+        // Turn 1 is plain text: a valid completion. Scripted tool turns that
+        // follow must never execute, because the run already ended.
         FakeAgentLlmGateway gateway = new FakeAgentLlmGateway(
                 FakeAgentLlmGateway.ScriptedTurn.text("Criei um patch para A.java: ..."),
                 FakeAgentLlmGateway.ScriptedTurn.toolCall("apply_patch",
@@ -404,14 +407,13 @@ public class ToolCallContractEvalTest {
 
         AgentRuntime runtime = new AgentRuntime.Builder(gateway)
                 .events(events)
-                .expectFileMutations(true)
                 .build();
 
         RunResult result = runtime.run(agentWithPatchTool(), "aplique o patch", SC);
 
         assertTrue(result.isSuccessful());
-        assertEquals("the nudged model executed the structured call", "v2\n",
-                fs.readText("src/A.java"));
+        assertEquals("only the first text turn was consumed", 1, gateway.turnsConsumed());
+        assertEquals("no tool ever executed", "v1\n", fs.readText("src/A.java"));
     }
 
     // ------------------------------------------------------------------
@@ -421,7 +423,7 @@ public class ToolCallContractEvalTest {
     private AgentRuntime runtime(AgentLlmGateway gateway, Agent agent, boolean expectMutations) {
         return new AgentRuntime.Builder(gateway)
                 .events(events)
-                .expectFileMutations(expectMutations)
+                // Removed: expectFileMutations parameter - no longer needed
                 .build();
     }
 
