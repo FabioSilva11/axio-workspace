@@ -113,12 +113,22 @@ public final class ApplyPatchTool implements AgentTool {
         return true; // Delete File ops and full rewrites are irreversible
     }
 
+    /**
+     * Backwards-compatible function path: the model-facing wire must be
+     * FREEFORM (the raw patch document, no envelope), but legacy hosts may
+     * still hand in {@code {"patch": "..."}} JSON; both decode to the same
+     * core execution.
+     */
     @Override
     public AgentToolResult execute(RunContext context, JSONObject args) {
         if (args == null || !args.has("patch")) {
             return AgentToolResult.error("Error: 'patch' argument is required.");
         }
-        String patch = args.optString("patch", "");
+        return apply(context, args.optString("patch", ""));
+    }
+
+    /** FREEFORM execution: the raw patch document, never JSON-wrapped. */
+    public AgentToolResult apply(RunContext context, String patch) {
         List<PatchParser.PatchOp> ops;
         try {
             ops = PatchParser.parse(patch);
