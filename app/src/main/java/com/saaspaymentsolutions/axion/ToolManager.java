@@ -1,6 +1,5 @@
 package com.saaspaymentsolutions.axion;
 
-import org.json.JSONArray;
 import org.json.JSONObject;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -95,42 +94,6 @@ public class ToolManager {
             return;
         }
         tools.put(tool.getName(), tool);
-    }
-
-    public JSONArray getToolsAsMCP() {
-        return getToolsAsMCP("agent");
-    }
-
-    /**
-     * Emits the OpenAI-style function-calling tool schema. The legacy name is
-     * kept because MCP tools are surfaced through the same chat-side JSON
-     * envelope, but the payload is NOT the MCP wire format.
-     */
-    public JSONArray getToolsAsFunctionSchema(String chatMode) {
-        return getToolsAsMCP(chatMode);
-    }
-
-    public JSONArray getToolsAsMCP(String chatMode) {
-        JSONArray array = new JSONArray();
-        for (Tool tool : getToolsForChatMode(chatMode)) {
-            try {
-                JSONObject toolObj = new JSONObject();
-                JSONObject function = new JSONObject();
-
-                function.put("name", tool.getName());
-                function.put("description", tool.getDescription());
-                function.put("parameters", tool.getParameters());
-
-                toolObj.put("type", "function");
-                toolObj.put("function", function);
-
-                array.put(toolObj);
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-        }
-
-        return array;
     }
 
     public ToolExecResult executeTool(String scId, String name, String arguments) {

@@ -6,8 +6,11 @@ import com.saaspaymentsolutions.axion.AiProviderService;
 import com.saaspaymentsolutions.axion.ChatMessage;
 import com.saaspaymentsolutions.axion.ContextBuilder;
 import com.saaspaymentsolutions.axion.Tool;
+import com.saaspaymentsolutions.axion.agentsdk.tools.ProviderCatalogPayload;
+import com.saaspaymentsolutions.axion.agentsdk.tools.ProviderToolCapabilitiesResolver;
 import com.saaspaymentsolutions.axion.agentsdk.tools.ToolCatalog;
 import com.saaspaymentsolutions.axion.agentsdk.tools.ToolSpec;
+import com.saaspaymentsolutions.axion.agentsdk.tools.ToolSpecSerializer;
 import com.saaspaymentsolutions.axion.toolcalling.ToolCall;
 
 import org.json.JSONArray;
@@ -56,6 +59,8 @@ public final class AxionAgentGateway implements AgentLlmGateway, AgentLlmGateway
     private volatile TokenUsage lastUsage;
     /** Frozen model name from the run's operation context (capability resolution). */
     private volatile String frozenModelName = "";
+    /** Last capability-aware catalog serialization of this gateway. */
+    private volatile ProviderCatalogPayload lastToolPayload;
 
     public AxionAgentGateway(AiProviderService aiService, String chatMode) {
         this(aiService, chatMode, null);
@@ -94,20 +99,37 @@ public final class AxionAgentGateway implements AgentLlmGateway, AgentLlmGateway
 
     /**
      * Canonical catalog turn (migration): the ToolCatalog is the single
-     * model-visible tool set. The transport boundary ({@link AiProviderService})
-     * serializes per provider capability, so the faithful per-kind catalog is
-     * handed through verbatim — providers that cannot carry native
-     * freeform/namespace/tool_search shapes receive the OpenAI-style function
-     * envelope via {@link ToolSpecSerializer} (explicit conversion, never a
-     * silent schema rewrite).
+     * model-visible tool set. The catalog is NEVER flattened by the caller —
+     * capability resolution happens HERE, at the wire, against the frozen
+     * provider/model of the turn
+     * ({@link ProviderToolCapabilitiesResolver#resolve}). The faithful
+     * per-kind serialization is handed to the transport; providers that
+     * cannot carry native freeform/namespace/tool_search shapes receive the
+     * downgrade the declared capability allows (explicit, recorded in
+     * {@link #lastToolPayload()}, never a silent schema rewrite).
      */
     @Override
     public LlmTurnOutput completeTurn(String systemPrompt,
                                       ToolCatalog catalog,
                                       List<ChatMessage> messages,
                                       AiOperationContext operationContext) throws Exception {
-        JSONArray schemas = catalog == null ? new JSONArray() : catalog.toFunctionEnvelope();
-        return completeTurn(systemPrompt, schemas, messages, operationContext);
+        String providerId = operationContext == null ? "" : operationContext.getProviderId();
+        String modelName = operationContext == null ? "" : operationContext.getModelName();
+        ProviderCatalogPayload payload = ToolSpecSerializer.toProviderPayload(
+                catalog, ProviderToolCapabilitiesResolver.resolve(providerId, modelName));
+        lastToolPayload = payload;
+        return completeTurn(systemPrompt, payload.payload(), messages, operationContext);
+    }
+
+    /** Last capability-aware catalog serialization (null before the first turn). */
+    public ProviderCatalogPayload lastToolPayload() {
+        return lastToolPayload;
+    }
+
+    /** Convenience read of the last serialization's wire payload. */
+    public JSONArray lastToolSerialization() {
+        ProviderCatalogPayload last = lastToolPayload;
+        return last == null ? new JSONArray() : last.payload();
     }
 
     @Override

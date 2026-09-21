@@ -35,6 +35,24 @@ public final class AgentRuntimeFactory {
         com.saaspaymentsolutions.axion.AiProviderService aiService =
                 com.saaspaymentsolutions.axion.AiProviderService.getInstance();
         AxionAgentGateway gateway = new AxionAgentGateway(aiService, "agent");
+        return createForChatWithGateway(gateway);
+    }
+
+    /**
+     * Production assembly over an explicit {@link AgentLlmGateway}. The memory
+     * owner is always constructed here — never by the caller — so the UI
+     * runtime, its registry, its permission layer, its approval input channel
+     * and its event stream are built exactly once and exactly the same way for
+     * every gateway. Tests drive the REAL factory with a scripted gateway and
+     * assert on the assembly's own pieces (no wiring duplication in tests).
+     *
+     * <p>{@code context} is deliberately not passed further: the whole
+     * assembly after the gateway is pure memory and runs on the JVM, which is
+     * what makes {@code ChatActivity → AgentManager → AgentRuntime} provably
+     * buildable and runnable under unit tests.</p>
+     */
+    public static AgentRuntime createForChatWithGateway(
+            com.saaspaymentsolutions.axion.agentsdk.AgentLlmGateway gateway) {
         // Item 16: the interactive resolver is the explicit approval
         // protocol — requests are resolved by requestId from the UI thread.
         ApprovalHandler.Resolver approvals = new ApprovalHandler.Resolver();

@@ -3,7 +3,9 @@ package com.saaspaymentsolutions.axion.agentsdk;
 import com.saaspaymentsolutions.axion.AiOperationContext;
 import com.saaspaymentsolutions.axion.ChatMessage;
 import com.saaspaymentsolutions.axion.ContextBuilder;
+import com.saaspaymentsolutions.axion.agentsdk.tools.ProviderToolCapabilities;
 import com.saaspaymentsolutions.axion.agentsdk.tools.ToolCatalog;
+import com.saaspaymentsolutions.axion.agentsdk.tools.ToolSpecSerializer;
 
 import org.json.JSONArray;
 
@@ -58,12 +60,15 @@ public interface AgentLlmGateway {
 
     /**
      * Runs one LLM turn against the canonical {@link ToolCatalog} instead of a
-     * pre-serialized schema array. The default implementation serializes the
-     * catalog to the OpenAI-style function envelope and delegates to
+     * pre-serialized schema array. The default implementation resolves the
+     * provider capability and serializes per capability via
+     * {@link ToolSpecSerializer#toProviderPayload} (FUNCTION_ONLY for every
+     * transport shipped by this app), then delegates to
      * {@link #completeTurn(String, JSONArray, List, AiOperationContext)}, which
-     * keeps every existing gateway implementation working untouched. Gateways
-     * that know the target provider's capability (freeform/namespace/tool_search
-     * vs function-only) override this to serialize per capability.
+     * keeps every existing gateway implementation working untouched. The
+     * catalog is NEVER flattened by the caller — freeform/namespace kinds stay
+     * faithful until the serializer — so a {@code FREEFORM → FUNCTION} downgrade
+     * only ever happens through the declared fallback path.
      *
      * @param systemPrompt     resolved system instruction for the active agent
      * @param catalog          the canonical model-visible catalog snapshot
@@ -74,7 +79,8 @@ public interface AgentLlmGateway {
                                        ToolCatalog catalog,
                                        List<ChatMessage> messages,
                                        AiOperationContext operationContext) throws Exception {
-        JSONArray schemas = catalog == null ? new JSONArray() : catalog.toFunctionEnvelope();
+        JSONArray schemas = ToolSpecSerializer.toProviderPayload(
+                catalog, ProviderToolCapabilities.FUNCTION_ONLY).payload();
         return completeTurn(systemPrompt, schemas, messages, operationContext);
     }
 

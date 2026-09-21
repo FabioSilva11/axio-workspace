@@ -106,6 +106,169 @@ public final class ToolSpecSerializer {
         return array;
     }
 
+    /**
+     * Capability-aware serialization (migration stage): the gateway never
+     * flattens the catalog up front — the {@link ToolCatalog} stays faithful
+     * until THIS method, which picks the wire representation per kind from the
+     * provider's declared {@link ProviderToolCapabilities}.
+     *
+     * <ul>
+     *   <li>FREEFORM → native freeform wire when the capability supports it,
+     *       else the freeform-to-function fallback ONLY when declared;</li>
+     *   <li>NAMESPACE → grouped namespace entry when supported, else explicit
+     *       flattening to top-level functions (recorded);</li>
+     *   <li>TOOL_SEARCH → native tool_search wire when supported, else
+     *       function fallback ONLY when declared, else omitted (never claimed
+     *       as supported);</li>
+     *   <li>FUNCTION → function envelope on every current transport.</li>
+     * </ul>
+     *
+     * The returned {@link ProviderCatalogPayload} records any fallback that
+     * occurred so a silent {@code FREEFORM → FUNCTION} downgrade is
+     * detectable and testable.
+     */
+    public static ProviderCatalogPayload toProviderPayload(
+            ToolCatalog catalog, ProviderToolCapabilities capabilities) {
+        return toProviderPayload(catalog == null
+                ? null : catalog.registrations(), capabilities);
+    }
+
+    /** Capability-aware serialization over an explicit registration list. */
+    public static ProviderCatalogPayload toProviderPayload(
+            List<ToolRegistration> registrations, ProviderToolCapabilities capabilities) {
+        ProviderToolCapabilities caps = capabilities == null
+                ? ProviderToolCapabilities.FUNCTION_ONLY : capabilities;
+        JSONArray out = new JSONArray();
+        if (registrations == null || registrations.isEmpty()) {
+            return new ProviderCatalogPayload(out, false, false, false);
+        }
+
+        if (caps.supportsNamespaces()) {
+            // Native path: namespaces are carried as grouped entries and every
+            // child keeps its own kind (function/freeform) inside the group.
+            List<ToolRegistration> plainTools = new ArrayList<>();
+            Map<String, ToolRegistration> namespaceDecls = new LinkedHashMap<>();
+            Map<String, List<ToolRegistration>> namespaced = new LinkedHashMap<>();
+            for (ToolRegistration reg : registrations) {
+                if (reg.spec().type() == ToolSpec.Type.NAMESPACE) {
+                    namespaceDecls.put(reg.spec().name().name(), reg);
+                    continue;
+                }
+                String ns = reg.spec().name().namespace();
+                if (ns.isEmpty()) {
+                    plainTools.add(reg);
+                } else {
+                    namespaced.computeIfAbsent(ns, k -> new ArrayList<>()).add(reg);
+                }
+            }
+            boolean[] fallback = new boolean[2];
+            for (ToolRegistration reg : plainTools) {
+                emitRegistration(out, reg, caps, fallback);
+            }
+            for (Map.Entry<String, ToolRegistration> decl : namespaceDecls.entrySet()) {
+                List<ToolRegistration> children = namespaced.get(decl.getKey());
+                if (children == null || children.isEmpty()) {
+                    continue;
+                }
+                out.put(toNamespaceEntry(decl.getValue(), children));
+            }
+            // Namespaced tools with no NAMESPACE declaration must not be lost:
+            // they stay visible as root-level entries of their own kind.
+            for (Map.Entry<String, List<ToolRegistration>> entry : namespaced.entrySet()) {
+                if (namespaceDecls.containsKey(entry.getKey())) {
+                    continue;
+                }
+                for (ToolRegistration orphan : entry.getValue()) {
+                    emitRegistration(out, orphan, caps, fallback);
+                }
+            }
+            return new ProviderCatalogPayload(out, fallback[0], false, fallback[1]);
+        }
+
+        // Fallback path (function-only transports): keep the registration
+        // order intact — the exact pre-capability envelope semantics. Kinds
+        // are downgraded ONLY when the capability declares the fallback.
+        boolean declaredNamespace = hasNamespaceDeclarationOwningChildren(registrations);
+        boolean[] fallback = new boolean[2];
+        for (ToolRegistration reg : registrations) {
+            if (reg.spec().type() == ToolSpec.Type.NAMESPACE) {
+                continue;
+            }
+            emitRegistration(out, reg, caps, fallback);
+        }
+        return new ProviderCatalogPayload(out, fallback[0], declaredNamespace, fallback[1]);
+    }
+
+    /** True when a NAMESPACE declaration owns at least one namespaced child. */
+    private static boolean hasNamespaceDeclarationOwningChildren(
+            List<ToolRegistration> registrations) {
+        Map<String, Integer> childCount = new LinkedHashMap<>();
+        for (ToolRegistration reg : registrations) {
+            String ns = reg.spec().name().namespace();
+            if (!ns.isEmpty()) {
+                childCount.merge(ns, 1, Integer::sum);
+            }
+        }
+        for (ToolRegistration reg : registrations) {
+            if (reg.spec().type() == ToolSpec.Type.NAMESPACE
+                    && childCount.containsKey(reg.spec().name().name())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Emits one registration per the capability decision. {@code fallback[0]}
+     * records a freeform downgrade, {@code fallback[1]} a tool_search
+     * downgrade. Sizes are mutable accumulators (no object allocation per
+     * entry on hot paths).
+     */
+    private static void emitRegistration(JSONArray out, ToolRegistration reg,
+                                         ProviderToolCapabilities caps, boolean[] fallback) {
+        switch (reg.spec().type()) {
+            case FUNCTION: {
+                JSONObject function = functionEntry(reg);
+                if (function != null) {
+                    out.put(function);
+                }
+                break;
+            }
+            case FREEFORM:
+                if (caps.supportsFreeformTools()) {
+                    JSONObject freeform = freeformEntry(reg);
+                    if (freeform != null) {
+                        out.put(freeform);
+                    }
+                } else if (caps.freeformFallbackToFunction()) {
+                    JSONObject downgraded = functionEnvelope(reg);
+                    if (downgraded != null) {
+                        out.put(downgraded);
+                        fallback[0] = true;
+                    }
+                }
+                // No support and no declared fallback: the kind is omitted —
+                // never silently flattened into a function.
+                break;
+            case TOOL_SEARCH:
+                if (caps.supportsToolSearch()) {
+                    JSONObject search = toolSearchEntry(reg);
+                    if (search != null) {
+                        out.put(search);
+                    }
+                } else if (caps.toolSearchFallbackToFunction()) {
+                    JSONObject downgraded = toolSearchEnvelope(reg);
+                    if (downgraded != null) {
+                        out.put(downgraded);
+                        fallback[1] = true;
+                    }
+                }
+                break;
+            default:
+                break;
+        }
+    }
+
     // ------------------------------------------------------------------
     // Wire shapes
     // ------------------------------------------------------------------
@@ -251,6 +414,29 @@ public final class ToolSpecSerializer {
                             .put("name", spec.qualifiedName())
                             .put("description", spec.description())
                             .put("parameters", spec.parameters()));
+        } catch (org.json.JSONException e) {
+            return null;
+        }
+    }
+
+    /**
+     * Explicit tool_search → function downgrade (capability fallback). The
+     * legacy {@link #functionEnvelope} intentionally does NOT cover
+     * TOOL_SEARCH (it predates the discovery tool); this separate helper keeps
+     * that legacy wire stable while allowing a declared fallback.
+     */
+    private static JSONObject toolSearchEnvelope(ToolRegistration reg) {
+        if (reg.spec().type() != ToolSpec.Type.TOOL_SEARCH) {
+            return null;
+        }
+        ToolSearchToolSpec search = (ToolSearchToolSpec) reg.spec();
+        try {
+            return new JSONObject()
+                    .put("type", "function")
+                    .put("function", new JSONObject()
+                            .put("name", search.qualifiedName())
+                            .put("description", search.description())
+                            .put("parameters", search.parameters()));
         } catch (org.json.JSONException e) {
             return null;
         }

@@ -32,6 +32,11 @@ public final class McpServerRegistry {
     public static final String NAMESPACE_DESCRIPTION = "MCP tools exposed by %s.";
 
     private final Map<String, McpServer> servers = new LinkedHashMap<>();
+    // Sanitized-name → canonical server name. Lookup-only index: aliases never
+    // pollute the servers map, so servers.values() stays a faithful, unordered
+    // view of DISTINCT servers (the old mcp__index:<sanitized> entry caused
+    // the same McpServer object to iterate twice in toolCount()/registerTools()).
+    private final Map<String, String> aliasIndex = new LinkedHashMap<>();
 
     /** A discovered MCP server: name plus its raw tool/resource definitions. */
     public static final class McpServer {
@@ -79,17 +84,36 @@ public final class McpServerRegistry {
         if (name == null || name.trim().isEmpty()) {
             throw new IllegalArgumentException("MCP server name must not be empty");
         }
-        servers.put(name.trim(), new McpServer(name.trim(), description));
-        // Index by sanitized name for collision-safe lookup.
-        String sanitized = McpToolIdentity.sanitize(name.trim());
-        if (!sanitized.equals(name.trim())) {
-            servers.putIfAbsent("mcp__index:" + sanitized, servers.get(name.trim()));
+        String canonical = name.trim();
+        servers.put(canonical, new McpServer(canonical, description));
+        // Sanitized-name lookup index (never stored as a second server entry).
+        String sanitized = McpToolIdentity.sanitize(canonical);
+        if (!sanitized.equals(canonical)) {
+            aliasIndex.put(sanitized, canonical);
         }
+    }
+
+    /** The canonical server under the raw or sanitized name, or {@code null}. */
+    public McpServer getServer(String name) {
+        if (name == null) {
+            return null;
+        }
+        McpServer direct = servers.get(name);
+        if (direct != null) {
+            return direct;
+        }
+        String canonical = aliasIndex.get(name);
+        return canonical == null ? null : servers.get(canonical);
+    }
+
+    /** Whether a server with the given raw or sanitized name exists. */
+    public boolean hasServer(String name) {
+        return getServer(name) != null;
     }
 
     /** Adds a tool definition to an existing server (returns false if unknown). */
     public boolean addTool(String serverName, JSONObject toolDefinition) {
-        McpServer server = servers.get(serverName);
+        McpServer server = getServer(serverName);
         if (server == null) {
             return false;
         }
@@ -101,7 +125,7 @@ public final class McpServerRegistry {
         for (JSONObject existing : server.tools) {
             if (toolName.equals(existing.optString("name", "").trim())) {
                 throw new IllegalArgumentException(
-                        "Duplicate MCP tool '" + toolName + "' in server '" + serverName + "'");
+                        "Duplicate MCP tool '" + toolName + "' in server '" + server.name() + "'");
             }
         }
         server.addTool(toolDefinition);
@@ -110,7 +134,7 @@ public final class McpServerRegistry {
 
     /** Adds a resource definition to an existing server. */
     public boolean addResource(String serverName, JSONObject resourceDefinition) {
-        McpServer server = servers.get(serverName);
+        McpServer server = getServer(serverName);
         if (server == null) {
             return false;
         }
@@ -154,12 +178,142 @@ public final class McpServerRegistry {
                 continue;
             }
             String prefix = namespaceFor(server.name);
-            com.saaspaymentsolutions.axion.agentsdk.tools.ToolSpec ns = 
+            com.saaspaymentsolutions.axion.agentsdk.tools.ToolSpec ns =
                     com.saaspaymentsolutions.axion.agentsdk.tools.ToolSpec.namespace(
                             com.saaspaymentsolutions.axion.agentsdk.tools.ToolName.plain(prefix),
                             String.format(NAMESPACE_DESCRIPTION, server.name),
                             Collections.emptyList());
-            registry.register(com.saaspaymentsolutions.axion.agentsdk.tools.ToolRegistration
+            registry.registerOrReplace(com.saaspaymentsolutions.axion.agentsdk.tools.ToolRegistration
+                    .builder(ns)
+                    .source("mcp:" + server.name)
+                    .build());
+        }
+    }
+
+    /**
+     * Reconciles ONE server against a fresh {@code tools/list} payload: tools
+     * added, updated AND removed both in the live {@link AxionToolRegistry}
+     * and in the server's raw definitions. Discovery hosts call this on every
+     * refresh so stale MCP tools can never survive a re-list — the registry is
+     * the single model-facing source. Returns {@code false} for an unknown
+     * server (callers should addServer() first).
+     */
+    public boolean syncTools(AxionToolRegistry registry, McpToolAdapter.McpInvoker invoker,
+                             String serverName, List<JSONObject> toolDefinitions) {
+        McpServer server = getServer(serverName);
+        if (server == null) {
+            return false;
+        }
+        Map<String, JSONObject> live = new LinkedHashMap<>();
+        if (toolDefinitions != null) {
+            for (JSONObject def : toolDefinitions) {
+                if (def == null) {
+                    continue;
+                }
+                String toolName = def.optString("name", "").trim();
+                if (toolName.isEmpty()) {
+                    throw new IllegalArgumentException("MCP tool definition has no 'name'");
+                }
+                if (live.containsKey(toolName)) {
+                    throw new IllegalArgumentException(
+                            "Duplicate MCP tool '" + toolName + "' in the tools/list payload");
+                }
+                live.put(toolName, def);
+            }
+        }
+        // Removed tools vanish from BOTH the registry and the raw definitions.
+        Map<String, JSONObject> previous = new LinkedHashMap<>();
+        for (JSONObject raw : new ArrayList<>(server.tools)) {
+            String name = raw.optString("name", "").trim();
+            previous.put(name, raw);
+            if (!live.containsKey(name)) {
+                McpToolIdentity identity = McpToolIdentity.of(server.name, name);
+                registry.remove(identity.qualifiedName());
+                server.tools.remove(raw);
+            }
+        }
+        // Added/updated tools replace the raw definition and (re)register the
+        // model-facing FUNCTION tool (registerOrReplace = refresh-safe).
+        for (Map.Entry<String, JSONObject> entry : live.entrySet()) {
+            JSONObject stale = previous.get(entry.getKey());
+            if (stale != null) {
+                server.tools.remove(stale);
+            }
+            server.tools.add(entry.getValue());
+            McpToolIdentity identity = McpToolIdentity.of(server.name, entry.getKey());
+            String description = entry.getValue().optString("description",
+                    "MCP tool '" + entry.getKey() + "' exposed by server '" + server.name + "'.");
+            JSONObject inputSchema = entry.getValue().optJSONObject("inputSchema");
+            if (inputSchema == null) {
+                inputSchema = entry.getValue().optJSONObject("parameters");
+            }
+            registry.registerOrReplace(McpToolAdapter.toRegistration(
+                    identity, description, inputSchema, invoker, ""));
+        }
+        reconcileNamespace(registry, server);
+        return true;
+    }
+
+    /** Convenience overload: feeds a raw {@code tools/list} JSON array. */
+    public boolean syncTools(AxionToolRegistry registry, McpToolAdapter.McpInvoker invoker,
+                             String serverName, JSONArray toolDefinitions) {
+        List<JSONObject> defs = new ArrayList<>();
+        if (toolDefinitions != null) {
+            for (int i = 0; i < toolDefinitions.length(); i++) {
+                defs.add(toolDefinitions.optJSONObject(i));
+            }
+        }
+        return syncTools(registry, invoker, serverName, defs);
+    }
+
+    /**
+     * Removes a server and every model-facing artifact it contributed: each
+     * {@code mcp__<server>.<tool>} registration and its namespace declaration.
+     * The raw definitions are dropped too, so a later registerTools cannot
+     * resurrect a disabled server's tools.
+     */
+    public boolean removeServer(String serverName, AxionToolRegistry registry) {
+        McpServer server = getServer(serverName);
+        if (server == null) {
+            return false;
+        }
+        for (JSONObject raw : new ArrayList<>(server.tools)) {
+            McpToolIdentity identity = McpToolIdentity.of(
+                    server.name, raw.optString("name", "").trim());
+            registry.remove(identity.qualifiedName());
+            server.tools.remove(raw);
+        }
+        com.saaspaymentsolutions.axion.agentsdk.tools.ToolName nsName =
+                com.saaspaymentsolutions.axion.agentsdk.tools.ToolName.plain(namespaceFor(server.name));
+        if (registry.contains(nsName)) {
+            registry.remove(nsName);
+        }
+        String canonical = server.name;
+        servers.remove(canonical);
+        aliasIndex.values().remove(canonical);
+        return true;
+    }
+
+    /** Keeps the server's namespace declaration in sync with its tool set. */
+    private void reconcileNamespace(AxionToolRegistry registry, McpServer server) {
+        com.saaspaymentsolutions.axion.agentsdk.tools.ToolName nsName =
+                com.saaspaymentsolutions.axion.agentsdk.tools.ToolName.plain(namespaceFor(server.name));
+        boolean hasNamespace = registry.get(nsName) != null
+                && registry.get(nsName).spec().type()
+                == com.saaspaymentsolutions.axion.agentsdk.tools.ToolSpec.Type.NAMESPACE;
+        if (server.tools.isEmpty()) {
+            if (hasNamespace) {
+                registry.remove(nsName);
+            }
+            return;
+        }
+        if (!hasNamespace) {
+            com.saaspaymentsolutions.axion.agentsdk.tools.ToolSpec ns =
+                    com.saaspaymentsolutions.axion.agentsdk.tools.ToolSpec.namespace(
+                            nsName,
+                            String.format(NAMESPACE_DESCRIPTION, server.name),
+                            Collections.emptyList());
+            registry.registerOrReplace(com.saaspaymentsolutions.axion.agentsdk.tools.ToolRegistration
                     .builder(ns)
                     .source("mcp:" + server.name)
                     .build());
