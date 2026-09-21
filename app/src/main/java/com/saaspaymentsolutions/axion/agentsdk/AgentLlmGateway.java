@@ -3,6 +3,7 @@ package com.saaspaymentsolutions.axion.agentsdk;
 import com.saaspaymentsolutions.axion.AiOperationContext;
 import com.saaspaymentsolutions.axion.ChatMessage;
 import com.saaspaymentsolutions.axion.ContextBuilder;
+import com.saaspaymentsolutions.axion.agentsdk.tools.ToolCatalog;
 
 import org.json.JSONArray;
 
@@ -54,6 +55,28 @@ public interface AgentLlmGateway {
                                JSONArray tools,
                                List<ChatMessage> messages,
                                AiOperationContext operationContext) throws Exception;
+
+    /**
+     * Runs one LLM turn against the canonical {@link ToolCatalog} instead of a
+     * pre-serialized schema array. The default implementation serializes the
+     * catalog to the OpenAI-style function envelope and delegates to
+     * {@link #completeTurn(String, JSONArray, List, AiOperationContext)}, which
+     * keeps every existing gateway implementation working untouched. Gateways
+     * that know the target provider's capability (freeform/namespace/tool_search
+     * vs function-only) override this to serialize per capability.
+     *
+     * @param systemPrompt     resolved system instruction for the active agent
+     * @param catalog          the canonical model-visible catalog snapshot
+     * @param messages         mutable conversation history; the gateway appends this turn
+     * @param operationContext frozen provider/model selection (may be {@code null})
+     */
+    default LlmTurnOutput completeTurn(String systemPrompt,
+                                       ToolCatalog catalog,
+                                       List<ChatMessage> messages,
+                                       AiOperationContext operationContext) throws Exception {
+        JSONArray schemas = catalog == null ? new JSONArray() : catalog.toFunctionEnvelope();
+        return completeTurn(systemPrompt, schemas, messages, operationContext);
+    }
 
     /** Cancels the in-flight request, if any. */
     default void cancel() {

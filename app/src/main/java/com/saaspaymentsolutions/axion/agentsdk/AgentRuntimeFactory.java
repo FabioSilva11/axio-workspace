@@ -39,10 +39,19 @@ public final class AgentRuntimeFactory {
         // protocol — requests are resolved by requestId from the UI thread.
         ApprovalHandler.Resolver approvals = new ApprovalHandler.Resolver();
         EventStream events = new EventStream();
+        // Item (registry-backed catalog): the SINGLE model-facing tool source.
+        // Core/Codex-parity tools are registered once here; the coordinator
+        // agent's legacy AgentTool[] tools are adapted into this registry by
+        // the runtime at run time (AgentTool → adapter), never the reverse.
+        com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRegistry registry =
+                new com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRegistry();
+        com.saaspaymentsolutions.axion.agentsdk.tools.WorkspaceToolProvider.registerCoreTools(
+                registry, approvals);
         return new AgentRuntime.Builder(gateway)
                 .events(events)
                 .permissions(new PermissionLayer(ToolPolicy.interactive(), approvals, events))
                 .inputChannel(approvals)
+                .toolRegistry(registry)
                 // Removed: expectFileMutations(true) - Codex alignment
                 // The runtime no longer forces mutations for all chats.
                 // Text-only responses are valid for read-only queries.

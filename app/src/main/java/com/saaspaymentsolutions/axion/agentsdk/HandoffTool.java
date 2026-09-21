@@ -9,9 +9,10 @@ import java.util.Collections;
  * mirroring openai-agents-js: declaring handoffs materializes a
  * {@code transfer_to_<agent>} function the model can call.
  */
-final class HandoffTool implements AgentTool {
+public final class HandoffTool implements AgentTool {
 
-    static final String TRANSFER_PREFIX = "transfer_to_";
+    /** Handoff tool names always keep this prefix ({@code transfer_to_<agent>}). */
+    public static final String TRANSFER_PREFIX = "transfer_to_";
     /** Matches valid Java identifiers, which is also a safe function-name subset. */
     private static final String NAME_PATTERN = "[A-Za-z_][A-Za-z0-9_]*";
 

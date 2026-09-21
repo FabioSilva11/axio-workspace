@@ -6,6 +6,8 @@ import com.saaspaymentsolutions.axion.AiProviderService;
 import com.saaspaymentsolutions.axion.ChatMessage;
 import com.saaspaymentsolutions.axion.ContextBuilder;
 import com.saaspaymentsolutions.axion.Tool;
+import com.saaspaymentsolutions.axion.agentsdk.tools.ToolCatalog;
+import com.saaspaymentsolutions.axion.agentsdk.tools.ToolSpec;
 import com.saaspaymentsolutions.axion.toolcalling.ToolCall;
 
 import org.json.JSONArray;
@@ -88,6 +90,24 @@ public final class AxionAgentGateway implements AgentLlmGateway, AgentLlmGateway
     /** Provider usage of the most recent completed turn (null before the first). */
     public TokenUsage lastTurnUsage() {
         return lastUsage;
+    }
+
+    /**
+     * Canonical catalog turn (migration): the ToolCatalog is the single
+     * model-visible tool set. The transport boundary ({@link AiProviderService})
+     * serializes per provider capability, so the faithful per-kind catalog is
+     * handed through verbatim — providers that cannot carry native
+     * freeform/namespace/tool_search shapes receive the OpenAI-style function
+     * envelope via {@link ToolSpecSerializer} (explicit conversion, never a
+     * silent schema rewrite).
+     */
+    @Override
+    public LlmTurnOutput completeTurn(String systemPrompt,
+                                      ToolCatalog catalog,
+                                      List<ChatMessage> messages,
+                                      AiOperationContext operationContext) throws Exception {
+        JSONArray schemas = catalog == null ? new JSONArray() : catalog.toFunctionEnvelope();
+        return completeTurn(systemPrompt, schemas, messages, operationContext);
     }
 
     @Override
