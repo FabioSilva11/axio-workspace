@@ -7,6 +7,10 @@ import static org.junit.Assert.assertTrue;
 
 import com.saaspaymentsolutions.axion.FileChangeTracker;
 import com.saaspaymentsolutions.axion.FileChangeTrackerWorkspaceTest.FakeWorkspaceFileSystem;
+import com.saaspaymentsolutions.axion.agentsdk.tools.ApplyPatchExecutor;
+import com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRegistry;
+import com.saaspaymentsolutions.axion.agentsdk.tools.ToolRegistration;
+import com.saaspaymentsolutions.axion.agentsdk.tools.WorkspaceToolProvider;
 import com.saaspaymentsolutions.axion.toolcalling.ToolCall;
 import com.saaspaymentsolutions.axion.workspace.Workspace;
 import com.saaspaymentsolutions.axion.workspace.WorkspaceManager;
@@ -40,6 +44,7 @@ public class ToolCallContractEvalTest {
     private FakeWorkspaceFileSystem fs;
     private EventStream events;
     private List<AgentEvent> received;
+    private AxionToolRegistry registry;
     private static final String SC = "sc_contract";
 
     @Before
@@ -51,6 +56,7 @@ public class ToolCallContractEvalTest {
         events = new EventStream(Runnable::run, 512);
         received = new ArrayList<>();
         events.subscribe(received::add);
+        registry = contractRegistry();
         RuntimeFileContext.clearForTest();
     }
 
@@ -119,8 +125,7 @@ public class ToolCallContractEvalTest {
         fs.writeText("src/Main.java", "class Main {}\n");
         FakeAgentLlmGateway gateway = new FakeAgentLlmGateway(
                 FakeAgentLlmGateway.ScriptedTurn.toolCall("apply_patch",
-                        new JSONObject().put("patch",
-                                "*** Begin Patch\n*** Update File: src/Main.java\n@@\n-class Main {}\n+class Main { int x; }\n*** End Patch").toString()),
+                        "*** Begin Patch\n*** Update File: src/Main.java\n@@\n-class Main {}\n+class Main { int x; }\n*** End Patch"),
                 FakeAgentLlmGateway.ScriptedTurn.text("pronto"));
 
         RunResult result = runtime(gateway, agentWithPatchTool(), false).run(agentWithPatchTool(), "edita", SC);
@@ -145,8 +150,7 @@ public class ToolCallContractEvalTest {
         // as assistant text.
         FakeAgentLlmGateway gateway = new FakeAgentLlmGateway(
                 FakeAgentLlmGateway.ScriptedTurn.toolCall("apply_patch",
-                        new JSONObject().put("patch",
-                                "*** Begin Patch\n*** Update File: src/Main.java\n@@\n-class Main {}\n+class Main { int y; }\n*** End Patch").toString()),
+                        "*** Begin Patch\n*** Update File: src/Main.java\n@@\n-class Main {}\n+class Main { int y; }\n*** End Patch"),
                 FakeAgentLlmGateway.ScriptedTurn.text("ok"));
 
         RunResult result = runtime(gateway, agentWithPatchTool(), false).run(agentWithPatchTool(), "edita", SC);
@@ -174,8 +178,8 @@ public class ToolCallContractEvalTest {
         FakeAgentLlmGateway gateway = new FakeAgentLlmGateway(
                 FakeAgentLlmGateway.ScriptedTurn.toolCalls(
                         call("read_file", "call_1", new JSONObject().put("uri", "src/A.java")),
-                        call("apply_patch", "call_2", new JSONObject().put("patch",
-                                "*** Begin Patch\n*** Update File: src/B.java\n@@\n-b\n+B2\n*** End Patch")),
+                        call("apply_patch", "call_2",
+                                "*** Begin Patch\n*** Update File: src/B.java\n@@\n-b\n+B2\n*** End Patch"),
                         call("read_file", "call_3", new JSONObject().put("uri", "src/A.java"))),
                 FakeAgentLlmGateway.ScriptedTurn.text("fim"));
 
@@ -191,10 +195,10 @@ public class ToolCallContractEvalTest {
         fs.writeText("src/A.java", "v1\n");
         FakeAgentLlmGateway gateway = new FakeAgentLlmGateway(
                 FakeAgentLlmGateway.ScriptedTurn.toolCalls(
-                        call("apply_patch", "call_1", new JSONObject().put("patch",
-                                "*** Begin Patch\n*** Update File: src/A.java\n@@\n-v1\n+v2\n*** End Patch")),
-                        call("apply_patch", "call_2", new JSONObject().put("patch",
-                                "*** Begin Patch\n*** Update File: src/A.java\n@@\n-v2\n+v3\n*** End Patch"))),
+                        call("apply_patch", "call_1",
+                                "*** Begin Patch\n*** Update File: src/A.java\n@@\n-v1\n+v2\n*** End Patch"),
+                        call("apply_patch", "call_2",
+                                "*** Begin Patch\n*** Update File: src/A.java\n@@\n-v2\n+v3\n*** End Patch")),
                 FakeAgentLlmGateway.ScriptedTurn.text("fim"));
 
         RunResult result = runtime(gateway, agentWithPatchTool(), false).run(agentWithPatchTool(), "edita duas vezes", SC);
@@ -215,10 +219,10 @@ public class ToolCallContractEvalTest {
         // dedupe by callId → exactly one execution, one mutation.
         FakeAgentLlmGateway gateway = new FakeAgentLlmGateway(
                 FakeAgentLlmGateway.ScriptedTurn.toolCalls(
-                        call("apply_patch", "call_dup", new JSONObject().put("patch",
-                                "*** Begin Patch\n*** Update File: src/A.java\n@@\n-v1\n+v2\n*** End Patch")),
-                        call("apply_patch", "call_dup", new JSONObject().put("patch",
-                                "*** Begin Patch\n*** Update File: src/A.java\n@@\n-v1\n+v9\n*** End Patch"))),
+                        call("apply_patch", "call_dup",
+                                "*** Begin Patch\n*** Update File: src/A.java\n@@\n-v1\n+v2\n*** End Patch"),
+                        call("apply_patch", "call_dup",
+                                "*** Begin Patch\n*** Update File: src/A.java\n@@\n-v1\n+v9\n*** End Patch")),
                 FakeAgentLlmGateway.ScriptedTurn.text("fim"));
 
         RunResult result = runtime(gateway, agentWithPatchTool(), false).run(agentWithPatchTool(), "edita", SC);
@@ -277,8 +281,8 @@ public class ToolCallContractEvalTest {
         FakeAgentLlmGateway gateway = new FakeAgentLlmGateway(
                 FakeAgentLlmGateway.ScriptedTurn.textWithToolCall(
                         "Vou atualizar o arquivo agora.",
-                        call("apply_patch", "call_mix", new JSONObject().put("patch",
-                                "*** Begin Patch\n*** Update File: src/A.java\n@@\n-v1\n+v2\n*** End Patch"))),
+                        call("apply_patch", "call_mix",
+                                "*** Begin Patch\n*** Update File: src/A.java\n@@\n-v1\n+v2\n*** End Patch")),
                 FakeAgentLlmGateway.ScriptedTurn.text("concluí"));
 
         RunResult result = runtime(gateway, agentWithPatchTool(), false).run(agentWithPatchTool(), "edita", SC);        assertTrue(result.isSuccessful());
@@ -316,12 +320,12 @@ public class ToolCallContractEvalTest {
         approvals.decision = PermissionDecision.ALLOW;
         FakeAgentLlmGateway gateway = new FakeAgentLlmGateway(
                 FakeAgentLlmGateway.ScriptedTurn.toolCall("apply_patch",
-                        new JSONObject().put("patch",
-                                "*** Begin Patch\n*** Update File: src/A.java\n@@\n-v1\n+vapproved\n*** End Patch").toString()),
+                        "*** Begin Patch\n*** Update File: src/A.java\n@@\n-v1\n+vapproved\n*** End Patch"),
                 FakeAgentLlmGateway.ScriptedTurn.text("aprovado e aplicado"));
 
         AgentRuntime runtime = new AgentRuntime.Builder(gateway)
                 .events(events)
+                .toolRegistry(registry)
                 .permissions(new PermissionLayer(
                         new ToolPolicy.Builder().mutation(ToolPolicy.Rule.ASK_USER).build(),
                         approvals,
@@ -350,8 +354,7 @@ public class ToolCallContractEvalTest {
                 new WorkspaceIdentity(SC, "ws-contract", "file:///ws", "ws", ""), fs);
         FakeAgentLlmGateway gateway = new FakeAgentLlmGateway(
                 FakeAgentLlmGateway.ScriptedTurn.toolCall("apply_patch",
-                        new JSONObject().put("patch",
-                                "*** Begin Patch\n*** Add File: src/New.java\n+class New {}\n*** End Patch").toString()),
+                        "*** Begin Patch\n*** Add File: src/New.java\n+class New {}\n*** End Patch"),
                 FakeAgentLlmGateway.ScriptedTurn.text("fim"));
 
         RunResult result = runtime(gateway, agentWithPatchTool(), false).run(agentWithPatchTool(), "cria", SC);
@@ -382,6 +385,7 @@ public class ToolCallContractEvalTest {
 
         AgentRuntime runtime = new AgentRuntime.Builder(gateway)
                 .events(events)
+                .toolRegistry(registry)
                 .build();
 
         RunResult result = runtime.run(agent(), "aplique o patch", SC);
@@ -401,12 +405,12 @@ public class ToolCallContractEvalTest {
         FakeAgentLlmGateway gateway = new FakeAgentLlmGateway(
                 FakeAgentLlmGateway.ScriptedTurn.text("Criei um patch para A.java: ..."),
                 FakeAgentLlmGateway.ScriptedTurn.toolCall("apply_patch",
-                        new JSONObject().put("patch",
-                                "*** Begin Patch\n*** Update File: src/A.java\n@@\n-v1\n+v2\n*** End Patch").toString()),
+                        "*** Begin Patch\n*** Update File: src/A.java\n@@\n-v1\n+v2\n*** End Patch"),
                 FakeAgentLlmGateway.ScriptedTurn.text("aplicado de verdade"));
 
         AgentRuntime runtime = new AgentRuntime.Builder(gateway)
                 .events(events)
+                .toolRegistry(registry)
                 .build();
 
         RunResult result = runtime.run(agentWithPatchTool(), "aplique o patch", SC);
@@ -423,8 +427,33 @@ public class ToolCallContractEvalTest {
     private AgentRuntime runtime(AgentLlmGateway gateway, Agent agent, boolean expectMutations) {
         return new AgentRuntime.Builder(gateway)
                 .events(events)
+                .toolRegistry(registry)
                 // Removed: expectFileMutations parameter - no longer needed
                 .build();
+    }
+
+    /** The contract registry: apply_patch over the test fs + a read_file stub. */
+    private AxionToolRegistry contractRegistry() {
+        AxionToolRegistry result = new AxionToolRegistry();
+        ToolRegistration patch = ToolRegistration.freeform(
+                        "apply_patch",
+                        "The `apply_patch` tool can be used to edit files. This is a FREEFORM tool.",
+                        WorkspaceToolProvider.APPLY_PATCH_GRAMMAR,
+                        new ApplyPatchExecutor((context, stream, scId) -> new ApplyPatchTool(
+                                scId == null || scId.isEmpty() ? context.scId() : scId,
+                                stream, fs)))
+                .source("core")
+                .fileMutation(true)
+                .destructive(true)
+                .build();
+        result.register(patch);
+        ToolRegistration read = ToolRegistration.function(
+                        "read_file", "reads a file", new JSONObject())
+                .executor(context -> AgentToolResult.success("read ok"))
+                .source("test")
+                .build();
+        result.register(read);
+        return result;
     }
 
     private static Agent agent() {
@@ -432,42 +461,13 @@ public class ToolCallContractEvalTest {
     }
 
     private static Agent agentWithPatchTool() {
-        // No stream: the router lends the run's own EventStream, so
-        // FileChanged flows on the same channel the test observes.
-        return Agent.Builder.forName("coder", "You edit files.")
-                .tools(new ApplyPatchTool(SC, null, fsStatic()))
-                .build();
+        // Tools live in the registry; the agent carries none.
+        return Agent.Builder.forName("coder", "You edit files.").build();
     }
 
     private static Agent agentWithPatchAndEcho() {
-        AgentTool echo = new AgentTool() {
-            @Override
-            public String name() {
-                return "read_file";
-            }
-
-            @Override
-            public String description() {
-                return "reads a file";
-            }
-
-            @Override
-            public JSONObject parameters() {
-                try {
-                    return new JSONObject().put("type", "object");
-                } catch (JSONException e) {
-                    throw new AssertionError(e);
-                }
-            }
-
-            @Override
-            public AgentToolResult execute(RunContext context, JSONObject args) {
-                return AgentToolResult.success("read ok");
-            }
-        };
-        return Agent.Builder.forName("coder", "You edit files.")
-                .tools(echo, new ApplyPatchTool(SC, null, fsStatic()))
-                .build();
+        // Tools live in the registry; the agent carries none.
+        return Agent.Builder.forName("coder", "You edit files.").build();
     }
 
     private static FakeWorkspaceFileSystem fsStatic() {
@@ -479,6 +479,11 @@ public class ToolCallContractEvalTest {
 
     private static ToolCall call(String name, String id, JSONObject args) {
         return new ToolCall(name, args.toString(), id);
+    }
+
+    /** Raw-arguments overload for FREEFORM tools (input reaches the executor verbatim). */
+    private static ToolCall call(String name, String id, String rawArgs) {
+        return new ToolCall(name, rawArgs, id);
     }
 
     private int toolCallStartedCount() {

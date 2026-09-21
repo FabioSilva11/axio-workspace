@@ -5,6 +5,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
+import com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRegistry;
 import com.saaspaymentsolutions.axion.ChatMessage;
 import com.saaspaymentsolutions.axion.toolcalling.ToolCall;
 import com.saaspaymentsolutions.axion.workspace.LocalFolderWorkspaceFileSystem;
@@ -42,6 +43,7 @@ public class RuntimeM367IntegrationTest {
                 FakeAgentLlmGateway.ScriptedTurn.text("should never be produced"));
         RunBudget budget = new RunBudget(64);
         AgentRuntime runtime = new AgentRuntime.Builder(gateway)
+                .toolRegistry(emptyRegistry())
                 .budget(budget)
                 .maxOutputTokensPerTurn(2048)
                 .build();
@@ -60,6 +62,7 @@ public class RuntimeM367IntegrationTest {
                 FakeAgentLlmGateway.ScriptedTurn.text("resposta curta"));
         RunBudget budget = new RunBudget(100_000);
         AgentRuntime runtime = new AgentRuntime.Builder(gateway)
+                .toolRegistry(emptyRegistry())
                 .budget(budget)
                 .maxOutputTokensPerTurn(1024)
                 .build();
@@ -85,6 +88,7 @@ public class RuntimeM367IntegrationTest {
         stream.subscribe(received::add);
 
         AgentRuntime runtime = new AgentRuntime.Builder(gateway)
+                .toolRegistry(emptyRegistry())
                 .events(stream)
                 .build();
         RunResult result = runtime.run(scriptedAgent(), "oi", "sc_m6");
@@ -103,7 +107,9 @@ public class RuntimeM367IntegrationTest {
     public void deltaListenerIsClearedAfterTurn() {
         StreamingGateway gateway = new StreamingGateway(
                 FakeAgentLlmGateway.ScriptedTurn.text("fim"));
-        AgentRuntime runtime = new AgentRuntime.Builder(gateway).build();
+        AgentRuntime runtime = new AgentRuntime.Builder(gateway)
+                .toolRegistry(emptyRegistry())
+                .build();
         runtime.run(scriptedAgent(), "oi", "sc_m6b");
         assertTrue("listener must be detached after the turn",
                 gateway.activeListener == null || gateway.clearedAfterTurn);
@@ -127,6 +133,7 @@ public class RuntimeM367IntegrationTest {
         RecordingGateway gateway = new RecordingGateway(
                 FakeAgentLlmGateway.ScriptedTurn.text("ok"));
         AgentRuntime runtime = new AgentRuntime.Builder(gateway)
+                .toolRegistry(emptyRegistry())
                 .includeProjectInstructions(true)
                 .build();
 
@@ -146,6 +153,7 @@ public class RuntimeM367IntegrationTest {
         RecordingGateway gateway = new RecordingGateway(
                 FakeAgentLlmGateway.ScriptedTurn.text("ok"));
         AgentRuntime runtime = new AgentRuntime.Builder(gateway)
+                .toolRegistry(emptyRegistry())
                 .includeProjectInstructions(true)
                 .build();
 
@@ -164,6 +172,7 @@ public class RuntimeM367IntegrationTest {
         RecordingGateway gateway = new RecordingGateway(
                 FakeAgentLlmGateway.ScriptedTurn.text("ok"));
         AgentRuntime runtime = new AgentRuntime.Builder(gateway)
+                .toolRegistry(emptyRegistry())
                 .includeProjectInstructions(false)
                 .build();
 
@@ -205,6 +214,11 @@ public class RuntimeM367IntegrationTest {
     private Agent scriptedAgent() {
         return Agent.Builder.forName("coordinator", "You are a helpful coding agent.")
                 .build();
+    }
+
+    /** A registry carrying no model-facing tools (these tests need none). */
+    private static AxionToolRegistry emptyRegistry() {
+        return new AxionToolRegistry();
     }
 
     /** Records system prompts/requests; behaves like the scripted fake. */

@@ -16,7 +16,8 @@ import java.util.List;
  * <p><b>Contract (tool-call execution architecture):</b> the v2 path NEVER
  * derives tool calls from assistant text. Only the provider's structured
  * envelope (native tool calls, already accumulated by id during streaming)
- * reaches the {@link AgentRuntime}'s {@link AgentToolRouter}. Assistant text
+ * reaches the {@link AgentRuntime}'s {@link com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRouter}.
+ * Assistant text
  * is displayable content and stays displayable — a JSON/XML/DSML block in
  * the text is text, not a tool call.</p>
  *

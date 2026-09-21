@@ -7,10 +7,8 @@ import static org.junit.Assert.assertTrue;
 
 import com.saaspaymentsolutions.axion.FileChangeTracker;
 import com.saaspaymentsolutions.axion.FileChangeTrackerWorkspaceTest;
-import com.saaspaymentsolutions.axion.Tool;
-import com.saaspaymentsolutions.axion.ToolManager;
-import com.saaspaymentsolutions.axion.ToolExecResult;
-import com.saaspaymentsolutions.axion.port.VoidToolWrapper;
+import com.saaspaymentsolutions.axion.agentsdk.tools.ToolRegistration;
+import com.saaspaymentsolutions.axion.port.VoidPortToolsService;
 import com.saaspaymentsolutions.axion.workspace.Workspace;
 import com.saaspaymentsolutions.axion.workspace.WorkspaceManager;
 
@@ -116,8 +114,8 @@ public class FileMutationFlowTest {
         fs.writeText("src/Target.kt", "val a = 1\n");
         ApplyPatchTool tool = new ApplyPatchTool("sc_mutation", null, fs);
 
-        AgentToolResult result = tool.execute(null, new JSONObject().put("patch",
-                "*** Begin Patch\n*** Delete File: src/Target.kt\n*** End Patch"));
+        AgentToolResult result = tool.apply(null,
+                "*** Begin Patch\n*** Delete File: src/Target.kt\n*** End Patch");
 
         assertTrue(result.output().contains("Deleted src/Target.kt"));
         assertFalse("delete must be real before it is reported", fs.exists("src/Target.kt"));
@@ -129,8 +127,8 @@ public class FileMutationFlowTest {
         fs.failDeletes = true;
         ApplyPatchTool tool = new ApplyPatchTool("sc_mutation", null, fs);
 
-        AgentToolResult result = tool.execute(null, new JSONObject().put("patch",
-                "*** Begin Patch\n*** Delete File: src/Target.kt\n*** End Patch"));
+        AgentToolResult result = tool.apply(null,
+                "*** Begin Patch\n*** Delete File: src/Target.kt\n*** End Patch");
 
         assertTrue("the tool must not claim success when the delete failed",
                 result.isError());
@@ -145,14 +143,14 @@ public class FileMutationFlowTest {
         fs.failDeletes = true;
         ApplyPatchTool tool = new ApplyPatchTool("sc_mutation", null, fs);
 
-        AgentToolResult result = tool.execute(null, new JSONObject().put("patch",
+        AgentToolResult result = tool.apply(null,
                 "*** Begin Patch\n"
                         + "*** Update File: src/B.kt\n"
                         + "@@\n"
                         + "-val b = 2\n"
                         + "+val b = 42\n"
                         + "*** Delete File: src/C.kt\n"
-                        + "*** End Patch"));
+                        + "*** End Patch");
 
         assertTrue(result.isError());
         assertEquals("earlier writes must be rolled back to the pre-patch content",
@@ -167,7 +165,7 @@ public class FileMutationFlowTest {
         fs.writeText("src/Delete.java", "obsolete\n");
         ApplyPatchTool tool = new ApplyPatchTool("sc_mutation", null, fs);
 
-        AgentToolResult result = tool.execute(null, new JSONObject().put("patch",
+        AgentToolResult result = tool.apply(null,
                 "*** Begin Patch\n"
                         + "*** Add File: src/New.java\n"
                         + "+class New {}\n"
@@ -176,7 +174,7 @@ public class FileMutationFlowTest {
                         + "-int a = 1;\n"
                         + "+int a = 10;\n"
                         + "*** Delete File: src/Delete.java\n"
-                        + "*** End Patch"));
+                        + "*** End Patch");
 
         assertFalse(result.isError());
         assertEquals("class New {}\n", fs.readText("src/New.java"));
@@ -185,36 +183,37 @@ public class FileMutationFlowTest {
     }
 
     // ------------------------------------------------------------------
-    // RegistryToolAdapter metadata preservation + PermissionLayer routing
+    // registry metadata preservation + PermissionLayer routing
     // ------------------------------------------------------------------
 
     @Test
-    public void registryAdapter_preservesMutationDestructiveAndApprovalMetadata() {
-        Tool deleteTool = new VoidToolWrapper("delete_file_or_folder", "Delete a file.",
-                new JSONObject(), true, true, true);
-        Tool readTool = new VoidToolWrapper("read_file", "Reads a file.",
-                new JSONObject(), false, false, false);
-        ToolManager manager = new ToolManager();
-        manager.registerTool(deleteTool);
-        manager.registerTool(readTool);
+    public void registryMetadata_preservesMutationDestructiveAndApprovalFlags() {
+        ToolRegistration delete = ToolRegistration.function(
+                        "delete_file_or_folder", "Delete a file.", new JSONObject())
+                .requiresApproval(true)
+                .fileMutation(true)
+                .destructive(true)
+                .build();
+        ToolRegistration read = ToolRegistration.function(
+                        "read_file", "Reads a file.", new JSONObject())
+                .fileMutation(false)
+                .destructive(false)
+                .build();
 
-        AgentTool adaptedDelete = WorkspaceAgents.fromRegistryTool(deleteTool, manager);
-        AgentTool adaptedRead = WorkspaceAgents.fromRegistryTool(readTool, manager);
-
-        assertTrue(adaptedDelete.isFileMutation());
-        assertTrue(adaptedDelete.isDestructive());
-        assertTrue(adaptedDelete.requiresApproval());
-        assertFalse(adaptedRead.isFileMutation());
-        assertFalse(adaptedRead.isDestructive());
+        assertTrue(delete.isFileMutation());
+        assertTrue(delete.isDestructive());
+        assertTrue(delete.requiresApproval());
+        assertFalse(read.isFileMutation());
+        assertFalse(read.isDestructive());
     }
 
     @Test
     public void permissionLayer_classifiesMutatingToolsFromMetadata_notUnknown() {
         // A mutation-only tool (non-destructive) must follow the mutation rule.
-        AgentTool edit = adapt("edit_file", false, false, true);
-        AgentTool delete = adapt("delete_file_or_folder", true, true, true);
-        AgentTool patch = new ApplyPatchTool("sc_mutation", null);
-        AgentTool read = adapt("read_file", false, false, false);
+        ToolRegistration edit = registration("edit_file", false, false, true);
+        ToolRegistration delete = registration("delete_file_or_folder", true, true, true);
+        ToolRegistration patch = registration("apply_patch", true, true, true);
+        ToolRegistration read = registration("read_file", false, false, false);
 
         PermissionLayer layer = new PermissionLayer(
                 new ToolPolicy.Builder()
@@ -300,7 +299,7 @@ public class FileMutationFlowTest {
 
     @Test
     public void permissionLayer_nameFallbackCoversMetadataLessAdapters() {
-        AgentTool metadataLess = metadataLessTool("delete_file_or_folder");
+        ToolRegistration metadataLess = registration("delete_file_or_folder", false, false, false);
 
         PermissionLayer layer = new PermissionLayer(
                 new ToolPolicy.Builder()
@@ -310,7 +309,7 @@ public class FileMutationFlowTest {
                         .build(),
                 null, null);
 
-        assertEquals("a metadata-less mutating adapter must not fall through to unknown",
+        assertEquals("a metadata-less mutating registration must not fall through to unknown",
                 ToolPolicy.Rule.ASK_USER, layer.ruleForPublicForTest(metadataLess));
     }
 
@@ -323,37 +322,18 @@ public class FileMutationFlowTest {
                 Workspace.PermissionState.GRANTED, 0L, "");
     }
 
-    /** Runs a Void registry tool end-to-end through the ToolManager. */
+    /** Runs a Void registry tool end-to-end through VoidPortToolsService. */
     private static String executeVoidTool(String name, JSONObject args) {
-        ToolManager manager = new ToolManager();
-        manager.registerTool(new VoidToolWrapper(name, name, new JSONObject(),
-                false, false, false));
-        ToolExecResult exec = manager.executeTool("sc_mutation", name, args.toString());
-        return exec.ok ? exec.output : "Error: " + exec.output;
+        return VoidPortToolsService.executeTool("sc_mutation", name, args);
     }
 
-    /** Adapts a Void registry tool through the production adapter. */
-    private static AgentTool adapt(String name, boolean approval, boolean destructive,
-                                   boolean mutation) {
-        ToolManager manager = new ToolManager();
-        return WorkspaceAgents.fromRegistryTool(
-                new VoidToolWrapper(name, name, new JSONObject(),
-                        approval, destructive, mutation),
-                manager);
-    }
-
-    /** AgentTool without metadata flags, simulating an adapter that lost them. */
-    private static AgentTool metadataLessTool(String name) {
-        return new AgentTool() {
-            @Override public String name() { return name; }
-            @Override public String description() { return name; }
-            @Override public JSONObject parameters() { return new JSONObject(); }
-            @Override public boolean isFileMutation() { return false; }
-            @Override public boolean isDestructive() { return false; }
-            @Override public boolean requiresApproval() { return false; }
-            @Override public AgentToolResult execute(RunContext context, JSONObject args) {
-                return AgentToolResult.success("");
-            }
-        };
+    /** A FUNCTION registration carrying the metadata flags. */
+    private static ToolRegistration registration(String name, boolean approval,
+                                                 boolean destructive, boolean mutation) {
+        return ToolRegistration.function(name, name, new JSONObject())
+                .requiresApproval(approval)
+                .fileMutation(mutation)
+                .destructive(destructive)
+                .build();
     }
 }

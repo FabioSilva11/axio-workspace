@@ -1,173 +1,167 @@
 package com.saaspaymentsolutions.axion.agentsdk;
 
 import com.saaspaymentsolutions.axion.agentsdk.schema.ToolSchemaNormalizer;
+import com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRegistry;
+import com.saaspaymentsolutions.axion.agentsdk.tools.ProviderCatalogPayload;
+import com.saaspaymentsolutions.axion.agentsdk.tools.ProviderToolCapabilities;
+import com.saaspaymentsolutions.axion.agentsdk.tools.ToolCatalog;
+import com.saaspaymentsolutions.axion.agentsdk.tools.ToolSpecSerializer;
+import com.saaspaymentsolutions.axion.agentsdk.tools.WorkspaceToolProvider;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.junit.Test;
 
-import java.util.ArrayList;
-import java.util.List;
-
 import static org.junit.Assert.*;
 
 /**
- * Integration test that validates the complete tool payload structure that
- * would be sent to the LLM provider. This test ensures that no tool in the
- * default toolset generates the invalid {@code "items": [...]} pattern.
+ * Integration test validating the complete tool payload that would be sent to
+ * an LLM provider. The payload now comes from the single canonical path —
+ * {@link AxionToolRegistry} → {@link ToolCatalog} → {@link ToolSpecSerializer}
+ * — and this test ensures no entry produces the invalid {@code "items": [...]}
+ * pattern that caused HTTP 400.
  */
 public class ToolPayloadIntegrationTest {
 
+    private static final String INVALID_ITEMS_PATTERN = "\"items\":[{";
+    private static final String VALID_ITEMS_PATTERN = "\"items\":{";
+
+    /** The core Codex-parity registry (apply_patch, request_user_input, ...). */
+    private AxionToolRegistry coreRegistry() {
+        AxionToolRegistry registry = new AxionToolRegistry();
+        WorkspaceToolProvider.registerCoreTools(registry, null, null);
+        return registry;
+    }
+
+    /** FUNCTION_ONLY wire — what every current provider transport receives. */
+    private JSONArray functionOnlyPayload() {
+        return ToolSpecSerializer.toProviderPayload(
+                ToolCatalog.from(coreRegistry()), ProviderToolCapabilities.FUNCTION_ONLY).payload();
+    }
+
+    /** NATIVE per-kind wire — freeform/namespace/tool_search preserved. */
+    private JSONArray nativePayload() {
+        return ToolSpecSerializer.toProviderPayload(
+                ToolCatalog.from(coreRegistry()), ProviderToolCapabilities.NATIVE_ALL).payload();
+    }
+
+    /** The FUNCTION entry with the given qualified name, or {@code null}. */
+    private JSONObject functionEntry(String qualifiedName) {
+        JSONArray payload = functionOnlyPayload();
+        for (int i = 0; i < payload.length(); i++) {
+            JSONObject function = payload.optJSONObject(i).optJSONObject("function");
+            if (function != null && qualifiedName.equals(function.optString("name"))) {
+                return function;
+            }
+        }
+        return null;
+    }
+
     @Test
     public void defaultToolset_allSchemasValid() {
-        List<AgentTool> tools = createDefaultToolset();
+        JSONArray payload = functionOnlyPayload();
+        assertFalse("The core registry must expose tools", payload.length() == 0);
 
-        // Validate using the normalizer
-        List<String> errors = ToolSchemaNormalizer.validateToolset(tools);
-
-        if (!errors.isEmpty()) {
-            StringBuilder message = new StringBuilder("Tool validation failed:\n");
-            for (String error : errors) {
-                message.append(error).append("\n");
+        for (int i = 0; i < payload.length(); i++) {
+            JSONObject entry = payload.optJSONObject(i);
+            if (entry == null || !"function".equals(entry.optString("type"))) {
+                continue;
             }
-            fail(message.toString());
+            JSONObject function = entry.optJSONObject("function");
+            ToolSchemaNormalizer.ValidationResult result =
+                    ToolSchemaNormalizer.normalize(function.optString("name"),
+                            function.optJSONObject("parameters"));
+            assertTrue("Tool " + function.optString("name") + " must have valid schema: " +
+                            (result.isValid() ? "OK" : result.getFullErrorMessage()),
+                    result.isValid());
         }
-
-        // All tools passed validation
-        assertTrue("All default tools should be valid", errors.isEmpty());
     }
 
     @Test
-    public void requestUserInputTool_payloadStructure() throws Exception {
-        RequestUserInputTool tool = new RequestUserInputTool(null);
+    public void requestUserInputTool_payloadStructure() {
+        JSONObject function = functionEntry("request_user_input");
+        assertNotNull("request_user_input must be in the FUNCTION_ONLY payload", function);
 
-        // Build the payload structure as it would be sent to the provider
-        JSONObject functionDeclaration = new JSONObject()
-                .put("type", "function")
-                .put("function", new JSONObject()
-                        .put("name", tool.name())
-                        .put("description", tool.description())
-                        .put("parameters", tool.parameters()));
+        JSONObject parameters = function.optJSONObject("parameters");
+        assertEquals("object", parameters.optString("type"));
 
-        // Extract and validate the critical part
-        JSONObject parameters = functionDeclaration
-                .getJSONObject("function")
-                .getJSONObject("parameters");
+        JSONObject questions = parameters
+                .optJSONObject("properties")
+                .optJSONObject("questions");
+        assertNotNull("questions property must exist", questions);
+        assertEquals("array", questions.optString("type"));
 
-        // Validate root
-        assertEquals("object", parameters.getString("type"));
-
-        // Validate options array
-        JSONObject options = parameters
-                .getJSONObject("properties")
-                .getJSONObject("options");
-        assertEquals("array", options.getString("type"));
-
-        // CRITICAL: items must be a JSONObject, not JSONArray
-        Object items = options.get("items");
-        assertTrue("items must be JSONObject, not JSONArray",
+        // CRITICAL: items must be a JSONObject, not a JSONArray
+        Object items = questions.opt("items");
+        assertTrue("items must be a JSONObject, not a JSONArray",
                 items instanceof JSONObject);
+        assertEquals("object", ((JSONObject) items).optString("type"));
 
-        // Validate items structure
-        JSONObject itemsObj = (JSONObject) items;
-        assertEquals("object", itemsObj.getString("type"));
-
-        // Validate the complete payload can be serialized
-        String json = functionDeclaration.toString();
-        assertNotNull("Payload must be serializable", json);
-        assertTrue("Payload must contain function name",
-                json.contains("request_user_input"));
-
-        // Verify the invalid pattern is NOT present
-        assertFalse("Payload must NOT contain items array pattern",
-                json.contains("\"items\":["));
+        // Verify the invalid pattern is NOT present anywhere in the payload
+        String json = functionOnlyPayload().toString();
+        assertFalse("Payload must NOT contain the items-array pattern",
+                json.contains(INVALID_ITEMS_PATTERN));
     }
 
     @Test
-    public void applyPatchTool_payloadStructure() throws Exception {
-        ApplyPatchTool tool = new ApplyPatchTool("sc1", null);
-
-        JSONObject functionDeclaration = new JSONObject()
-                .put("type", "function")
-                .put("function", new JSONObject()
-                        .put("name", tool.name())
-                        .put("description", tool.description())
-                        .put("parameters", tool.parameters()));
-
-        // Validate
-        JSONObject parameters = functionDeclaration
-                .getJSONObject("function")
-                .getJSONObject("parameters");
-
-        assertEquals("object", parameters.getString("type"));
-        assertTrue("Must have patch property",
-                parameters.getJSONObject("properties").has("patch"));
-
-        // Verify serialization
-        String json = functionDeclaration.toString();
-        assertNotNull(json);
-        assertTrue(json.contains("apply_patch"));
+    public void applyPatchTool_isFreeformOnNativeWire() {
+        JSONArray payload = nativePayload();
+        JSONObject freeform = null;
+        for (int i = 0; i < payload.length(); i++) {
+            JSONObject entry = payload.optJSONObject(i);
+            JSONObject ff = entry == null || !"freeform".equals(entry.optString("type"))
+                    ? null : entry.optJSONObject("freeform");
+            if (ff != null && "apply_patch".equals(ff.optString("name"))) {
+                freeform = ff;
+                break;
+            }
+        }
+        assertNotNull("apply_patch must stay FREEFORM on the native wire", freeform);
+        JSONObject format = freeform.optJSONObject("format");
+        assertNotNull("freeform must carry a format", format);
+        assertEquals("grammar", format.optString("type"));
+        assertEquals("lark", format.optString("syntax"));
+        assertTrue("format must describe the patch grammar",
+                format.optString("definition", "").contains("Begin Patch"));
     }
 
     @Test
-    public void contextRemainingTool_payloadStructure() throws Exception {
-        ContextRemainingTool tool = new ContextRemainingTool();
+    public void applyPatchTool_downgradesOnlyWhenDeclaredHolds() {
+        // FUNCTION_ONLY declares the freeform->function fallback: the tool must
+        // appear as a function envelope AND the downgrade must be recorded.
+        ProviderCatalogPayload catalogPayload = ToolSpecSerializer.toProviderPayload(
+                ToolCatalog.from(coreRegistry()), ProviderToolCapabilities.FUNCTION_ONLY);
+        assertTrue("the freeform downgrade must be recorded",
+                catalogPayload.freeformFellBack());
+        assertNotNull("apply_patch must still reach the function-only transport",
+                functionEntry("apply_patch"));
+    }
 
-        JSONObject functionDeclaration = new JSONObject()
-                .put("type", "function")
-                .put("function", new JSONObject()
-                        .put("name", tool.name())
-                        .put("description", tool.description())
-                        .put("parameters", tool.parameters()));
+    @Test
+    public void contextRemainingTool_payloadStructure() {
+        JSONObject function = functionEntry("get_context_remaining");
+        assertNotNull("get_context_remaining must be in the FUNCTION_ONLY payload", function);
 
-        // Validate
-        JSONObject parameters = functionDeclaration
-                .getJSONObject("function")
-                .getJSONObject("parameters");
-
-        assertEquals("object", parameters.getString("type"));
+        JSONObject parameters = function.optJSONObject("parameters");
+        assertEquals("object", parameters.optString("type"));
         assertFalse("Should not allow additional properties",
                 parameters.optBoolean("additionalProperties", true));
 
-        // Verify serialization
-        String json = functionDeclaration.toString();
-        assertNotNull(json);
-        assertTrue(json.contains("get_context_remaining"));
+        assertNotNull("work must declare an output_schema",
+                function.optJSONObject("output_schema"));
     }
 
     @Test
-    public void fullToolsArray_canBeSerialized() throws Exception {
-        List<AgentTool> tools = createDefaultToolset();
+    public void fullToolsArray_canBeSerialized() {
+        JSONArray payload = functionOnlyPayload();
 
-        // Build the tools array as it would be sent to the provider
-        JSONArray toolsArray = new JSONArray();
-        for (AgentTool tool : tools) {
-            // Normalize schema
-            ToolSchemaNormalizer.ValidationResult result =
-                    ToolSchemaNormalizer.normalize(tool.name(), tool.parameters());
-
-            assertTrue("Tool " + tool.name() + " must have valid schema: " +
-                            (result.isValid() ? "OK" : result.getFullErrorMessage()),
-                    result.isValid());
-
-            JSONObject functionDeclaration = new JSONObject()
-                    .put("type", "function")
-                    .put("function", new JSONObject()
-                            .put("name", tool.name())
-                            .put("description", tool.description())
-                            .put("parameters", result.getSchema()));
-
-            toolsArray.put(functionDeclaration);
-        }
-
-        // Verify the complete payload can be serialized
-        String json = toolsArray.toString();
+        String json = payload.toString();
         assertNotNull("Tools array must be serializable", json);
 
-        // Verify no invalid patterns
+        // Verify no invalid patterns anywhere
         assertFalse("Must NOT contain the buggy items array pattern",
-                json.contains("\"items\":[{"));
+                json.contains(INVALID_ITEMS_PATTERN));
 
-        // Verify expected tools are present
+        // Expected tools are present (function-only transport)
         assertTrue("Must contain apply_patch", json.contains("apply_patch"));
         assertTrue("Must contain request_user_input", json.contains("request_user_input"));
         assertTrue("Must contain get_context_remaining", json.contains("get_context_remaining"));
@@ -175,11 +169,8 @@ public class ToolPayloadIntegrationTest {
 
     @Test
     public void fullPayload_asItWouldBeSentToProvider() throws Exception {
-        // This test simulates the exact payload structure that would be sent
-        // to a provider like custom_mocklocal (the one that was failing with HTTP 400)
-
-        List<AgentTool> tools = createDefaultToolset();
-
+        // This test simulates the exact payload structure sent to a provider
+        // like custom_mocklocal (the one that was failing with HTTP 400).
         JSONObject request = new JSONObject()
                 .put("model", "gpt-oss-120b-medium")
                 .put("messages", new JSONArray()
@@ -190,48 +181,17 @@ public class ToolPayloadIntegrationTest {
                                 .put("role", "user")
                                 .put("content", "Hello")));
 
-        // Build tools array
-        JSONArray toolsArray = new JSONArray();
-        for (AgentTool tool : tools) {
-            ToolSchemaNormalizer.ValidationResult result =
-                    ToolSchemaNormalizer.normalize(tool.name(), tool.parameters());
+        request.put("tools", functionOnlyPayload());
 
-            if (!result.isValid()) {
-                fail("Tool " + tool.name() + " has invalid schema: " +
-                        result.getFullErrorMessage());
-            }
-
-            toolsArray.put(new JSONObject()
-                    .put("type", "function")
-                    .put("function", new JSONObject()
-                            .put("name", tool.name())
-                            .put("description", tool.description())
-                            .put("parameters", result.getSchema())));
-        }
-
-        request.put("tools", toolsArray);
-
-        // Serialize the complete request
         String json = request.toString(2); // Pretty print
         assertNotNull("Request must be serializable", json);
 
-        // Log for manual inspection if needed
-        System.out.println("Complete payload structure:");
-        System.out.println(json.substring(0, Math.min(2000, json.length())));
-
         // Verify critical constraints
         assertFalse("Must NOT have invalid items array pattern",
-                json.contains("\"items\":[{"));
+                json.contains(INVALID_ITEMS_PATTERN));
         assertTrue("Must have valid items object pattern",
-                json.replaceAll("\\s+", "").contains("\"items\":{"));
-    }
-
-    // Helper to create default toolset
-    private List<AgentTool> createDefaultToolset() {
-        List<AgentTool> tools = new ArrayList<>();
-        tools.add(new ApplyPatchTool("sc1", null));
-        tools.add(new RequestUserInputTool(null));
-        tools.add(new ContextRemainingTool());
-        return tools;
+                json.replaceAll("\\s+", "").contains(VALID_ITEMS_PATTERN));
+        assertTrue("Must contain request_user_input",
+                json.contains("request_user_input"));
     }
 }

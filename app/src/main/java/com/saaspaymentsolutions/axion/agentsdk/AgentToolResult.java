@@ -1,7 +1,7 @@
 package com.saaspaymentsolutions.axion.agentsdk;
 
 /**
- * Typed result of an {@link AgentTool} execution, mirroring the
+ * Typed result of a tool execution, mirroring the
  * text/structured-content shape of openai-agents-js tool output.
  */
 public final class AgentToolResult {

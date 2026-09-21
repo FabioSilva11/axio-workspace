@@ -1,6 +1,5 @@
 package com.saaspaymentsolutions.axion.agentsdk.tools;
 
-import com.saaspaymentsolutions.axion.agentsdk.AgentTool;
 import com.saaspaymentsolutions.axion.agentsdk.AgentToolResult;
 import com.saaspaymentsolutions.axion.agentsdk.EventStream;
 import com.saaspaymentsolutions.axion.agentsdk.PermissionLayer;
@@ -185,9 +184,8 @@ public final class AxionToolRouter {
 
         // ---- 4) Permission layer -----------------------------------------
         if (permissions != null) {
-            AgentTool facade = new RegistrationFacade(registration);
             PermissionLayer.Outcome outcome = permissions.check(
-                    facade, new ToolCall(call.toolName(), call.arguments(), call.callId()), scId);
+                    registration, new ToolCall(call.toolName(), call.arguments(), call.callId()), scId);
             if (outcome == PermissionLayer.Outcome.BLOCKED) {
                 Routed blocked = new Routed(call,
                         AgentToolResult.error("Error: execution of '"
@@ -256,7 +254,7 @@ public final class AxionToolRouter {
             if (type == ToolSpec.Type.FREEFORM) {
                 // Freeform tools receive the RAW wire input, never JSON args.
                 ctx = new ToolExecutionContext(registration, scId, call.callId(), context,
-                        null, call.arguments(), call.arguments());
+                        null, call.arguments(), call.arguments(), events);
             } else {
                 JSONObject args = parseArguments(call.arguments());
                 if (args == null) {
@@ -264,7 +262,7 @@ public final class AxionToolRouter {
                             + call.toolName() + "'.");
                 }
                 ctx = new ToolExecutionContext(registration, scId, call.callId(), context,
-                        args, null, call.arguments());
+                        args, null, call.arguments(), events);
             }
             return executor.execute(ctx);
         } catch (Exception e) {
@@ -283,61 +281,6 @@ public final class AxionToolRouter {
             return new JSONObject(value);
         } catch (Exception e) {
             return null;
-        }
-    }
-
-    /**
-     * Adapts a {@link ToolRegistration} to the {@link AgentTool} shape the
-     * {@link PermissionLayer} expects (name, policy flags), delegating policy
-     * classification to the registration metadata and spec.
-     */
-    private static final class RegistrationFacade implements AgentTool {
-        private final ToolRegistration registration;
-
-        RegistrationFacade(ToolRegistration registration) {
-            this.registration = registration;
-        }
-
-        @Override
-        public String name() {
-            return registration.spec().name().qualifiedName();
-        }
-
-        @Override
-        public String description() {
-            return registration.spec().description();
-        }
-
-        @Override
-        public JSONObject parameters() {
-            JSONObject parameters = registration.spec().parameters();
-            return parameters == null ? new JSONObject() : parameters;
-        }
-
-        @Override
-        public AgentToolResult execute(RunContext context, JSONObject args) {
-            try {
-                ToolExecutionContext ctx = new ToolExecutionContext(
-                        registration, "", null, context, args, null, args == null ? "{}" : args.toString());
-                return registration.executor().execute(ctx);
-            } catch (Exception e) {
-                return AgentToolResult.error("Error: " + e.getMessage());
-            }
-        }
-
-        @Override
-        public boolean requiresApproval() {
-            return registration.requiresApproval();
-        }
-
-        @Override
-        public boolean isFileMutation() {
-            return registration.isFileMutation();
-        }
-
-        @Override
-        public boolean isDestructive() {
-            return registration.isDestructive();
         }
     }
 }

@@ -2,16 +2,48 @@ package com.saaspaymentsolutions.axion.agentsdk;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
+
+import com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRegistry;
+import com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRouter;
+import com.saaspaymentsolutions.axion.agentsdk.tools.ToolRegistration;
+import com.saaspaymentsolutions.axion.agentsdk.tools.WorkspaceToolProvider;
 
 import org.json.JSONObject;
 import org.junit.Test;
 
 /**
- * Unit tests for the Codex-parity tools: get_context_remaining and
- * request_user_input (fail-closed and routed through the ApprovalHandler).
+ * Unit tests for the Codex-parity core tools through the registry+router path:
+ * get_context_remaining (real ContextTracker report) and request_user_input
+ * (fail-closed and routed through the ApprovalHandler).
  */
 public class CodexParityToolsTest {
+
+    private static final String QUESTION_ARGS =
+            "{\"questions\":[{\"id\":\"q1\",\"header\":\"Choice\",\"question\":\"Qual usar?\","
+                    + "\"options\":[{\"label\":\"Room\",\"description\":\"persistencia\"},"
+                    + "{\"label\":\"SQLite\",\"description\":\"puro\"}]}]}";
+
+    /** Routes one FUNCTION call through a fresh registry+router. */
+    private AgentToolResult route(String toolName, String argsJson,
+                                  ApprovalHandler handler, RunContext context) {
+        AxionToolRegistry registry = new AxionToolRegistry();
+        WorkspaceToolProvider.registerCoreTools(registry, handler);
+        AxionToolRouter router = new AxionToolRouter(registry, null, null);
+        AxionToolRouter.Routed routed = router.route(
+                new AxionToolRouter.Route("call_" + System.nanoTime(), toolName, argsJson),
+                "sc1", context, null);
+        return routed.result();
+    }
+
+    private static ToolRegistration coreTool(String name, ApprovalHandler handler) {
+        AxionToolRegistry registry = new AxionToolRegistry();
+        WorkspaceToolProvider.registerCoreTools(registry, handler);
+        ToolRegistration registration = registry.get(name);
+        assertNotNull("core tool '" + name + "' must be registered", registration);
+        return registration;
+    }
 
     // ------------------------------------------------------------------
     // get_context_remaining
@@ -20,25 +52,22 @@ public class CodexParityToolsTest {
     @Test
     public void contextRemaining_withoutBudget_reportsGracefulFallback() throws Exception {
         RunContext context = RunContext.bare("sc1", "agent", new ContextTracker(null));
-        ContextRemainingTool tool = new ContextRemainingTool();
-
-        AgentToolResult result = tool.execute(context, new JSONObject());
+        AgentToolResult result = route("get_context_remaining", "{}", null, context);
 
         assertFalse(result.isError());
         JSONObject report = new JSONObject(result.output());
         assertEquals(false, report.optBoolean("budget_enforced"));
-        assertTrue(report.has("note"));
+        assertTrue(report.has("tokens_left"));
     }
 
     @Test
-    public void contextRemaining_withoutTracker_returnsGracefulNote() throws Exception {
+    public void contextRemaining_withoutTracker_returnsGracefulFallback() throws Exception {
         RunContext legacyContext = RunContext.bare("sc1", "agent", null);
-        ContextRemainingTool tool = new ContextRemainingTool();
-
-        AgentToolResult result = tool.execute(legacyContext, new JSONObject());
+        AgentToolResult result = route("get_context_remaining", "{}", null, legacyContext);
 
         assertFalse(result.isError());
-        assertEquals(false, new JSONObject(result.output()).optBoolean("budget_enforced"));
+        JSONObject report = new JSONObject(result.output());
+        assertEquals(false, report.optBoolean("budget_enforced"));
     }
 
     @Test
@@ -48,25 +77,23 @@ public class CodexParityToolsTest {
         budget.settle(handle, 1_500, false);
         RunContext context = RunContext.bare("sc1", "agent", new ContextTracker(budget));
         context.contextTracker().recordInputEstimate(2_000);
-        ContextRemainingTool tool = new ContextRemainingTool();
 
-        AgentToolResult result = tool.execute(context, new JSONObject());
+        AgentToolResult result = route("get_context_remaining", "{}", null, context);
 
         assertFalse(result.isError());
         JSONObject report = new JSONObject(result.output());
-        assertTrue(report.optBoolean("budget_enforced"));
+        assertEquals(true, report.optBoolean("budget_enforced"));
         assertEquals(10_000L, report.optLong("maximum_tokens"));
         assertEquals(1_500L, report.optLong("used_tokens"));
-        assertEquals(8_500L, report.optLong("remaining_tokens"));
-        assertEquals(2_000L, report.optLong("last_input_tokens"));
+        assertEquals(8_500L, report.optLong("tokens_left"));
     }
 
     @Test
-    public void contextRemaining_isExposedWithSchemaAndNoApproval() {
-        ContextRemainingTool tool = new ContextRemainingTool();
-        assertEquals("get_context_remaining", tool.name());
-        assertFalse(tool.requiresApproval());
-        assertEquals("object", tool.parameters().optString("type"));
+    public void contextRemaining_registeredWithSchemaAndNoApproval() {
+        ToolRegistration registration = coreTool("get_context_remaining", null);
+        assertEquals("get_context_remaining", registration.spec().name().name());
+        assertFalse(registration.requiresApproval());
+        assertEquals("object", registration.spec().parameters().optString("type"));
     }
 
     // ------------------------------------------------------------------
@@ -74,41 +101,45 @@ public class CodexParityToolsTest {
     // ------------------------------------------------------------------
 
     @Test
-    public void requestUserInput_withoutHandler_failsClosedWithGuidance() throws Exception {
-        RequestUserInputTool tool = new RequestUserInputTool(null);
-
-        AgentToolResult result = tool.execute(
-                RunContext.bare("sc1", "agent", null),
-                new JSONObject().put("question", "Qual banco usar?"));
+    public void requestUserInput_withoutHandler_failsClosedWithGuidance() {
+        AgentToolResult result = route(
+                "request_user_input", QUESTION_ARGS, null,
+                RunContext.bare("sc1", "agent", null));
 
         assertTrue(result.isError());
         assertTrue(result.output().contains("Proceed with the best safe default"));
     }
 
     @Test
-    public void requestUserInput_emptyQuestion_isRejected() throws Exception {
-        RequestUserInputTool tool = new RequestUserInputTool(null);
-
-        AgentToolResult result = tool.execute(
-                RunContext.bare("sc1", "agent", null), new JSONObject());
+    public void requestUserInput_emptyQuestion_isRejected() {
+        AgentToolResult result = route(
+                "request_user_input", "{}", null,
+                RunContext.bare("sc1", "agent", null));
 
         assertTrue(result.isError());
-        assertTrue(result.output().contains("question"));
+        assertTrue(result.output().contains("questions"));
     }
 
     @Test
-    public void requestUserInput_routesThroughHandlerAndReturnsAnswer() throws Exception {
+    public void requestUserInput_missingQuestionFields_isRejected() {
+        AgentToolResult result = route(
+                "request_user_input",
+                "{\"questions\":[{\"id\":\"q\",\"header\":\"H\",\"question\":\"\","
+                        + "\"options\":[{\"label\":\"A\",\"description\":\"a\"}]}]}",
+                null,
+                RunContext.bare("sc1", "agent", null));
+
+        assertTrue(result.isError());
+        assertTrue(result.output().contains("id', 'header' and 'question'"));
+    }
+
+    @Test
+    public void requestUserInput_routesThroughHandlerAndReturnsAnswer() {
         RecordingInputChannel channel = new RecordingInputChannel();
         channel.answer = "Room, porque o projeto já usa SQL nas telas atuais.";
-        RequestUserInputTool tool = new RequestUserInputTool(channel);
 
-        AgentToolResult result = tool.execute(
-                RunContext.bare("sc1", "agent", null),
-                new JSONObject()
-                        .put("question", "Persistência local?")
-                        .put("options", new org.json.JSONArray()
-                                .put(new JSONObject().put("label", "Room"))
-                                .put(new JSONObject().put("label", "SQLite puro"))));
+        AgentToolResult result = route("request_user_input", QUESTION_ARGS, channel,
+                RunContext.bare("sc1", "agent", null));
 
         assertFalse(result.isError());
         assertTrue(result.output().contains("Room, porque"));
@@ -117,14 +148,12 @@ public class CodexParityToolsTest {
     }
 
     @Test
-    public void requestUserInput_dismissedFallsBackToDefault() throws Exception {
+    public void requestUserInput_dismissedFallsBackToDefault() {
         RecordingInputChannel channel = new RecordingInputChannel();
         channel.decision = PermissionDecision.DENY;
-        RequestUserInputTool tool = new RequestUserInputTool(channel);
 
-        AgentToolResult result = tool.execute(
-                RunContext.bare("sc1", "agent", null),
-                new JSONObject().put("question", "Renomear tudo?"));
+        AgentToolResult result = route("request_user_input", QUESTION_ARGS, channel,
+                RunContext.bare("sc1", "agent", null));
 
         assertFalse(result.isError());
         assertTrue(result.output().contains("dismissed"));
@@ -134,17 +163,27 @@ public class CodexParityToolsTest {
     public void requestUserInput_optionsAreNormalizedToMaxFour() throws Exception {
         RecordingInputChannel channel = new RecordingInputChannel();
         channel.answer = "opt 1";
-        RequestUserInputTool tool = new RequestUserInputTool(channel);
 
         org.json.JSONArray six = new org.json.JSONArray();
         for (int i = 0; i < 6; i++) {
             six.put(new JSONObject().put("label", "opt " + (i + 1)));
         }
-        tool.execute(RunContext.bare("sc1", "agent", null),
-                new JSONObject().put("question", "q").put("options", six));
+        String manyOptions = new JSONObject().put("questions", new org.json.JSONArray()
+                .put(new JSONObject()
+                        .put("id", "q")
+                        .put("header", "H")
+                        .put("question", "q")
+                        .put("options", six))).toString();
 
-        assertEquals("handler must receive at most 4 options",
-                4, new JSONObject(channel.lastReason).optJSONArray("options").length());
+        route("request_user_input", manyOptions, channel,
+                RunContext.bare("sc1", "agent", null));
+
+        int forwarded = new JSONObject(channel.lastReason)
+                .optJSONArray("questions")
+                .optJSONObject(0)
+                .optJSONArray("options")
+                .length();
+        assertEquals("handler must receive at most 4 options", 4, forwarded);
     }
 
     // ------------------------------------------------------------------

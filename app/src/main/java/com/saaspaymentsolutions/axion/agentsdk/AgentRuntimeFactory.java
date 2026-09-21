@@ -35,7 +35,9 @@ public final class AgentRuntimeFactory {
         com.saaspaymentsolutions.axion.AiProviderService aiService =
                 com.saaspaymentsolutions.axion.AiProviderService.getInstance();
         AxionAgentGateway gateway = new AxionAgentGateway(aiService, "agent");
-        return createForChatWithGateway(gateway);
+        android.content.SharedPreferences prefs =
+                context == null ? null : com.saaspaymentsolutions.axion.port.VoidPortSettings.prefs(context);
+        return createForChatWithGateway(gateway, prefs);
     }
 
     /**
@@ -53,27 +55,36 @@ public final class AgentRuntimeFactory {
      */
     public static AgentRuntime createForChatWithGateway(
             com.saaspaymentsolutions.axion.agentsdk.AgentLlmGateway gateway) {
+        return createForChatWithGateway(gateway, null);
+    }
+
+    /**
+     * Production assembly over an explicit {@link AgentLlmGateway} and the
+     * optional MCP preferences. When {@code prefs == null} (JVM tests) no MCP
+     * server is reachable and none is registered.
+     */
+    public static AgentRuntime createForChatWithGateway(
+            com.saaspaymentsolutions.axion.agentsdk.AgentLlmGateway gateway,
+            android.content.SharedPreferences mcpPrefs) {
         // Item 16: the interactive resolver is the explicit approval
         // protocol — requests are resolved by requestId from the UI thread.
         ApprovalHandler.Resolver approvals = new ApprovalHandler.Resolver();
         EventStream events = new EventStream();
         // Item (registry-backed catalog): the SINGLE model-facing tool source.
-        // The Codex-parity core tools are registered once here; legacy void
-        // tools that still have no newer contract (read_file, ls_dir, search*
-        // ...) follow as classification-guarded registry citizens. The
-        // coordinator agent carries no AgentTool[] — nothing is adapted at run
-        // time, so legacy names with a replacement never reach the model.
+        // The Codex-parity core tools and the remaining workspace read tools
+        // (read_file, ls_dir, search* ...) are registered once here; MCP
+        // servers follow as registry citizens. Nothing is adapted at run time,
+        // so legacy names with a replacement never reach the model.
         com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRegistry registry =
                 new com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRegistry();
         com.saaspaymentsolutions.axion.agentsdk.tools.WorkspaceToolProvider.registerCoreTools(
                 registry, approvals);
-        com.saaspaymentsolutions.axion.ToolManager legacy = new com.saaspaymentsolutions.axion.ToolManager();
-        com.saaspaymentsolutions.axion.port.VoidToolWrapper.registerAllVoidTools(legacy);
-        WorkspaceAgents.registerModelCompatibleTools(registry, legacy);
+        com.saaspaymentsolutions.axion.agentsdk.tools.WorkspaceToolProvider.registerWorkspaceReadTools(
+                registry);
+        com.saaspaymentsolutions.axion.agentsdk.tools.McpToolSource.discover(mcpPrefs, registry);
         return new AgentRuntime.Builder(gateway)
                 .events(events)
                 .permissions(new PermissionLayer(ToolPolicy.interactive(), approvals, events))
-                .inputChannel(approvals)
                 .toolRegistry(registry)
                 // Removed: expectFileMutations(true) - Codex alignment
                 // The runtime no longer forces mutations for all chats.

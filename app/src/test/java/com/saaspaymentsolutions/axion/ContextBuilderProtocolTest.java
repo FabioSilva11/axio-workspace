@@ -35,7 +35,7 @@ public class ContextBuilderProtocolTest {
 
     @Test
     public void nativeToolGuidanceAllowsSafeBatchesWhileXmlRemainsSingleCall() throws Exception {
-        ContextBuilder builder = new ContextBuilder("1", new ArrayList<>(), new ToolManager());
+        ContextBuilder builder = new ContextBuilder("1", new ArrayList<>());
         Method method = ContextBuilder.class.getDeclaredMethod(
                 "buildVoidImportantDetails", String.class, ContextBuilder.ProviderFormat.class);
         method.setAccessible(true);
@@ -81,7 +81,7 @@ public class ContextBuilderProtocolTest {
                 "read_file", "{\"uri\":\"A.java\"}", 3L, "call_1");
         tool.setToolResult("tool output");
         messages.add(tool);
-        ContextBuilder builder = new ContextBuilder("1", messages, new ToolManager());
+        ContextBuilder builder = new ContextBuilder("1", messages);
         Field currentModel = ContextBuilder.class.getDeclaredField("currentModelName");
         currentModel.setAccessible(true);
         currentModel.set(builder, "axion_managed/opencode-deepseek-v4-flash");
@@ -103,7 +103,7 @@ public class ContextBuilderProtocolTest {
         ChatMessage assistant = new ChatMessage("answer", false, 2L);
         assistant.setReasoning("private reasoning");
         messages.add(assistant);
-        ContextBuilder builder = new ContextBuilder("1", messages, new ToolManager());
+        ContextBuilder builder = new ContextBuilder("1", messages);
         Field currentModel = ContextBuilder.class.getDeclaredField("currentModelName");
         currentModel.setAccessible(true);
         currentModel.set(builder, "deepseek-v4-flash");
@@ -157,7 +157,7 @@ public class ContextBuilderProtocolTest {
                 "read_file", "{\"uri\":\"A.java\"}", 2L, "call_1");
         tool.setToolResult("tool output");
         messages.add(tool);
-        return new ContextBuilder("1", messages, new ToolManager());
+        return new ContextBuilder("1", messages);
     }
 
     private static List<?> simpleMessages(ContextBuilder builder) throws Exception {

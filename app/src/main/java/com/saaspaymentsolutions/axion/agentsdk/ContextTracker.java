@@ -3,8 +3,8 @@ package com.saaspaymentsolutions.axion.agentsdk;
 import org.json.JSONObject;
 
 /**
- * Per-run context accounting shared with the {@link ContextRemainingTool}.
- * The four token metrics are NEVER mixed (item 18 of the migration):
+ * Per-run context accounting shared with the {@code get_context_remaining}
+ * tool. The four token metrics are NEVER mixed (item 18 of the migration):
  *
  * <ul>
  *   <li><b>estimated input</b> — character heuristic over the next-turn
@@ -87,7 +87,7 @@ public final class ContextTracker {
         return lastTurnHadReportedUsage;
     }
 
-    /** Builds the JSON report consumed by {@link ContextRemainingTool}. */
+    /** Builds the JSON report consumed by the {@code get_context_remaining} tool. */
     public JSONObject report() {
         JSONObject report = new JSONObject();
         try {

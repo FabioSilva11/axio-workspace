@@ -3,20 +3,15 @@ package com.saaspaymentsolutions.axion.agentsdk;
 import com.saaspaymentsolutions.axion.AiChatSettingsHelper;
 import com.saaspaymentsolutions.axion.AiOperationContext;
 import com.saaspaymentsolutions.axion.ChatMessage;
-import com.saaspaymentsolutions.axion.agentsdk.tools.AgentToolExecutor;
 import com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRegistry;
 import com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRouter;
 import com.saaspaymentsolutions.axion.agentsdk.tools.ToolCatalog;
 import com.saaspaymentsolutions.axion.agentsdk.tools.ToolRegistration;
 import com.saaspaymentsolutions.axion.toolcalling.ToolCall;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
-
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.Locale;
 
 /**
  * Stateful agent run loop (v2), porting the Codex session/turn cycle to the
@@ -43,14 +38,11 @@ public final class AgentRuntime {
     private final List<Guardrail> inputGuardrails;
     private final int maxTurns;
     private final RunBudget budget;
-    private final ApprovalHandler inputChannel;
     private final int maxOutputTokensPerTurn;
     private final boolean includeProjectInstructions;
-    private final AgentToolRouter toolRouter;
-    // Registry-backed canonical tool path (migration): when the host wires an
-    // AxionToolRegistry the model catalog/execution flow through it; otherwise
-    // the legacy AgentToolRouter path (all existing tests) stays untouched.
-    private final AxionToolRouter registryRouter;
+    // The single canonical execution path: registry lookup → exposure →
+    // permission → sandbox → executor (AxionToolRouter, Codex router.rs parity).
+    private final AxionToolRouter router;
     private final AxionToolRegistry registry;
     // Removed: expectFileMutations (Codex alignment)
     // The runtime no longer assumes all chats require file mutations.
@@ -61,13 +53,11 @@ public final class AgentRuntime {
         this.gateway = builder.gateway;
         this.events = builder.events;
         this.permissions = builder.permissions;
-        this.toolRouter = new AgentToolRouter(permissions, events);
         this.registry = builder.registry;
-        this.registryRouter = registry == null ? null : new AxionToolRouter(registry, permissions, events);
+        this.router = new AxionToolRouter(builder.registry, permissions, events);
         this.inputGuardrails = Collections.unmodifiableList(new ArrayList<>(builder.inputGuardrails));
         this.maxTurns = Math.max(1, builder.maxTurns);
         this.budget = builder.budget;
-        this.inputChannel = builder.inputChannel;
         this.maxOutputTokensPerTurn = builder.maxOutputTokensPerTurn;
         this.includeProjectInstructions = builder.includeProjectInstructions;
         // Removed: expectFileMutations assignment (Codex alignment)
@@ -166,10 +156,7 @@ public final class AgentRuntime {
         Agent activeAgent = agent;
         int turns = 0;
         // Removed: recoveryNudges - Codex alignment: no artificial recovery
-        toolRouter.resetForNewRun();
-        if (registryRouter != null) {
-            registryRouter.resetForNewRun();
-        }
+        router.resetForNewRun();
         try {
             while (turns++ < maxTurns) {
                 if (cancelRequested) {
@@ -209,23 +196,16 @@ public final class AgentRuntime {
                             emit(new AgentEvent.AssistantMessageDelta(scId, delta));
                         }
                     });
-                    if (registryRouter != null) {
-                        // Canonical catalog path (migration): the model sees
-                        // exactly the registry's DIRECT tools, serialized by
-                        // capability in the gateway. The AgentTool[] legacy
-                        // set is NOT the model-facing catalog anymore.
-                        turn = gateway.completeTurn(
-                                resolveSystemPrompt(activeAgent, context),
-                                toolCatalogFor(),
-                                history,
-                                runContextIdentity);
-                    } else {
-                        turn = gateway.completeTurn(
-                                resolveSystemPrompt(activeAgent, context),
-                                toolSchemasFor(withParityTools(activeAgent)),
-                                history,
-                                runContextIdentity);
-                    }
+                    // Canonical catalog (single source of truth): the model
+                    // sees exactly the registry's DIRECT tools, serialized by
+                    // capability in the gateway. The catalog is never flattened
+                    // by the runtime — freeform/namespace kinds stay faithful
+                    // until the provider serializer.
+                    turn = gateway.completeTurn(
+                            resolveSystemPrompt(activeAgent, context),
+                            toolCatalogFor(),
+                            history,
+                            runContextIdentity);
                 } catch (Exception e) {
                     String reason = "LLM turn failed: " + e.getMessage();
                     emit(new AgentEvent.Error(scId, reason));
@@ -311,18 +291,15 @@ public final class AgentRuntime {
                     emit(new AgentEvent.AssistantMessage(scId, assistantText));
                 }
 
-                if (registryRouter != null) {
-                    Agent next = executeRegistryTools(activeAgent, session, context, scId, structuredCalls, history);
-                    if (next != null && next != activeAgent) {
-                        context.recordHandoff(activeAgent, next, "");
-                        activeAgent = next;
-                    }
-                } else {
-                    Agent next = executeLegacyTools(activeAgent, session, context, scId, structuredCalls, history);
-                    if (next != null && next != activeAgent) {
-                        context.recordHandoff(activeAgent, next, "");
-                        activeAgent = next;
-                    }
+                if (registry == null) {
+                    // Defensive: unreachable — the Builder makes the registry
+                    // mandatory. Kept as a guard for misconstructed runtimes.
+                    return RunResult.failure("Runtime has no tool registry.");
+                }
+                Agent next = executeTools(activeAgent, session, context, scId, structuredCalls, history);
+                if (next != null && next != activeAgent) {
+                    context.recordHandoff(activeAgent, next, "");
+                    activeAgent = next;
                 }
                 // With tools executed (or a handoff), loop for the next LLM turn.
             }
@@ -493,136 +470,48 @@ public final class AgentRuntime {
     }
 
     /**
-     * Codex parity: every agent implicitly gains {@code get_context_remaining}
-     * and — when an input channel is configured — {@code request_user_input},
-     * without hosts having to remember to add them.
-     */
-    private List<AgentTool> withParityTools(Agent agent) {
-        List<AgentTool> tools = new ArrayList<>(agent.tools());
-        if (findNamedTool(tools, "get_context_remaining") == null) {
-            tools.add(new ContextRemainingTool());
-        }
-        if (inputChannel != null && findNamedTool(tools, "request_user_input") == null) {
-            tools.add(new RequestUserInputTool(inputChannel));
-        }
-        return tools;
-    }
-
-    /**
-     * Registry-backed model catalog for this turn (migration): exactly the
-     * registry's DIRECT tools. Legacy {@code AgentTool[]} sets are NOT adapted
-     * at run time — the catalog has a single source
-     * ({@link ToolCatalog#from(AxionToolRegistry)}) and hosts register legacy
-     * tools explicitly via {@code LegacyToolAdapter} (classification-guarded).
+     * Registry-backed model catalog for this turn: exactly the registry's
+     * DIRECT tools. The catalog has a single source
+     * ({@link ToolCatalog#from(AxionToolRegistry)}) — no agent-level tool
+     * arrays participate.
      */
     private synchronized ToolCatalog toolCatalogFor() {
         return ToolCatalog.from(registry);
     }
 
-    private static AgentTool findNamedTool(List<AgentTool> tools, String toolName) {
-        for (AgentTool tool : tools) {
-            if (tool.name().equals(toolName)) {
-                return tool;
-            }
-        }
-        return null;
-    }
-
-    /** Lookup across the agent's own tools plus the implicit parity tools. */
-    private AgentTool findParityTool(String toolName) {
-        if ("get_context_remaining".equals(toolName)) {
-            return new ContextRemainingTool();
-        }
-        if (inputChannel != null && "request_user_input".equals(toolName)) {
-            return new RequestUserInputTool(inputChannel);
-        }
-        return null;
-    }
-
     /**
-     * Legacy execution path (kept for hosts/tests without a registry): routes
-     * every structured call through the {@link AgentToolRouter} and returns
-     * the handoff target (or {@code null}).
+     * The single execution path (Codex {@code router.rs} parity): routes
+     * every structured call through the canonical {@link AxionToolRouter}
+     * and returns the handoff target (or {@code null}). The router resolves
+     * registry lookup → exposure → permission → sandbox → executor; handoffs
+     * are detected from the registration's own metadata
+     * ({@link ToolRegistration#isHandoff()} /
+     * {@link ToolRegistration#handoffTarget()}).
      */
-    private Agent executeLegacyTools(Agent activeAgent, AgentSession session, RunContext context, String scId,
-                                     List<ToolCall> structuredCalls, List<ChatMessage> history) {
+    private Agent executeTools(Agent activeAgent, AgentSession session, RunContext context, String scId,
+                               List<ToolCall> structuredCalls, List<ChatMessage> history) {
         Agent handoffTarget = null;
-        for (ToolCall legacyCall : structuredCalls) {
-            if (cancelRequested) {
-                session.setStatus(AgentSession.Status.CANCELLED);
-                emit(new AgentEvent.RunCompleted(scId, false, "Run cancelled"));
-                return null;
-            }
-            AgentToolRouter.StructuredToolCall call = new AgentToolRouter.StructuredToolCall(
-                    legacyCall.getId(), legacyCall.getName(), legacyCall.getArguments());
-            List<AgentTool> toolset = withParityTools(activeAgent);
-            AgentToolRouter.RoutedCall routed = toolRouter.route(
-                    toolset, call, scId, context, new AgentToolRouter.LoopHooks() {
-                        @Override
-                        public void onToolCallStarted(AgentToolRouter.StructuredToolCall c, AgentTool t) {
-                            context.incrementToolCalls();
-                            emit(new AgentEvent.ToolCallStarted(scId, t.name(), legacyCall));
-                        }
-
-                        @Override
-                        public void onToolCallCompleted(AgentToolRouter.StructuredToolCall c, AgentTool t, AgentToolResult r) {
-                            if (r != null) {
-                                // Unknown tools arrive with t == null:
-                                // the call's own name is the identity.
-                                emit(new AgentEvent.ToolCallCompleted(scId,
-                                        t != null ? t.name() : c.toolName(), legacyCall, r));
-                            }
-                        }
-                    });
-            if (routed.wasDeduplicated()) {
-                continue;
-            }
-            AgentToolResult result = routed.result();
-            if (result != null) {
-                appendToolResult(history, legacyCall, result.output());
-            }
-            if (routed.handedOff()) {
-                Agent target = findHandoffTarget(activeAgent, call.toolName());
-                if (target != null) {
-                    handoffTarget = target;
-                }
-                break;
-            }
-        }
-        return handoffTarget;
-    }
-
-    /**
-     * Registry-backed execution path (migration): routes every structured
-     * call through the canonical {@link AxionToolRouter} — the same
-     * permission/exposure/sandbox pipeline the registry defines. Handoffs
-     * are detected by the registered adapter identity (legacy handoff tools
-     * adapted into the registry).
-     */
-    private Agent executeRegistryTools(Agent activeAgent, AgentSession session, RunContext context, String scId,
-                                       List<ToolCall> structuredCalls, List<ChatMessage> history) {
-        Agent handoffTarget = null;
-        for (ToolCall legacyCall : structuredCalls) {
+        for (ToolCall toolCall : structuredCalls) {
             if (cancelRequested) {
                 session.setStatus(AgentSession.Status.CANCELLED);
                 emit(new AgentEvent.RunCompleted(scId, false, "Run cancelled"));
                 return null;
             }
             AxionToolRouter.Route route = new AxionToolRouter.Route(
-                    legacyCall.getId(), legacyCall.getName(), legacyCall.getArguments());
-            AxionToolRouter.Routed routed = registryRouter.route(
+                    toolCall.getId(), toolCall.getName(), toolCall.getArguments());
+            AxionToolRouter.Routed routed = router.route(
                     route, scId, context, new AxionToolRouter.LoopHooks() {
                         @Override
                         public void onToolCallStarted(AxionToolRouter.Route c, ToolRegistration t) {
                             context.incrementToolCalls();
-                            emit(new AgentEvent.ToolCallStarted(scId, t.qualifiedName(), legacyCall));
+                            emit(new AgentEvent.ToolCallStarted(scId, t.qualifiedName(), toolCall));
                         }
 
                         @Override
                         public void onToolCallCompleted(AxionToolRouter.Route c, ToolRegistration t, AgentToolResult r) {
                             if (r != null) {
                                 emit(new AgentEvent.ToolCallCompleted(scId,
-                                        t != null ? t.qualifiedName() : c.toolName(), legacyCall, r));
+                                        t != null ? t.qualifiedName() : c.toolName(), toolCall, r));
                             }
                         }
                     });
@@ -631,10 +520,12 @@ public final class AgentRuntime {
             }
             AgentToolResult result = routed.result();
             if (result != null) {
-                appendToolResult(history, legacyCall, result.output());
+                appendToolResult(history, toolCall, result.output());
             }
-            if (isHandoffRegistration(routed.registration())) {
-                Agent target = findHandoffTarget(activeAgent, route.toolName());
+            ToolRegistration registration = routed.registration();
+            if (registration != null && registration.isHandoff()) {
+                // Handoff registrations transfer control to the named agent.
+                Agent target = findHandoffTargetByName(activeAgent, registration.handoffTarget());
                 if (target != null) {
                     handoffTarget = target;
                 }
@@ -642,14 +533,6 @@ public final class AgentRuntime {
             }
         }
         return handoffTarget;
-    }
-
-    /** Whether the routed registration wraps a legacy HandoffTool adapter. */
-    private static boolean isHandoffRegistration(ToolRegistration registration) {
-        if (registration == null || !(registration.executor() instanceof AgentToolExecutor)) {
-            return false;
-        }
-        return ((AgentToolExecutor) registration.executor()).isHandoff();
     }
 
     /** Upper bound for AGENTS.md injection (~600 tokens). */
@@ -684,62 +567,12 @@ public final class AgentRuntime {
     // The runtime no longer inserts artificial user messages to force mutations.
     // Text-only responses are valid model decisions, not error conditions.
 
-    private JSONArray toolSchemasFor(Agent agent)
-            throws com.saaspaymentsolutions.axion.agentsdk.schema.ToolSchemaValidationException {
-        return toolSchemasFor(agent.tools());
-    }
-
-    /**
-     * Validates and builds tool schemas for provider payload.
-     * FAILS FAST if any schema is invalid - does NOT proceed with empty tools.
-     *
-     * @throws com.saaspaymentsolutions.axion.agentsdk.schema.ToolSchemaValidationException
-     *         if any tool schema is invalid
-     */
-    private JSONArray toolSchemasFor(List<AgentTool> tools)
-            throws com.saaspaymentsolutions.axion.agentsdk.schema.ToolSchemaValidationException {
-        // Validate all tool schemas BEFORE building the payload (Codex-inspired
-        // pre-flight check). This catches schema errors like "items": [...]
-        // before they cause HTTP 400 from the provider.
-        List<String> validationErrors = com.saaspaymentsolutions.axion.agentsdk.schema.ToolSchemaNormalizer.validateToolset(tools);
-        if (!validationErrors.isEmpty()) {
-            // FAIL FAST: throw exception instead of returning empty array
-            // This ensures no HTTP request is made when schemas are invalid
-            throw new com.saaspaymentsolutions.axion.agentsdk.schema.ToolSchemaValidationException(validationErrors);
+    private static Agent findHandoffTargetByName(Agent activeAgent, String targetName) {
+        if (targetName == null || targetName.isEmpty()) {
+            return null;
         }
-
-        JSONArray schemas = new JSONArray();
-        for (AgentTool tool : tools) {
-            try {
-                // Normalize the schema to catch any remaining issues
-                com.saaspaymentsolutions.axion.agentsdk.schema.ToolSchemaNormalizer.ValidationResult result =
-                        com.saaspaymentsolutions.axion.agentsdk.schema.ToolSchemaNormalizer.normalize(
-                                tool.name(), tool.parameters());
-
-                if (!result.isValid()) {
-                    // FAIL FAST: individual tool validation failed
-                    throw new com.saaspaymentsolutions.axion.agentsdk.schema.ToolSchemaValidationException(
-                            tool.name(), result.getErrorPath(), result.getErrorMessage());
-                }
-
-                schemas.put(new JSONObject()
-                        .put("type", "function")
-                        .put("function", new JSONObject()
-                                .put("name", tool.name())
-                                .put("description", tool.description())
-                                .put("parameters", result.getSchema())));
-            } catch (org.json.JSONException e) {
-                // FAIL FAST: JSON construction error
-                throw new com.saaspaymentsolutions.axion.agentsdk.schema.ToolSchemaValidationException(
-                        tool.name(), "parameters", "JSON construction error: " + e.getMessage());
-            }
-        }
-        return schemas;
-    }
-
-    private static Agent findHandoffTarget(Agent activeAgent, String toolName) {
         for (Agent candidate : activeAgent.handoffs()) {
-            if (HandoffTool.toolNameFor(candidate).equals(toolName)) {
+            if (targetName.equals(candidate.name())) {
                 return candidate;
             }
         }
@@ -776,7 +609,6 @@ public final class AgentRuntime {
         private int maxTurns = DEFAULT_MAX_TURNS;
         private AiOperationContext operationContext;
         private RunBudget budget;
-        private ApprovalHandler inputChannel;
         private int maxOutputTokensPerTurn = 2048;
         private boolean includeProjectInstructions = true;
         // Removed: expectFileMutations field (Codex alignment)
@@ -832,15 +664,6 @@ public final class AgentRuntime {
         }
 
         /**
-         * Codex parity: human-in-the-loop channel used by the implicit
-         * {@code request_user_input} tool (and surfaced in the tool catalog).
-         */
-        public Builder inputChannel(ApprovalHandler channel) {
-            this.inputChannel = channel;
-            return this;
-        }
-
-        /**
          * Freezes the provider/model/mode of every run of this runtime
          * (items 10/11). Host preference changes mid-run do not leak in.
          */
@@ -850,11 +673,10 @@ public final class AgentRuntime {
         }
 
         /**
-         * Registry-backed tool path (migration): when set, the runtime uses the
-         * registry as the SINGLE model catalog ({@link ToolCatalog}) and routes
-         * execution through {@link AxionToolRouter}. Legacy {@link AgentTool}s
-         * on the agent are adapted into the registry. When unset (all legacy
-         * hosts/tests) the AgentToolRouter path is used unchanged.
+         * The single model-facing tool source. MANDATORY: the runtime's
+         * catalog is exactly {@link ToolCatalog#from(AxionToolRegistry)} and
+         * every execution routes through {@link AxionToolRouter}; there is no
+         * legacy path. Fails fast when no registry is wired.
          */
         public Builder toolRegistry(AxionToolRegistry registry) {
             this.registry = registry;
@@ -862,6 +684,12 @@ public final class AgentRuntime {
         }
 
         public AgentRuntime build() {
+            if (registry == null) {
+                throw new IllegalArgumentException(
+                        "A toolRegistry is required: the runtime's catalog and execution "
+                                + "path have exactly one source (AxionToolRegistry → ToolCatalog → "
+                                + "AxionToolRouter). Register the model-facing tools before building.");
+            }
             return new AgentRuntime(this);
         }
     }

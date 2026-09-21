@@ -342,30 +342,4 @@ public class ToolSchemaNormalizer {
             return ValidationResult.error(path, "JSON error: " + e.getMessage());
         }
     }
-
-    /**
-     * Validates all tools in a toolset before sending to the provider.
-     * Returns a list of validation errors, empty if all valid.
-     */
-    public static List<String> validateToolset(List<?> tools) {
-        List<String> errors = new ArrayList<>();
-
-        for (Object tool : tools) {
-            if (tool instanceof com.saaspaymentsolutions.axion.agentsdk.AgentTool) {
-                com.saaspaymentsolutions.axion.agentsdk.AgentTool agentTool =
-                        (com.saaspaymentsolutions.axion.agentsdk.AgentTool) tool;
-
-                ValidationResult result = normalize(agentTool.name(), agentTool.parameters());
-                if (!result.isValid()) {
-                    errors.add(String.format(
-                            "Invalid tool schema:\n  tool=%s\n  path=%s\n  reason=%s",
-                            agentTool.name(),
-                            result.getErrorPath(),
-                            result.getErrorMessage()));
-                }
-            }
-        }
-
-        return errors;
-    }
 }

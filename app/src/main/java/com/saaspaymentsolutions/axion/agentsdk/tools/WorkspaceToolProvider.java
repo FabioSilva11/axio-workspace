@@ -73,11 +73,75 @@ public final class WorkspaceToolProvider {
     public static void registerCoreTools(AxionToolRegistry registry, ApprovalHandler approvalHandler) {
         registerCoreTools(registry, new ApplyPatchExecutor.PatchToolFactory() {
             @Override
-            public com.saaspaymentsolutions.axion.agentsdk.ApplyPatchTool create(RunContext context) {
+            public com.saaspaymentsolutions.axion.agentsdk.ApplyPatchTool create(
+                    RunContext context, com.saaspaymentsolutions.axion.agentsdk.EventStream events, String scId) {
                 return new com.saaspaymentsolutions.axion.agentsdk.ApplyPatchTool(
-                        context.scId(), null, context.filesystem());
+                        scId == null || scId.isEmpty() ? context.scId() : scId,
+                        events,
+                        context.filesystem());
             }
         }, approvalHandler);
+    }
+
+    // ------------------------------------------------------------------
+    // workspace read/search tools backed by VoidPortToolsService
+    // ------------------------------------------------------------------
+
+    /**
+     * Legacy void tools that still have no newer contract (the six remaining
+     * {@code LEGACY_MODEL_COMPATIBLE} names): {@code read_file}, {@code ls_dir},
+     * {@code get_dir_tree}, {@code search_pathnames_only}, {@code search_for_files}
+     * and {@code search_in_file}. They are now first-class {@link ToolRegistration}s
+     * whose schemas come from {@code VoidPortToolsService.getAllToolsAsMCP} and
+     * whose executors delegate to {@code VoidPortToolsService.executeTool} — the
+     * {@code ToolManager}/{@code WorkspaceAgents} bridge is gone.
+     */
+    public static void registerWorkspaceReadTools(AxionToolRegistry registry) {
+        JSONArray mcpSchemas =
+                com.saaspaymentsolutions.axion.port.VoidPortToolsService.getAllToolsAsMCP();
+        for (int i = 0; i < mcpSchemas.length(); i++) {
+            JSONObject entry = mcpSchemas.optJSONObject(i);
+            JSONObject fn = entry == null ? null : entry.optJSONObject("function");
+            if (fn == null) {
+                continue;
+            }
+            String name = fn.optString("name", "").trim();
+            if (!WORKSPACE_READ_TOOL_NAMES.contains(name)) {
+                continue;
+            }
+            JSONObject parameters = fn.optJSONObject("parameters");
+            if (parameters == null) {
+                parameters = new JSONObject();
+            }
+            registry.register(ToolRegistration.builder(ToolSpec.function(
+                            ToolName.plain(name),
+                            fn.optString("description", ""),
+                            parameters))
+                    .executor(new WorkspaceReadExecutor(name))
+                    .source("workspace")
+                    .build());
+        }
+    }
+
+    private static final java.util.Set<String> WORKSPACE_READ_TOOL_NAMES =
+            new java.util.HashSet<>(Arrays.asList(
+                    "read_file", "ls_dir", "get_dir_tree",
+                    "search_pathnames_only", "search_for_files", "search_in_file"));
+
+    /** Executes one workspace read tool through the VoidToolsService bridge. */
+    private static final class WorkspaceReadExecutor implements ToolExecutor {
+        private final String toolName;
+
+        WorkspaceReadExecutor(String toolName) {
+            this.toolName = toolName;
+        }
+
+        @Override
+        public AgentToolResult execute(ToolExecutionContext context) {
+            String result = com.saaspaymentsolutions.axion.port.VoidPortToolsService.executeTool(
+                    context.scId(), toolName, context.functionArguments());
+            return AgentToolResult.success(result);
+        }
     }
 
     // ------------------------------------------------------------------

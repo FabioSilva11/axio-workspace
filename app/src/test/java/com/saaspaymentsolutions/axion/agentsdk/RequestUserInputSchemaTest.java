@@ -1,6 +1,11 @@
 package com.saaspaymentsolutions.axion.agentsdk;
 
 import com.saaspaymentsolutions.axion.agentsdk.schema.ToolSchemaNormalizer;
+import com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRegistry;
+import com.saaspaymentsolutions.axion.agentsdk.tools.FunctionToolSpec;
+import com.saaspaymentsolutions.axion.agentsdk.tools.ToolCatalog;
+import com.saaspaymentsolutions.axion.agentsdk.tools.ToolRegistration;
+import com.saaspaymentsolutions.axion.agentsdk.tools.WorkspaceToolProvider;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.junit.Test;
@@ -8,51 +13,73 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 /**
- * Tests specifically for the {@link RequestUserInputTool} schema structure,
- * verifying that the fix for the HTTP 400 bug is correct.
+ * Tests the {@code request_user_input} schema structure produced by the core
+ * registry ({@link WorkspaceToolProvider}), verifying that the fix for the
+ * HTTP 400 bug is correct: every {@code items} is a single schema object,
+ * never an array.
  */
 public class RequestUserInputSchemaTest {
 
+    /** The registered request_user_input FUNCTION spec, as the router sees it. */
+    private JSONObject requestUserInputSchema() {
+        AxionToolRegistry registry = new AxionToolRegistry();
+        WorkspaceToolProvider.registerCoreTools(registry, null, null);
+        ToolRegistration registration = ToolCatalog.from(registry).get("request_user_input");
+        assertNotNull("request_user_input must be registered in the core registry", registration);
+        assertTrue("request_user_input must be a FUNCTION spec",
+                registration.spec() instanceof FunctionToolSpec);
+        return ((FunctionToolSpec) registration.spec()).parameters();
+    }
+
     @Test
     public void requestUserInputSchema_isValid() {
-        RequestUserInputTool tool = new RequestUserInputTool(null);
-        JSONObject schema = tool.parameters();
+        JSONObject schema = requestUserInputSchema();
 
         // The schema must be valid according to our normalizer
         ToolSchemaNormalizer.ValidationResult result =
-                ToolSchemaNormalizer.normalize(tool.name(), schema);
+                ToolSchemaNormalizer.normalize("request_user_input", schema);
 
-        assertTrue("RequestUserInputTool schema must be valid: " +
+        assertTrue("request_user_input schema must be valid: " +
                         (result.isValid() ? "OK" : result.getFullErrorMessage()),
                 result.isValid());
     }
 
     @Test
     public void requestUserInputSchema_rootIsObject() {
-        RequestUserInputTool tool = new RequestUserInputTool(null);
-        JSONObject schema = tool.parameters();
+        JSONObject schema = requestUserInputSchema();
 
         assertEquals("Root type must be object", "object", schema.optString("type"));
     }
 
     @Test
     public void requestUserInputSchema_hasRequiredProperties() {
-        RequestUserInputTool tool = new RequestUserInputTool(null);
-        JSONObject schema = tool.parameters();
+        JSONObject schema = requestUserInputSchema();
 
         JSONObject properties = schema.optJSONObject("properties");
         assertNotNull("Schema must have properties", properties);
-        assertTrue("Must have question property", properties.has("question"));
-        assertTrue("Must have options property", properties.has("options"));
-        assertTrue("Must have allow_free_text property", properties.has("allow_free_text"));
+        assertTrue("Must have questions property", properties.has("questions"));
+    }
+
+    @Test
+    public void requestUserInputSchema_questionsIsArray() {
+        JSONObject schema = requestUserInputSchema();
+
+        JSONObject questions = schema
+                .optJSONObject("properties")
+                .optJSONObject("questions");
+
+        assertNotNull("questions property must exist", questions);
+        assertEquals("questions must be array type", "array", questions.optString("type"));
     }
 
     @Test
     public void requestUserInputSchema_questionIsString() {
-        RequestUserInputTool tool = new RequestUserInputTool(null);
-        JSONObject schema = tool.parameters();
+        JSONObject schema = requestUserInputSchema();
 
         JSONObject question = schema
+                .optJSONObject("properties")
+                .optJSONObject("questions")
+                .optJSONObject("items")
                 .optJSONObject("properties")
                 .optJSONObject("question");
 
@@ -62,10 +89,12 @@ public class RequestUserInputSchemaTest {
 
     @Test
     public void requestUserInputSchema_optionsIsArray() {
-        RequestUserInputTool tool = new RequestUserInputTool(null);
-        JSONObject schema = tool.parameters();
+        JSONObject schema = requestUserInputSchema();
 
         JSONObject options = schema
+                .optJSONObject("properties")
+                .optJSONObject("questions")
+                .optJSONObject("items")
                 .optJSONObject("properties")
                 .optJSONObject("options");
 
@@ -75,18 +104,20 @@ public class RequestUserInputSchemaTest {
 
     @Test
     public void requestUserInputSchema_optionsItems_isObject_notArray() {
-        // CRITICAL: This is the test that would fail with the old buggy code
-        RequestUserInputTool tool = new RequestUserInputTool(null);
-        JSONObject schema = tool.parameters();
+        // CRITICAL: This is the guard that would fail with the old buggy code
+        JSONObject schema = requestUserInputSchema();
 
         JSONObject options = schema
+                .optJSONObject("properties")
+                .optJSONObject("questions")
+                .optJSONObject("items")
                 .optJSONObject("properties")
                 .optJSONObject("options");
 
         Object items = options.opt("items");
         assertNotNull("options.items must exist", items);
 
-        assertTrue("options.items must be a JSONObject, not JSONArray",
+        assertTrue("options.items must be a JSONObject, not a JSONArray",
                 items instanceof JSONObject);
         assertFalse("options.items must NOT be a JSONArray (this was the bug)",
                 items instanceof JSONArray);
@@ -94,10 +125,12 @@ public class RequestUserInputSchemaTest {
 
     @Test
     public void requestUserInputSchema_optionsItemsSchema_isObject() {
-        RequestUserInputTool tool = new RequestUserInputTool(null);
-        JSONObject schema = tool.parameters();
+        JSONObject schema = requestUserInputSchema();
 
         JSONObject items = schema
+                .optJSONObject("properties")
+                .optJSONObject("questions")
+                .optJSONObject("items")
                 .optJSONObject("properties")
                 .optJSONObject("options")
                 .optJSONObject("items");
@@ -108,10 +141,12 @@ public class RequestUserInputSchemaTest {
 
     @Test
     public void requestUserInputSchema_optionHasLabelAndDescription() {
-        RequestUserInputTool tool = new RequestUserInputTool(null);
-        JSONObject schema = tool.parameters();
+        JSONObject schema = requestUserInputSchema();
 
         JSONObject itemProperties = schema
+                .optJSONObject("properties")
+                .optJSONObject("questions")
+                .optJSONObject("items")
                 .optJSONObject("properties")
                 .optJSONObject("options")
                 .optJSONObject("items")
@@ -130,117 +165,154 @@ public class RequestUserInputSchemaTest {
 
     @Test
     public void requestUserInputSchema_optionLabelIsRequired() {
-        RequestUserInputTool tool = new RequestUserInputTool(null);
-        JSONObject schema = tool.parameters();
+        JSONObject schema = requestUserInputSchema();
 
         JSONObject items = schema
+                .optJSONObject("properties")
+                .optJSONObject("questions")
+                .optJSONObject("items")
                 .optJSONObject("properties")
                 .optJSONObject("options")
                 .optJSONObject("items");
 
         JSONArray required = items.optJSONArray("required");
         assertNotNull("options items must have required array", required);
-        assertEquals(1, required.length());
-        assertEquals("label", required.optString(0));
+        assertTrue("option labels must be required",
+                contains(required, "label"));
+        assertTrue("option descriptions must be required",
+                contains(required, "description"));
     }
 
     @Test
-    public void requestUserInputSchema_allowFreeText_isBoolean() {
-        RequestUserInputTool tool = new RequestUserInputTool(null);
-        JSONObject schema = tool.parameters();
+    public void requestUserInputSchema_questionIdHeaderAndOptionsAreRequired() {
+        JSONObject schema = requestUserInputSchema();
 
-        JSONObject allowFreeText = schema
+        JSONObject items = schema
                 .optJSONObject("properties")
-                .optJSONObject("allow_free_text");
+                .optJSONObject("questions")
+                .optJSONObject("items");
 
-        assertNotNull("allow_free_text property must exist", allowFreeText);
-        assertEquals("allow_free_text must be boolean type", "boolean", allowFreeText.optString("type"));
+        JSONArray required = items.optJSONArray("required");
+        assertNotNull("questions items must have required array", required);
+        assertTrue("id must be required", contains(required, "id"));
+        assertTrue("header must be required", contains(required, "header"));
+        assertTrue("question must be required", contains(required, "question"));
+        assertTrue("options must be required", contains(required, "options"));
     }
 
     @Test
-    public void requestUserInputSchema_questionIsRequired() {
-        RequestUserInputTool tool = new RequestUserInputTool(null);
-        JSONObject schema = tool.parameters();
+    public void requestUserInputSchema_questionsIsRequired() {
+        JSONObject schema = requestUserInputSchema();
 
         JSONArray required = schema.optJSONArray("required");
         assertNotNull("Schema must have required array", required);
         assertEquals(1, required.length());
-        assertEquals("question", required.optString(0));
+        assertEquals("questions", required.optString(0));
     }
 
     @Test
     public void requestUserInputSchema_noAdditionalProperties() {
-        RequestUserInputTool tool = new RequestUserInputTool(null);
-        JSONObject schema = tool.parameters();
+        JSONObject schema = requestUserInputSchema();
 
         assertFalse("additionalProperties should be false",
                 schema.optBoolean("additionalProperties", true));
     }
 
     @Test
-    public void requestUserInputSchema_structure_matchesExpectation() {
-        // Final comprehensive test: the structure should be:
+    public void requestUserInputSchema_structure_matchesExpectation() throws Exception {
+        // Final comprehensive test: the wire structure is
         // {
         //   "type": "object",
         //   "properties": {
-        //     "question": { "type": "string", ... },
-        //     "options": {
+        //     "questions": {
         //       "type": "array",
         //       "items": {
         //         "type": "object",
         //         "properties": {
-        //           "label": { "type": "string" },
-        //           "description": { "type": "string" }
+        //           "id": { "type": "string" },
+        //           "header": { "type": "string" },
+        //           "question": { "type": "string" },
+        //           "options": {
+        //             "type": "array",
+        //             "items": {
+        //               "type": "object",
+        //               "properties": {
+        //                 "label": { "type": "string" },
+        //                 "description": { "type": "string" }
+        //               },
+        //               "required": ["description", "label"]
+        //             }
+        //           }
         //         },
-        //         "required": ["label"]
+        //         "required": ["header", "id", "options", "question"]
         //       }
-        //     },
-        //     "allow_free_text": { "type": "boolean", ... }
+        //     }
         //   },
-        //   "required": ["question"],
-        //   "additionalProperties": false
+        //   "required": ["questions"]
         // }
 
-        RequestUserInputTool tool = new RequestUserInputTool(null);
-        JSONObject schema = tool.parameters();
+        JSONObject schema = requestUserInputSchema();
 
         // Root level
         assertEquals("object", schema.optString("type"));
         assertFalse(schema.optBoolean("additionalProperties"));
+        assertEquals(1, schema.optJSONObject("properties").length()); // questions
 
-        // Properties level
-        JSONObject props = schema.optJSONObject("properties");
-        assertEquals(3, props.length()); // question, options, allow_free_text
+        // questions
+        JSONObject questions = schema.getJSONObject("properties").getJSONObject("questions");
+        assertEquals("array", questions.optString("type"));
 
-        // question
-        assertEquals("string", props.optJSONObject("question").optString("type"));
-
-        // options
-        JSONObject options = props.optJSONObject("options");
-        assertEquals("array", options.optString("type"));
-
-        // options.items (MUST be object, not array)
-        JSONObject items = options.optJSONObject("items");
+        // questions.items (MUST be object, not array)
+        JSONObject items = questions.getJSONObject("items");
         assertNotNull("items must be object", items);
         assertEquals("object", items.optString("type"));
 
+        // questions.items.properties
+        JSONObject itemProps = items.getJSONObject("properties");
+        assertEquals(4, itemProps.length()); // id, header, question, options
+        assertEquals("string", itemProps.getJSONObject("id").optString("type"));
+        assertEquals("string", itemProps.getJSONObject("header").optString("type"));
+        assertEquals("string", itemProps.getJSONObject("question").optString("type"));
+
+        // options
+        JSONObject options = itemProps.getJSONObject("options");
+        assertEquals("array", options.optString("type"));
+
+        // options.items (MUST be object, not array)
+        JSONObject optionItems = options.getJSONObject("items");
+        assertEquals("object", optionItems.optString("type"));
+
         // options.items.properties
-        JSONObject itemProps = items.optJSONObject("properties");
-        assertEquals(2, itemProps.length()); // label, description
-        assertEquals("string", itemProps.optJSONObject("label").optString("type"));
-        assertEquals("string", itemProps.optJSONObject("description").optString("type"));
+        JSONObject optionProps = optionItems.getJSONObject("properties");
+        assertEquals(2, optionProps.length()); // label, description
+        assertEquals("string", optionProps.getJSONObject("label").optString("type"));
+        assertEquals("string", optionProps.getJSONObject("description").optString("type"));
 
-        // options.items.required
-        JSONArray itemRequired = items.optJSONArray("required");
-        assertEquals(1, itemRequired.length());
-        assertEquals("label", itemRequired.optString(0));
+        // option required
+        JSONArray optionRequired = optionItems.getJSONArray("required");
+        assertEquals(2, optionRequired.length());
+        assertTrue(contains(optionRequired, "label"));
+        assertTrue(contains(optionRequired, "description"));
 
-        // allow_free_text
-        assertEquals("boolean", props.optJSONObject("allow_free_text").optString("type"));
+        // question required
+        JSONArray required = items.getJSONArray("required");
+        assertEquals(4, required.length());
+        assertTrue(contains(required, "id"));
+        assertTrue(contains(required, "header"));
+        assertTrue(contains(required, "question"));
+        assertTrue(contains(required, "options"));
 
         // Root required
-        JSONArray required = schema.optJSONArray("required");
-        assertEquals(1, required.length());
-        assertEquals("question", required.optString(0));
+        assertEquals(1, schema.getJSONArray("required").length());
+        assertEquals("questions", schema.getJSONArray("required").optString(0));
+    }
+
+    private static boolean contains(JSONArray array, String value) {
+        for (int i = 0; i < array.length(); i++) {
+            if (value.equals(array.optString(i))) {
+                return true;
+            }
+        }
+        return false;
     }
 }

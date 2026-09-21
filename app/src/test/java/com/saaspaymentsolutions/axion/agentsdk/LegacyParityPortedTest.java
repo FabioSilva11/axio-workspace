@@ -53,64 +53,26 @@ public class LegacyParityPortedTest {
         return new ToolCall(name, argsJson, "call_1");
     }
 
-    private static AgentTool echoTool() {
-        return new AgentTool() {
-            @Override
-            public String name() {
-                return "echo";
-            }
-
-            @Override
-            public String description() {
-                return "Echoes the input.";
-            }
-
-            @Override
-            public JSONObject parameters() {
-                return new JSONObject();
-            }
-
-            @Override
-            public AgentToolResult execute(RunContext context, JSONObject args) {
-                return AgentToolResult.success("echo:" + args.optString("text", ""));
-            }
-        };
-    }
-
-    private static AgentTool approvalEcho() {
-        return new AgentTool() {
-            @Override
-            public String name() {
-                return "echo";
-            }
-
-            @Override
-            public String description() {
-                return "echo";
-            }
-
-            @Override
-            public JSONObject parameters() {
-                return new JSONObject();
-            }
-
-            @Override
-            public boolean requiresApproval() {
-                return true;
-            }
-
-            @Override
-            public AgentToolResult execute(RunContext context, JSONObject args) {
-                return AgentToolResult.success("should not run");
-            }
-        };
+    /** Registry carrying ONE tool: {@code echo} (mirrors the removed stub). */
+    private static com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRegistry echoRegistry() {
+        com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRegistry registry =
+                new com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRegistry();
+        registry.register(com.saaspaymentsolutions.axion.agentsdk.tools.ToolRegistration.function(
+                        "echo", "Echoes the input.", new JSONObject())
+                .executor(context -> AgentToolResult.success(
+                        "echo:" + context.functionArguments().optString("text", "")))
+                .source("test")
+                .build());
+        return registry;
     }
 
     @Test
     public void simpleTextRunReturnsFinalOutput() {
         ScriptedHistoryGateway gateway = new ScriptedHistoryGateway();
         gateway.add(new LlmTurnOutput("Hello!", "", "stop", Collections.emptyList()));
-        AgentRuntime runtime = new AgentRuntime.Builder(gateway).build();
+        AgentRuntime runtime = new AgentRuntime.Builder(gateway)
+                .toolRegistry(echoRegistry())
+                .build();
         Agent agent = Agent.Builder.forName("a", "instructions").build();
 
         RunResult result = runtime.run(agent, "hi", "sc1");
@@ -127,8 +89,11 @@ public class LegacyParityPortedTest {
         gateway.add(new LlmTurnOutput("", "", "tool_calls",
                 Collections.singletonList(call("echo", "{\"text\":\"x\"}"))));
         gateway.add(new LlmTurnOutput("finished", "", "stop", Collections.emptyList()));
-        AgentRuntime runtime = new AgentRuntime.Builder(gateway).build();
-        Agent agent = Agent.Builder.forName("a", "i").tools(echoTool()).build();
+        AgentRuntime runtime = new AgentRuntime.Builder(gateway)
+                .toolRegistry(echoRegistry())
+                .permissions(new PermissionLayer(ToolPolicy.permissive(), null, null))
+                .build();
+        Agent agent = Agent.Builder.forName("a", "i").build();
 
         RunResult result = runtime.run(agent, "use the tool", "sc1");
 
@@ -146,7 +111,9 @@ public class LegacyParityPortedTest {
         gateway.add(new LlmTurnOutput("", "", "tool_calls",
                 Collections.singletonList(call("nope", "{}"))));
         gateway.add(new LlmTurnOutput("ok", "", "stop", Collections.emptyList()));
-        AgentRuntime runtime = new AgentRuntime.Builder(gateway).build();
+        AgentRuntime runtime = new AgentRuntime.Builder(gateway)
+                .toolRegistry(echoRegistry())
+                .build();
         Agent agent = Agent.Builder.forName("a", "i").build();
 
         RunResult result = runtime.run(agent, "go", "sc1");
@@ -164,8 +131,12 @@ public class LegacyParityPortedTest {
                 Collections.singletonList(call("echo", "{}"))));
         gateway.add(new LlmTurnOutput("", "", "tool_calls",
                 Collections.singletonList(call("echo", "{}"))));
-        AgentRuntime runtime = new AgentRuntime.Builder(gateway).maxTurns(2).build();
-        Agent agent = Agent.Builder.forName("a", "i").tools(echoTool()).build();
+        AgentRuntime runtime = new AgentRuntime.Builder(gateway)
+                .toolRegistry(echoRegistry())
+                .permissions(new PermissionLayer(ToolPolicy.permissive(), null, null))
+                .maxTurns(2)
+                .build();
+        Agent agent = Agent.Builder.forName("a", "i").build();
 
         RunResult result = runtime.run(agent, "loop", "sc1");
 
@@ -183,8 +154,9 @@ public class LegacyParityPortedTest {
                 request -> PermissionDecision.DENY, null);
         AgentRuntime runtime = new AgentRuntime.Builder(gateway)
                 .permissions(layer)
+                .toolRegistry(echoRegistry())
                 .build();
-        Agent agent = Agent.Builder.forName("a", "i").tools(approvalEcho()).build();
+        Agent agent = Agent.Builder.forName("a", "i").build();
 
         RunResult result = runtime.run(agent, "go", "sc1");
 
@@ -199,6 +171,7 @@ public class LegacyParityPortedTest {
         ScriptedHistoryGateway gateway = new ScriptedHistoryGateway();
         gateway.add(new LlmTurnOutput("never", "", "stop", Collections.emptyList()));
         AgentRuntime runtime = new AgentRuntime.Builder(gateway)
+                .toolRegistry(echoRegistry())
                 .inputGuardrails(new Guardrail() {
                     @Override
                     public GuardrailResult checkInput(String userInput) {

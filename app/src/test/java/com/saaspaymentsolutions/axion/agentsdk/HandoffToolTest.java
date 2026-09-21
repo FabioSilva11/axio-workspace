@@ -10,7 +10,7 @@ public class HandoffToolTest {
     @Test
     public void toolNameFollowsTransferPrefix() {
         Agent target = Agent.Builder.forName("Code Reviewer", "review").build();
-        assertEquals("transfer_to_Code_Reviewer", HandoffTool.toolNameFor(target));
+        assertEquals("transfer_to_Code_Reviewer", HandoffRegistrations.transferToNameFor(target));
     }
 
     @Test

@@ -6,16 +6,13 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 import com.saaspaymentsolutions.axion.ChatMessage;
-import com.saaspaymentsolutions.axion.ToolManager;
 import com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRegistry;
 import com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRouter;
 import com.saaspaymentsolutions.axion.agentsdk.tools.ToolCatalog;
 import com.saaspaymentsolutions.axion.agentsdk.tools.ToolRegistration;
 import com.saaspaymentsolutions.axion.agentsdk.tools.ToolSpec.Type;
 import com.saaspaymentsolutions.axion.agentsdk.tools.WorkspaceToolProvider;
-import com.saaspaymentsolutions.axion.port.VoidToolWrapper;
 
-import org.json.JSONObject;
 import org.junit.Test;
 
 import java.util.ArrayList;
@@ -28,12 +25,12 @@ import java.util.concurrent.atomic.AtomicInteger;
  * AxionToolRegistry → ToolCatalog → gateway → provider → tool call →
  * AxionToolRouter → executor.
  *
- * <p>The coordinator agent carries NO {@code AgentTool[]} — the model-facing
+ * <p>The coordinator agent carries NO per-agent tools — the model-facing
  * catalog comes exclusively from the registry ({@code AgentRuntime} no longer
  * adapts agent tools at run time). Legacy tools with a newer contract
  * (run_command→exec_command, edit_file→apply_patch, ...) never surface, while
- * model-compatible legacy tools reach the catalog through an explicit,
- * classification-guarded {@code LegacyToolAdapter} registration.</p>
+ * the remaining workspace read tools (read_file, ls_dir, search*, ...) reach
+ * the catalog as first-class registry citizens.</p>
  */
 public class AgentManagerProductionPathTest {
 
@@ -108,26 +105,11 @@ public class AgentManagerProductionPathTest {
         }
     }
 
-    /** The production registry wiring: core Codex tools + classified compat tools. */
+    /** The production registry wiring: core Codex tools + workspace read tools. */
     private AxionToolRegistry productionRegistry() {
         AxionToolRegistry registry = new AxionToolRegistry();
         WorkspaceToolProvider.registerCoreTools(registry, null);
-        ToolManager legacy = new ToolManager();
-        // Model-compatible legacy tools (no newer contract) must survive.
-        legacy.registerTool(new VoidToolWrapper("read_file", "Read a file.", new JSONObject(), false, false, false));
-        legacy.registerTool(new VoidToolWrapper("ls_dir", "List a folder.", new JSONObject(), false, false, false));
-        legacy.registerTool(new VoidToolWrapper("get_dir_tree", "Folder tree.", new JSONObject(), false, false, false));
-        legacy.registerTool(new VoidToolWrapper("search_for_files", "Search content.", new JSONObject(), false, false, false));
-        // Replaced legacy tools must NOT reach the model.
-        legacy.registerTool(new VoidToolWrapper("run_command", "Run.", new JSONObject(), true, true, false));
-        legacy.registerTool(new VoidToolWrapper("run_persistent_command", "Run p.", new JSONObject(), true, true, false));
-        legacy.registerTool(new VoidToolWrapper("open_persistent_terminal", "Open.", new JSONObject(), true, false, false));
-        legacy.registerTool(new VoidToolWrapper("kill_persistent_terminal", "Kill.", new JSONObject(), true, false, false));
-        legacy.registerTool(new VoidToolWrapper("edit_file", "Edit.", new JSONObject(), true, true, true));
-        legacy.registerTool(new VoidToolWrapper("rewrite_file", "Rewrite.", new JSONObject(), true, true, true));
-        legacy.registerTool(new VoidToolWrapper("create_file_or_folder", "Create.", new JSONObject(), true, false, true));
-        legacy.registerTool(new VoidToolWrapper("delete_file_or_folder", "Delete.", new JSONObject(), true, true, true));
-        WorkspaceAgents.registerModelCompatibleTools(registry, legacy);
+        WorkspaceToolProvider.registerWorkspaceReadTools(registry);
         return registry;
     }
 
@@ -173,8 +155,7 @@ public class AgentManagerProductionPathTest {
     @Test
     public void agentManagerMountsACatalogFreeCoordinatorAndRunsAgainstTheRegistry() throws Exception {
         Agent coordinator = plainCoordinator();
-        assertTrue("the coordinator carries NO AgentTool[] — the registry feeds the model",
-                coordinator.tools().isEmpty());
+        // The coordinator carries NO per-agent tools — the registry feeds the model.
 
         AxionToolRegistry registry = productionRegistry();
         CaptureGateway gateway = new CaptureGateway();

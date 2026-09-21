@@ -55,11 +55,11 @@ public class ApplyPatchRollbackFailureEvalTest {
         fs.failDeletes = true; // DELETE op fails mid-apply
         ApplyPatchTool tool = new ApplyPatchTool(SC, events, fs);
 
-        AgentToolResult result = tool.execute(null, new JSONObject().put("patch",
+        AgentToolResult result = tool.apply(null,
                 "*** Begin Patch\n"
                         + "*** Update File: src/A.java\n@@\n-original A\n+patched A\n"
                         + "*** Delete File: src/C.java\n"
-                        + "*** End Patch"));
+                        + "*** End Patch");
 
         assertTrue(result.isError());
         assertTrue("clean-rollback message must be explicit",
@@ -80,11 +80,11 @@ public class ApplyPatchRollbackFailureEvalTest {
         fs.failDeletes = true;
         ApplyPatchTool tool = new ApplyPatchTool(SC, events, fs);
 
-        AgentToolResult result = tool.execute(null, new JSONObject().put("patch",
+        AgentToolResult result = tool.apply(null,
                 "*** Begin Patch\n"
                         + "*** Add File: src/New.java\n+class New {}\n"
                         + "*** Delete File: src/C.java\n"
-                        + "*** End Patch"));
+                        + "*** End Patch");
 
         assertTrue("the patch must fail", result.isError());
         assertTrue("the error must admit the partial state, not claim a clean revert",
@@ -110,11 +110,11 @@ public class ApplyPatchRollbackFailureEvalTest {
         fs.loseContentOnWriteFor.add("src/A.java"); // rollback of A silently diverges
         ApplyPatchTool tool = new ApplyPatchTool(SC, events, fs);
 
-        AgentToolResult result = tool.execute(null, new JSONObject().put("patch",
+        AgentToolResult result = tool.apply(null,
                 "*** Begin Patch\n"
                         + "*** Update File: src/A.java\n@@\n-original A\n+patched A\n"
                         + "*** Delete File: src/B.java\n"
-                        + "*** End Patch"));
+                        + "*** End Patch");
 
         assertTrue(result.isError());
         assertTrue("the divergence must be detected and reported",
@@ -131,8 +131,8 @@ public class ApplyPatchRollbackFailureEvalTest {
         WorkspaceManager.INSTANCE.setCustomFileSystemForTesting(fsA, fakeWorkspace());
         fsA.writeText("src/File.java", "original A\n");
         ApplyPatchTool toolA = new ApplyPatchTool(SC, null, fsA);
-        AgentToolResult r = toolA.execute(null, new JSONObject().put("patch",
-                "*** Begin Patch\n*** Update File: src/File.java\n@@\n-original A\n+patched A\n*** End Patch"));
+        AgentToolResult r = toolA.apply(null,
+                "*** Begin Patch\n*** Update File: src/File.java\n@@\n-original A\n+patched A\n*** End Patch");
         assertFalse(r.isError());
         assertEquals("patched A\n", fsA.readText("src/File.java"));
 
@@ -172,8 +172,8 @@ public class ApplyPatchRollbackFailureEvalTest {
         WorkspaceManager.INSTANCE.setCustomFileSystemForTesting(fsA, fakeWorkspace("ws-a"));
         fsA.writeText("src/File.java", "original A\n");
         ApplyPatchTool toolA = new ApplyPatchTool(SC, null, fsA);
-        AgentToolResult r = toolA.execute(null, new JSONObject().put("patch",
-                "*** Begin Patch\n*** Update File: src/File.java\n@@\n-original A\n+patched A\n*** End Patch"));
+        AgentToolResult r = toolA.apply(null,
+                "*** Begin Patch\n*** Update File: src/File.java\n@@\n-original A\n+patched A\n*** End Patch");
         assertFalse(r.isError());
 
         // Process death: the in-memory scId→filesystem binding is gone.
@@ -200,8 +200,8 @@ public class ApplyPatchRollbackFailureEvalTest {
         WorkspaceManager.INSTANCE.setCustomFileSystemForTesting(fsA, fakeWorkspace("ws-a"));
         fsA.writeText("src/File.java", "original A\n");
         ApplyPatchTool toolA = new ApplyPatchTool(SC, null, fsA);
-        toolA.execute(null, new JSONObject().put("patch",
-                "*** Begin Patch\n*** Update File: src/File.java\n@@\n-original A\n+patched A\n*** End Patch"));
+        toolA.apply(null,
+                "*** Begin Patch\n*** Update File: src/File.java\n@@\n-original A\n+patched A\n*** End Patch");
 
         // Process death removes the binding…
         FileChangeTracker.clearFileSystemBindings();
@@ -224,8 +224,8 @@ public class ApplyPatchRollbackFailureEvalTest {
                 safWorkspace("ws-saf-a", "content://workspaceA/tree"));
         fsA.writeText("src/File.java", "original A\n");
         ApplyPatchTool toolA = new ApplyPatchTool(SC, null, fsA);
-        toolA.execute(null, new JSONObject().put("patch",
-                "*** Begin Patch\n*** Update File: src/File.java\n@@\n-original A\n+patched A\n*** End Patch"));
+        toolA.apply(null,
+                "*** Begin Patch\n*** Update File: src/File.java\n@@\n-original A\n+patched A\n*** End Patch");
 
         // Binding lost; a DIFFERENT SAF tree (B) becomes active.
         FileChangeTracker.clearFileSystemBindings();

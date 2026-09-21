@@ -140,7 +140,7 @@ public final class AxionAgentGateway implements AgentLlmGateway, AgentLlmGateway
         cancelRequested = false;
         lastUsage = null;
 
-        ContextBuilder builder = new ContextBuilder(null, messages, null)
+        ContextBuilder builder = new ContextBuilder(null, messages)
                 .setAgentGuidance("")
                 .setFinalResponseOnly(false)
                 .setIncludeNativeReferences(true);

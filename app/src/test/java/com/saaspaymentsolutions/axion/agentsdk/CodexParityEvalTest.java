@@ -5,6 +5,8 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 import com.saaspaymentsolutions.axion.ChatMessage;
+import com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRegistry;
+import com.saaspaymentsolutions.axion.agentsdk.tools.WorkspaceToolProvider;
 import com.saaspaymentsolutions.axion.toolcalling.ToolCall;
 
 import org.json.JSONObject;
@@ -38,9 +40,9 @@ public class CodexParityEvalTest {
 
         AgentRuntime runtime = new AgentRuntime.Builder(gateway)
                 .events(events)
-                .inputChannel(channel)
+                .toolRegistry(coreRegistry(channel))
                 .build();
-        Agent agent = defaultAgent(channel);
+        Agent agent = defaultAgent();
 
         RunResult result = runtime.run(agent, "Analise o projeto", "sc_ctx");
 
@@ -53,8 +55,8 @@ public class CodexParityEvalTest {
         AgentToolResult toolResult = firstCompletedToolResult(received, "get_context_remaining");
         assertNotNull("tracker report must reach the model via the real loop", toolResult);
         JSONObject report = new JSONObject(toolResult.output());
-        assertTrue(report.has("last_input_tokens"));
-        assertTrue(report.has("settled_tokens_this_run"));
+        assertTrue(report.has("tokens_left"));
+        assertTrue(report.has("budget_enforced"));
     }
 
     @Test
@@ -64,13 +66,21 @@ public class CodexParityEvalTest {
         FakeAgentLlmGateway gateway = new FakeAgentLlmGateway(
                 // Turn 1: ambiguity — model asks the user a structured question.
                 FakeAgentLlmGateway.ScriptedTurn.toolCall("request_user_input",
-                        new JSONObject()
-                                .put("question", "Novos arquivos em Kotlin ou Java?")
-                                .put("options", new org.json.JSONArray()
-                                        .put(new JSONObject().put("label", "Kotlin"))
-                                        .put(new JSONObject().put("label", "Java"))
-                                        .put(new JSONObject().put("label", "Tanto faz")))
-                                .put("allow_free_text", true)
+                        new JSONObject().put("questions", new org.json.JSONArray()
+                                .put(new JSONObject()
+                                        .put("id", "lang")
+                                        .put("header", "Language")
+                                        .put("question", "Novos arquivos em Kotlin ou Java?")
+                                        .put("options", new org.json.JSONArray()
+                                                .put(new JSONObject()
+                                                        .put("label", "Kotlin")
+                                                        .put("description", "Novos arquivos em Kotlin."))
+                                                .put(new JSONObject()
+                                                        .put("label", "Java")
+                                                        .put("description", "Novos arquivos em Java."))
+                                                .put(new JSONObject()
+                                                        .put("label", "Tanto faz")
+                                                        .put("description", "Sem preferência.")))))
                                 .toString()),
                 // Turn 2: with the answer, it concludes.
                 FakeAgentLlmGateway.ScriptedTurn.text(
@@ -82,10 +92,10 @@ public class CodexParityEvalTest {
 
         AgentRuntime runtime = new AgentRuntime.Builder(gateway)
                 .events(events)
-                .inputChannel(channel)
+                .toolRegistry(coreRegistry(channel))
                 .build();
 
-        RunResult result = runtime.run(defaultAgent(channel), "Adicione uma feature", "sc_user_input");
+        RunResult result = runtime.run(defaultAgent(), "Adicione uma feature", "sc_user_input");
 
         assertTrue(result.isSuccessful());
         assertEquals(2, gateway.turnsConsumed());
@@ -101,16 +111,25 @@ public class CodexParityEvalTest {
         channel.decision = PermissionDecision.DENY;
         FakeAgentLlmGateway gateway = new FakeAgentLlmGateway(
                 FakeAgentLlmGateway.ScriptedTurn.toolCall("request_user_input",
-                        new JSONObject().put("question", "Posso apagar os logs?").toString()),
+                        new JSONObject().put("questions", new org.json.JSONArray()
+                                .put(new JSONObject()
+                                        .put("id", "delete_logs")
+                                        .put("header", "Delete?")
+                                        .put("question", "Posso apagar os logs?")
+                                        .put("options", new org.json.JSONArray()
+                                                .put(new JSONObject()
+                                                        .put("label", "Sim")
+                                                        .put("description", "Apagar os logs antigos.")))))
+                                .toString()),
                 FakeAgentLlmGateway.ScriptedTurn.text(
                         "Sem resposta: mantive os logs e deixei a limpeza para você aprovar."));
 
         AgentRuntime runtime = new AgentRuntime.Builder(gateway)
                 .events(new EventStream(Runnable::run, 64))
-                .inputChannel(channel)
+                .toolRegistry(coreRegistry(channel))
                 .build();
 
-        RunResult result = runtime.run(defaultAgent(channel), "Limpe o projeto", "sc_dismiss");
+        RunResult result = runtime.run(defaultAgent(), "Limpe o projeto", "sc_dismiss");
 
         assertTrue(result.isSuccessful());
         assertTrue(result.getOutput().contains("mantive os logs"));
@@ -120,12 +139,16 @@ public class CodexParityEvalTest {
     // helpers
     // ------------------------------------------------------------------
 
-    /** Agent with the two Codex-parity tools plus a read-only file tool. */
-    private static Agent defaultAgent(RecordingInputChannel channel) {
-        return Agent.Builder.forName("coder", "You complete coding tasks.")
-                .tools(new ContextRemainingTool())
-                .tools(new RequestUserInputTool(channel))
-                .build();
+    /** Core Codex-parity registry, request_user_input routed to the channel. */
+    private static AxionToolRegistry coreRegistry(RecordingInputChannel channel) {
+        AxionToolRegistry registry = new AxionToolRegistry();
+        WorkspaceToolProvider.registerCoreTools(registry, channel);
+        return registry;
+    }
+
+    /** The coordinator agent carries NO tools — the registry feeds the catalog. */
+    private static Agent defaultAgent() {
+        return Agent.Builder.forName("coder", "You complete coding tasks.").build();
     }
 
     private static AgentToolResult firstCompletedToolResult(List<AgentEvent> events, String toolName) {

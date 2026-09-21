@@ -59,11 +59,10 @@ public class RuntimeV2OnlyTest {
 
         AgentRuntime runtime = new AgentRuntime.Builder(gateway)
                 .permissions(layer)
+                .toolRegistry(registryWithApprovalTool("edit_file", new java.util.concurrent.atomic.AtomicBoolean(false)))
                 .maxTurns(4)
                 .build();
-        Agent agent = Agent.Builder.forName("a", "i")
-                .tools(approvalTool("edit_file"))
-                .build();
+        Agent agent = Agent.Builder.forName("a", "i").build();
 
         // Run on a thread; the runtime parks on the approval handler.
         Thread runThread = new Thread(() -> runtime.run(agent, "go", "sc1"));
@@ -110,16 +109,17 @@ public class RuntimeV2OnlyTest {
                     }
                 }, events.stream);
 
+        java.util.concurrent.atomic.AtomicBoolean executed = new java.util.concurrent.atomic.AtomicBoolean(false);
         AgentRuntime runtime = new AgentRuntime.Builder(gateway)
                 .permissions(layer)
+                .toolRegistry(registryWithApprovalTool("edit_file", executed))
                 .maxTurns(4)
                 .build();
-        StubTool tool = new StubTool("edit_file");
         RunResult result = runtime.run(
-                Agent.Builder.forName("a", "i").tools(tool).build(), "go", "sc1");
+                Agent.Builder.forName("a", "i").build(), "go", "sc1");
 
         assertTrue(result.isSuccessful());
-        assertFalse("tool must not have executed after timeout", tool.executed);
+        assertFalse("tool must not have executed after timeout", executed.get());
         assertFalse("timeout must resolve as a recorded denial",
                 events.resolved.isEmpty());
         assertFalse(events.resolved.get(0).isAllowed());
@@ -133,7 +133,9 @@ public class RuntimeV2OnlyTest {
     public void bridge_deliversMessagesAndBlocksForSyncHosts() throws Exception {
         FakeAgentLlmGateway gateway = new FakeAgentLlmGateway(
                 FakeAgentLlmGateway.ScriptedTurn.text("legacy-free answer"));
-        AgentRuntime runtime = new AgentRuntime.Builder(gateway).build();
+        AgentRuntime runtime = new AgentRuntime.Builder(gateway)
+                .toolRegistry(new com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRegistry())
+                .build();
 
         List<ChatMessage> added = new ArrayList<>();
         List<ChatMessage> updated = new ArrayList<>();
@@ -194,45 +196,21 @@ public class RuntimeV2OnlyTest {
     // helpers
     // ------------------------------------------------------------------
 
-    private static AgentTool approvalTool(String name) {
-        return new StubTool(name);
-    }
-
-
-    /** Simple approval-gated tool recording execution. */
-    private static final class StubTool implements AgentTool {
-        final String toolName;
-        boolean executed;
-
-        StubTool(String toolName) {
-            this.toolName = toolName;
-        }
-
-        @Override
-        public String name() {
-            return toolName;
-        }
-
-        @Override
-        public String description() {
-            return "stub";
-        }
-
-        @Override
-        public JSONObject parameters() {
-            return new JSONObject();
-        }
-
-        @Override
-        public boolean requiresApproval() {
-            return true;
-        }
-
-        @Override
-        public AgentToolResult execute(RunContext context, JSONObject args) {
-            executed = true;
-            return AgentToolResult.success("ran");
-        }
+    /** A registry carrying ONE approval-gated tool ({@code edit_file}). */
+    private static com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRegistry
+            registryWithApprovalTool(String name, java.util.concurrent.atomic.AtomicBoolean executed) {
+        com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRegistry registry =
+                new com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRegistry();
+        registry.register(com.saaspaymentsolutions.axion.agentsdk.tools.ToolRegistration.function(
+                        name, "stub", new JSONObject())
+                .executor(context -> {
+                    executed.set(true);
+                    return AgentToolResult.success("ran");
+                })
+                .source("test")
+                .fileMutation(true)
+                .build());
+        return registry;
     }
 
     /** Collector for denial/resolution events backed by a real sync EventStream. */

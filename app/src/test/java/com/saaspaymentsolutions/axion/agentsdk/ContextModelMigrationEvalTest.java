@@ -205,9 +205,8 @@ public class ContextModelMigrationEvalTest {
         // apply_patch with NO injected fs still mutates the RUN's workspace.
         fsA.writeText("src/A.java", "original A\n");
         ApplyPatchTool patch = new ApplyPatchTool(SC_A, events);
-        AgentToolResult result = patch.execute(RunContext.bare(SC_A, "agent", null),
-                new JSONObject().put("patch",
-                        "*** Begin Patch\n*** Update File: src/A.java\n@@\n-original A\n+patched A\n*** End Patch"));
+        AgentToolResult result = patch.apply(RunContext.bare(SC_A, "agent", null),
+                "*** Begin Patch\n*** Update File: src/A.java\n@@\n-original A\n+patched A\n*** End Patch");
         assertFalse(result.isError());
         assertEquals("patched A\n", fsA.readText("src/A.java"));
         assertFalse("B untouched by the run pinned on A", fsB.exists("src/A.java"));
@@ -225,6 +224,7 @@ public class ContextModelMigrationEvalTest {
                 FakeAgentLlmGateway.ScriptedTurn.text("done"));
         AgentRuntime runtime = new AgentRuntime.Builder(gateway)
                 .includeProjectInstructions(true)
+                .toolRegistry(new com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRegistry())
                 .build();
 
         RunResult result = runtime.run(agent(), "mecha o projeto", SC_A);

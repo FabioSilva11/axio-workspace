@@ -32,11 +32,11 @@ public class ApplyPatchToolTest {
 
     @Test
     public void addFile_createsNewFile() {
-        AgentToolResult result = tool.execute(null, patchJson(
+        AgentToolResult result = tool.apply(null,
                 "*** Begin Patch\n"
                 + "*** Add File: lib/novo.kt\n"
                 + "+fun created() {}\n"
-                + "*** End Patch\n"));
+                + "*** End Patch\n");
         assertFalse(result.isError());
         assertEquals("fun created() {}\n", fs.readText("lib/novo.kt"));
     }
@@ -44,14 +44,14 @@ public class ApplyPatchToolTest {
     @Test
     public void updateFile_appliesContextHunk() throws IOException {
         fs.writeText("app.kt", "class A {\n    val x = 1\n}\n");
-        AgentToolResult result = tool.execute(null, patchJson(
+        AgentToolResult result = tool.apply(null,
                 "*** Begin Patch\n"
                 + "*** Update File: app.kt\n"
                 + " class A {\n"
                 + "-    val x = 1\n"
                 + "+    val x = 2\n"
                 + " }\n"
-                + "*** End Patch\n"));
+                + "*** End Patch\n");
         assertFalse(result.isError());
         assertEquals("class A {\n    val x = 2\n}\n", fs.readText("app.kt"));
     }
@@ -59,12 +59,12 @@ public class ApplyPatchToolTest {
     @Test
     public void updateFile_failsCleanlyWhenContextMissing() throws IOException {
         fs.writeText("app.kt", "class A {}\n");
-        AgentToolResult result = tool.execute(null, patchJson(
+        AgentToolResult result = tool.apply(null,
                 "*** Begin Patch\n"
                 + "*** Update File: app.kt\n"
                 + "-nonexistent line\n"
                 + "+replacement\n"
-                + "*** End Patch\n"));
+                + "*** End Patch\n");
         assertTrue(result.isError());
         assertEquals("class A {}\n", fs.readText("app.kt")); // untouched
     }
@@ -72,62 +72,49 @@ public class ApplyPatchToolTest {
     @Test
     public void deleteFile_removesFile() throws IOException {
         fs.writeText("obsolete.txt", "bye\n");
-        AgentToolResult result = tool.execute(null, patchJson(
+        AgentToolResult result = tool.apply(null,
                 "*** Begin Patch\n"
                 + "*** Delete File: obsolete.txt\n"
-                + "*** End Patch\n"));
+                + "*** End Patch\n");
         assertFalse(result.isError());
         assertFalse(fs.exists("obsolete.txt"));
     }
 
     @Test
     public void pathTraversal_isRejected() {
-        AgentToolResult result = tool.execute(null, patchJson(
+        AgentToolResult result = tool.apply(null,
                 "*** Begin Patch\n"
                 + "*** Add File: ../escape.kt\n"
                 + "+evil\n"
-                + "*** End Patch\n"));
+                + "*** End Patch\n");
         assertTrue(result.isError());
     }
 
     @Test
     public void absolutePath_isRejected() {
-        AgentToolResult result = tool.execute(null, patchJson(
+        AgentToolResult result = tool.apply(null,
                 "*** Begin Patch\n"
                 + "*** Add File: /etc/passwd\n"
                 + "+evil\n"
-                + "*** End Patch\n"));
+                + "*** End Patch\n");
         assertTrue(result.isError());
     }
 
     @Test
     public void addFile_onExistingFile_isRejected() throws IOException {
         fs.writeText("exists.kt", "original\n");
-        AgentToolResult result = tool.execute(null, patchJson(
+        AgentToolResult result = tool.apply(null,
                 "*** Begin Patch\n"
                 + "*** Add File: exists.kt\n"
                 + "+clobber\n"
-                + "*** End Patch\n"));
+                + "*** End Patch\n");
         assertTrue(result.isError());
         assertEquals("original\n", fs.readText("exists.kt"));
     }
 
     @Test
     public void malformedPatch_isRejectedWithoutWrites() {
-        AgentToolResult result = tool.execute(null, patchJson("no markers"));
+        AgentToolResult result = tool.apply(null, "no markers");
         assertTrue(result.isError());
-    }
-
-    @Test
-    public void missingPatchArg_isRejected() {
-        assertTrue(tool.execute(null, new org.json.JSONObject()).isError());
-    }
-
-    private static org.json.JSONObject patchJson(String patch) {
-        try {
-            return new org.json.JSONObject().put("patch", patch);
-        } catch (org.json.JSONException e) {
-            throw new AssertionError(e);
-        }
     }
 }

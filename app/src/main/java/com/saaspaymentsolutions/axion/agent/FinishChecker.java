@@ -73,7 +73,8 @@ public final class FinishChecker {
         }
 
         // A read-only turn is allowed to finish after explanation/inspection. The
-        // actual mutation block is enforced in ToolManager, not by this heuristic.
+        // actual mutation block is enforced by the runtime's PermissionLayer,
+        // not by this heuristic.
         if (effectivePattern.isReadOnly()) {
             return ValidationResult.allowed();
         }

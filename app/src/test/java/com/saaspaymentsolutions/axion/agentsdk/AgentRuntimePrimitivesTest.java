@@ -6,6 +6,7 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
+import com.saaspaymentsolutions.axion.agentsdk.tools.ToolRegistration;
 import com.saaspaymentsolutions.axion.toolcalling.ToolCall;
 
 import org.junit.Test;
@@ -80,7 +81,7 @@ public class AgentRuntimePrimitivesTest {
                 .mutation(ToolPolicy.Rule.DENY)
                 .build();
         PermissionLayer layer = new PermissionLayer(policy, null, null);
-        AgentTool tool = new StubTool("rewrite_file", true, false);
+        ToolRegistration tool = mutationRegistration("rewrite_file");
 
         assertEquals(PermissionLayer.Outcome.BLOCKED,
                 layer.check(tool, new ToolCall("rewrite_file", "{}", null), "sc1"));
@@ -89,7 +90,7 @@ public class AgentRuntimePrimitivesTest {
     @Test
     public void permissionLayer_allowPassesWithoutHandler() {
         PermissionLayer layer = new PermissionLayer(ToolPolicy.permissive(), null, null);
-        AgentTool tool = new StubTool("read_file", false, false);
+        ToolRegistration tool = plainRegistration("read_file");
 
         assertEquals(PermissionLayer.Outcome.PROCEED,
                 layer.check(tool, new ToolCall("read_file", "{}", null), "sc1"));
@@ -98,7 +99,7 @@ public class AgentRuntimePrimitivesTest {
     @Test
     public void permissionLayer_askUserWithoutHandlerFailsClosed() {
         PermissionLayer layer = new PermissionLayer(ToolPolicy.interactive(), null, null);
-        AgentTool tool = new StubTool("edit_file", true, false);
+        ToolRegistration tool = mutationRegistration("edit_file");
 
         assertEquals(PermissionLayer.Outcome.BLOCKED,
                 layer.check(tool, new ToolCall("edit_file", "{}", null), "sc1"));
@@ -110,7 +111,7 @@ public class AgentRuntimePrimitivesTest {
                 ToolPolicy.interactive(),
                 request -> PermissionDecision.ALLOW,
                 null);
-        AgentTool tool = new StubTool("edit_file", true, false);
+        ToolRegistration tool = mutationRegistration("edit_file");
 
         assertEquals(PermissionLayer.Outcome.PROCEED,
                 layer.check(tool, new ToolCall("edit_file", "{}", null), "sc1"));
@@ -122,7 +123,7 @@ public class AgentRuntimePrimitivesTest {
                 ToolPolicy.interactive(),
                 request -> PermissionDecision.DENY,
                 null);
-        AgentTool tool = new StubTool("run_command", true, false);
+        ToolRegistration tool = shellRegistration("run_command");
 
         assertEquals(PermissionLayer.Outcome.BLOCKED,
                 layer.check(tool, new ToolCall("run_command", "{}", null), "sc1"));
@@ -136,8 +137,8 @@ public class AgentRuntimePrimitivesTest {
                 .shell(ToolPolicy.Rule.ALLOW)
                 .build();
         PermissionLayer layer = new PermissionLayer(policy, null, null);
-        AgentTool shell = new StubTool("run_command", true, false);
-        AgentTool mutation = new StubTool("rewrite_file", true, false);
+        ToolRegistration shell = shellRegistration("run_command");
+        ToolRegistration mutation = mutationRegistration("rewrite_file");
 
         assertEquals(PermissionLayer.Outcome.PROCEED,
                 layer.check(shell, new ToolCall("run_command", "{}", null), "sc1"));
@@ -323,45 +324,22 @@ public class AgentRuntimePrimitivesTest {
     // stubs
     // ------------------------------------------------------------------
 
-    private static final class StubTool implements AgentTool {
-        private final String name;
-        private final boolean mutation;
-        private final boolean destructive;
+    private static ToolRegistration mutationRegistration(String name) {
+        return ToolRegistration.function(name, "stub", new org.json.JSONObject())
+                .fileMutation(true)
+                .destructive(false)
+                .build();
+    }
 
-        StubTool(String name, boolean mutation, boolean destructive) {
-            this.name = name;
-            this.mutation = mutation;
-            this.destructive = destructive;
-        }
+    private static ToolRegistration shellRegistration(String name) {
+        return ToolRegistration.function(name, "stub", new org.json.JSONObject())
+                .fileMutation(true)
+                .destructive(false)
+                .build();
+    }
 
-        @Override
-        public String name() {
-            return name;
-        }
-
-        @Override
-        public String description() {
-            return "stub";
-        }
-
-        @Override
-        public org.json.JSONObject parameters() {
-            return new org.json.JSONObject();
-        }
-
-        @Override
-        public AgentToolResult execute(RunContext context, org.json.JSONObject args) {
-            return AgentToolResult.success("ok");
-        }
-
-        @Override
-        public boolean isFileMutation() {
-            return mutation;
-        }
-
-        @Override
-        public boolean isDestructive() {
-            return destructive;
-        }
+    private static ToolRegistration plainRegistration(String name) {
+        return ToolRegistration.function(name, "stub", new org.json.JSONObject())
+                .build();
     }
 }

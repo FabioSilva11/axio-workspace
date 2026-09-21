@@ -22,14 +22,11 @@ import com.saaspaymentsolutions.axion.agent.MultiAgentPolicy;
 import com.saaspaymentsolutions.axion.agent.PatternMatcher;
 import com.saaspaymentsolutions.axion.agent.RetryManager;
 import com.saaspaymentsolutions.axion.agent.TaskPlanner;
-import com.saaspaymentsolutions.axion.port.VoidToolWrapper;
 import com.saaspaymentsolutions.axion.port.VoidPortDiffService;
 import com.saaspaymentsolutions.axion.port.VoidPortConvertToLlmMessageService;
-import com.saaspaymentsolutions.axion.port.VoidPortMcpChannel;
 import com.saaspaymentsolutions.axion.port.VoidPortModelCapabilities;
 import com.saaspaymentsolutions.axion.port.VoidPortSettings;
 import com.saaspaymentsolutions.axion.Tool;
-import com.saaspaymentsolutions.axion.ToolManager;
 import com.saaspaymentsolutions.axion.AiProviderService;
 import com.saaspaymentsolutions.axion.AiRequestHandle;
 import com.saaspaymentsolutions.axion.ProjectPathResolver;
@@ -80,7 +77,6 @@ public class AgentManager {
     private final AgentListener listener;
     private final AiProviderService aiService;
     private final MultiAgentOrchestrator multiAgentOrchestrator;
-    private final ToolManager toolManager;
     private final Handler mainHandler;
     private final Handler streamCoalesceHandler;
     private final ChatCheckpointManager checkpointManager;
@@ -216,9 +212,6 @@ public class AgentManager {
         this.listener = listener;
         this.aiService = AiProviderService.getInstance();
         this.multiAgentOrchestrator = new MultiAgentOrchestrator(this.aiService);
-        
-        this.toolManager = new ToolManager();
-        VoidToolWrapper.registerAllVoidTools(this.toolManager);
 
         this.mainHandler = new Handler(Looper.getMainLooper());
         this.streamCoalesceHandler = new Handler(Looper.getMainLooper());
@@ -251,9 +244,6 @@ public class AgentManager {
         this.listener = listener;
         this.aiService = AiProviderService.getInstance();
         this.multiAgentOrchestrator = new MultiAgentOrchestrator(this.aiService);
-
-        this.toolManager = new ToolManager();
-        VoidToolWrapper.registerAllVoidTools(this.toolManager);
 
         this.mainHandler = new Handler(Looper.getMainLooper());
         this.streamCoalesceHandler = new Handler(Looper.getMainLooper());
@@ -385,7 +375,6 @@ public class AgentManager {
 
         setState(State.THINKING);
         requestPattern = PatternMatcher.analyze(displayText, contextPayload, stagingSelections);
-        toolManager.setMutationsAllowed(requestPattern.allowsMutations());
         captureOperationContextForRun();
         beginRunIdentity();
 
@@ -455,7 +444,6 @@ public class AgentManager {
                             + "The legacy loop is retired.");
         }
         requestPattern = PatternMatcher.analyze(displayText, contextPayload, selections);
-        toolManager.setMutationsAllowed(requestPattern.allowsMutations());
         captureOperationContextForRun();
         beginRunIdentity();
         beginInteractionTrace(++runVersion, displayText, selections);
@@ -505,7 +493,6 @@ public class AgentManager {
             SecureLogger.logCancellation(currentOperationContext.getRequestId(),
                     CancellationReason.USER_REQUESTED);
         }
-        toolManager.cancelActiveTool();
         // Kill any shell processes spawned by run_command / persistent terminals;
         // previously they kept running (and leaking) after the user cancelled.
         com.saaspaymentsolutions.axion.port.VoidPortToolsService.killAllTerminals();
@@ -525,7 +512,6 @@ public class AgentManager {
         }
         runVersion++;
         multiAgentOrchestrator.reset();
-        toolManager.cancelActiveTool();
         com.saaspaymentsolutions.axion.port.VoidPortToolsService.killAllTerminals();
         mainHandler.removeCallbacksAndMessages(null);
         historySummary = "";
@@ -536,7 +522,6 @@ public class AgentManager {
         agentMemory = null;
         requestPattern = null;
         taskPlan = null;
-        toolManager.setMutationsAllowed(true);
         ChatPlanManager.clearExecutionPlan(scId);
         ChatPlanManager.clearModelPlan(scId);
         pendingAgentFeedback = "";
@@ -1471,9 +1456,6 @@ public class AgentManager {
             return;
         }
         requestPattern = PatternMatcher.analyze(safeText, contextPayload, stagingSelections);
-        // Permission is a host invariant. A clear read-only request removes
-        // mutation tools from the catalog and blocks them again at execution.
-        toolManager.setMutationsAllowed(requestPattern.allowsMutations());
 
         // Freeze the user's multi-agent preference together with the operation.
         // The policy also recognizes broad short fixes and explicit activation;
@@ -1696,21 +1678,6 @@ public class AgentManager {
         return "";
     }
 
-    private JSONObject findMcpToolSchema(String name) {
-        if (name == null || name.trim().isEmpty()) {
-            return null;
-        }
-        JSONArray mcpTools = VoidPortMcpChannel.getToolsAsMCP(VoidPortSettings.prefs(context));
-        for (int i = 0; i < mcpTools.length(); i++) {
-            JSONObject tool = mcpTools.optJSONObject(i);
-            JSONObject function = tool == null ? null : tool.optJSONObject("function");
-            if (function != null && name.equals(function.optString("name", ""))) {
-                return function.optJSONObject("parameters");
-            }
-        }
-        return null;
-    }
-
     private void syncExecutionPlan() {
         if (taskPlan == null) {
             ChatPlanManager.clearExecutionPlan(scId);
@@ -1719,62 +1686,9 @@ public class AgentManager {
         }
     }
 
-    private JSONObject parseToolArgs(String toolArgs) {
-        try {
-            if (toolArgs == null || toolArgs.trim().isEmpty() || "null".equals(toolArgs.trim())) {
-                return new JSONObject();
-            }
-            return new JSONObject(toolArgs);
-        } catch (Exception invalidArguments) {
-            android.util.Log.e("AgentManager", "Invalid tool arguments reached execution", invalidArguments);
-            return new JSONObject();
-        }
-    }
-
-    static void collectOrReplaceToolCall(java.util.List<String[]> calls,
-                                         java.util.Map<String, Integer> indexesById,
-                                         String name,
-                                         String args,
-                                         String id) {
-        String[] value = new String[]{name, args, id};
-        if (id == null || id.trim().isEmpty()) {
-            calls.add(value);
-            return;
-        }
-        Integer existingIndex = indexesById.get(id);
-        if (existingIndex != null && existingIndex >= 0 && existingIndex < calls.size()) {
-            calls.set(existingIndex, value);
-            return;
-        }
-        indexesById.put(id, calls.size());
-        calls.add(value);
-    }
-
     private String consecutiveToolFailureMessage() {
         return "Erro: limite de falhas consecutivas de ferramentas atingido ("
                 + consecutiveToolFailures + ").";
-    }
-
-    private String toolPathArg(JSONObject args) {
-        if (args == null) {
-            return "";
-        }
-        String uri = args.optString("uri", "");
-        if (!uri.trim().isEmpty()) {
-            return uri;
-        }
-        return args.optString("file_path", "");
-    }
-
-    private String normalizeToolPath(String input) {
-        if (input == null) {
-            return "";
-        }
-        String normalized = input.trim().replace("\\", "/");
-        while (normalized.startsWith("./")) {
-            normalized = normalized.substring(2);
-        }
-        return normalized;
     }
 
     private String safe(String value) {

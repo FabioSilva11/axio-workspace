@@ -16,12 +16,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import com.saaspaymentsolutions.axion.SketchApplication;
 import com.saaspaymentsolutions.axion.port.VoidPortConvertToLlmMessageService;
 import com.saaspaymentsolutions.axion.port.VoidPortLlmMessage;
-import com.saaspaymentsolutions.axion.port.VoidPortMcpChannel;
 import com.saaspaymentsolutions.axion.port.VoidPortModelCapabilities;
 import com.saaspaymentsolutions.axion.port.VoidPortSettings;
 import com.saaspaymentsolutions.axion.port.VoidPortToolsService;
 import com.saaspaymentsolutions.axion.Tool;
-import com.saaspaymentsolutions.axion.ToolManager;
 import com.saaspaymentsolutions.axion.ProjectPathResolver;
 import com.saaspaymentsolutions.axion.skills.SkillManager;
 
@@ -140,7 +138,6 @@ public class ContextBuilder {
 
     private final String scId;
     private final List<ChatMessage> messages;
-    private final ToolManager toolManager;
     // Item 19 of the migration: budgets come from ContextBudget (single
     // source of truth) — no second set of independent constants here.
     private com.saaspaymentsolutions.axion.agentsdk.ContextBudget budget =
@@ -169,10 +166,9 @@ public class ContextBuilder {
     /** Tokens consumed outside messages/system, principally function schemas. */
     private int additionalInputTokens;
 
-    public ContextBuilder(String scId, List<ChatMessage> messages, ToolManager toolManager) {
+    public ContextBuilder(String scId, List<ChatMessage> messages) {
         this.scId = scId;
         this.messages = messages;
-        this.toolManager = toolManager;
     }
 
     /**
@@ -526,12 +522,10 @@ public class ContextBuilder {
         if ("normal".equals(chatMode) || maxTokens < 180) {
             return "";
         }
-        if (toolManager == null && externalTools == null) {
+        if (externalTools == null) {
             return "";
         }
-        List<Tool> availableTools = externalTools != null
-                ? externalTools
-                : (toolManager == null ? new ArrayList<>() : toolManager.getToolsForChatMode(chatMode));
+        List<Tool> availableTools = externalTools;
         if (availableTools.isEmpty()) {
             return "";
         }
@@ -560,27 +554,6 @@ public class ContextBuilder {
             builder.append(separator).append(candidate);
             toolIndex++;
         }
-        if ("agent".equals(chatMode)) {
-            JSONArray mcpTools = VoidPortMcpChannel.getToolsAsMCP(VoidPortSettings.prefs(SketchApplication.getContext()));
-            for (int i = 0; i < mcpTools.length(); i++) {
-                JSONObject toolObject = mcpTools.optJSONObject(i);
-                JSONObject function = toolObject == null ? null : toolObject.optJSONObject("function");
-                if (function == null) {
-                    continue;
-                }
-                StringBuilder candidate = new StringBuilder();
-                appendXmlFunctionDefinitionUnbounded(candidate, function, toolIndex);
-                if (candidate.length() == 0) {
-                    continue;
-                }
-                String separator = toolIndex > 1 ? "\n\n" : "\n";
-                if (estimateTokens(builder + separator + candidate + footer) > maxTokens) {
-                    continue;
-                }
-                builder.append(separator).append(candidate);
-                toolIndex++;
-            }
-        }
         if (toolIndex == 1) {
             return "";
         }
@@ -599,40 +572,6 @@ public class ContextBuilder {
             builder.append(toolIndex).append(". ").append(toolName).append("\n");
             builder.append("Description: ")
                     .append(compactPromptText(safe(tool.getDescription()), 180)).append("\n");
-            builder.append("Format:\n");
-            builder.append("<").append(toolName).append(">");
-            if (properties != null) {
-                JSONArray names = properties.names();
-                for (int i = 0; names != null && i < names.length(); i++) {
-                    String paramName = names.optString(i, "");
-                    if (paramName.isEmpty()) {
-                        continue;
-                    }
-                    if (!isRequiredXmlParameter(parameters, paramName)) {
-                        continue;
-                    }
-                    builder.append("\n<").append(paramName).append(">")
-                            .append("ACTUAL_VALUE")
-                            .append("</").append(paramName).append(">");
-                }
-            }
-            builder.append("\n</").append(toolName).append(">");
-            appendXmlParameterDescriptions(builder, parameters, properties);
-        } catch (Exception ignored) {
-        }
-    }
-
-    private void appendXmlFunctionDefinitionUnbounded(StringBuilder builder, JSONObject function, int toolIndex) {
-        try {
-            String toolName = function.optString("name", "");
-            if (toolName.isEmpty()) {
-                return;
-            }
-            JSONObject parameters = function.optJSONObject("parameters");
-            JSONObject properties = parameters == null ? null : parameters.optJSONObject("properties");
-            builder.append(toolIndex).append(". ").append(toolName).append("\n");
-            builder.append("Description: ")
-                    .append(compactPromptText(function.optString("description", ""), 180)).append("\n");
             builder.append("Format:\n");
             builder.append("<").append(toolName).append(">");
             if (properties != null) {

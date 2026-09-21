@@ -1,5 +1,6 @@
 package com.saaspaymentsolutions.axion.agentsdk;
 
+import com.saaspaymentsolutions.axion.agentsdk.tools.ToolRegistration;
 import com.saaspaymentsolutions.axion.toolcalling.ToolCall;
 
 /**
@@ -14,6 +15,11 @@ import com.saaspaymentsolutions.axion.toolcalling.ToolCall;
  * {@code null} policy layer is replaced by a safe-default
  * {@link ToolPolicy#interactive()} — mutation/shell never execute merely
  * because the host forgot to configure the policy.</p>
+ *
+ * <p>The layer classifies a {@link ToolRegistration} from its metadata — the
+ * single source of truth: shell name → shell policy, MCP source → network
+ * policy, destructive/file-mutation flags → destructive/mutation policy,
+ * everything else → unknown. No {@code AgentTool} participates.</p>
  */
 public final class PermissionLayer {
 
@@ -53,14 +59,15 @@ public final class PermissionLayer {
      * the user; emits {@code ApprovalRequired} / {@code PermissionResolved}
      * / {@code PolicyDenied} events.
      */
-    public Outcome check(AgentTool tool, ToolCall call, String scId) {
-        if (tool == null) {
+    public Outcome check(ToolRegistration registration, ToolCall call, String scId) {
+        if (registration == null) {
             return Outcome.PROCEED; // unknown tool handled by the caller
         }
-        ToolPolicy.Rule rule = ruleFor(tool);
+        String toolName = registration.spec().name().name();
+        ToolPolicy.Rule rule = ruleFor(registration);
         if (rule == ToolPolicy.Rule.DENY) {
-            String reason = "Policy denies tool '" + tool.name() + "' in this mode.";
-            emitEvent(new AgentEvent.PolicyDenied(scId, tool.name(), reason));
+            String reason = "Policy denies tool '" + toolName + "' in this mode.";
+            emitEvent(new AgentEvent.PolicyDenied(scId, toolName, reason));
             return Outcome.BLOCKED;
         }
         if (rule == ToolPolicy.Rule.ALLOW) {
@@ -69,13 +76,13 @@ public final class PermissionLayer {
         // ASK_USER
         if (approvalHandler == null) {
             // No host to ask: fail closed instead of silently executing.
-            String reason = "Tool '" + tool.name() + "' requires approval but no approval handler is configured.";
-            emitEvent(new AgentEvent.PolicyDenied(scId, tool.name(), reason));
+            String reason = "Tool '" + toolName + "' requires approval but no approval handler is configured.";
+            emitEvent(new AgentEvent.PolicyDenied(scId, toolName, reason));
             return Outcome.BLOCKED;
         }
         PermissionRequest request = new PermissionRequest(
-                "perm_" + java.util.UUID.randomUUID(), tool.name(), call,
-                "The policy requires user confirmation to execute '" + tool.name() + "'.");
+                "perm_" + java.util.UUID.randomUUID(), toolName, call,
+                "The policy requires user confirmation to execute '" + toolName + "'.");
         // Track state transitions for the UI/telemetry.
         approvalHandler.addStateListener(this::recordState);
         // The layer owns its pending registry and the resolution channel:
@@ -85,7 +92,7 @@ public final class PermissionLayer {
         java.util.concurrent.CompletableFuture<PermissionDecision> slot =
                 new java.util.concurrent.CompletableFuture<>();
         pendingFutures.put(request.getId(), slot);
-        emitEvent(new AgentEvent.ApprovalRequired(scId, tool.name(), call, request));
+        emitEvent(new AgentEvent.ApprovalRequired(scId, toolName, call, request));
         // The handler answers ASYNCHRONOUSLY: its decision races the host's
         // explicit resolve(requestId, decision). Whoever completes the slot
         // first decides — the run thread never parks on an uncancellable
@@ -133,7 +140,7 @@ public final class PermissionLayer {
                 : timedOut ? ApprovalHandler.ApprovalState.TIMED_OUT
                 : cancelled ? ApprovalHandler.ApprovalState.CANCELLED
                 : ApprovalHandler.ApprovalState.DENIED;
-        emitEvent(new AgentEvent.PermissionResolved(scId, tool.name(), decision, allowed, state));
+        emitEvent(new AgentEvent.PermissionResolved(scId, toolName, decision, allowed, state));
         return allowed ? Outcome.PROCEED : Outcome.BLOCKED;
     }
 
@@ -208,28 +215,32 @@ public final class PermissionLayer {
         this.lastRecord = record;
     }
 
-    private ToolPolicy.Rule ruleFor(AgentTool tool) {
-        if (tool instanceof SandboxAwareTool) {
-            return ((SandboxAwareTool) tool).policyRule();
+    private ToolPolicy.Rule ruleFor(ToolRegistration registration) {
+        if (registration.isHandoff()) {
+            // Handoffs are always allowed: the model transfers control
+            // between agents already configured by the host.
+            return ToolPolicy.Rule.ALLOW;
         }
-        if (isShellTool(tool.name())) {
+        String toolName = registration.spec().name().name();
+        if (isShellTool(toolName)) {
             return policy.shell();
         }
-        if (isNetworkTool(tool)) {
+        if (isNetworkTool(registration)) {
             return policy.network();
         }
-        // Tool metadata (from the registry wrapper or the SDK tool) is the
-        // single source of truth for mutation/destructive classification.
-        if (tool.isDestructive()) {
+        // ToolRegistration metadata (the single source of truth) is what
+        // drives mutation/destructive classification.
+        if (registration.isDestructive()) {
             return policy.destructive();
         }
-        if (tool.isFileMutation()) {
+        if (registration.isFileMutation()) {
             return policy.mutation();
         }
         // Name-based fallback only covers known mutating tool names whose
-        // adapter lost the original metadata; everything else stays unknown.
-        if (isKnownMutatingToolName(tool.name())) {
-            return tool.name().startsWith("delete")
+        // registration lost the original metadata; everything else stays
+        // unknown.
+        if (isKnownMutatingToolName(toolName)) {
+            return toolName.startsWith("delete")
                     ? policy.destructive()
                     : policy.mutation();
         }
@@ -237,8 +248,8 @@ public final class PermissionLayer {
     }
 
     /** Package-private test hook exposing the classification of a tool. */
-    ToolPolicy.Rule ruleForPublicForTest(AgentTool tool) {
-        return ruleFor(tool);
+    ToolPolicy.Rule ruleForPublicForTest(ToolRegistration registration) {
+        return ruleFor(registration);
     }
 
     /**
@@ -262,9 +273,10 @@ public final class PermissionLayer {
                 || "kill_persistent_terminal".equals(toolName);
     }
 
-    /** Remote MCP tools are treated as network tools. */
-    public static boolean isNetworkTool(AgentTool tool) {
-        return tool instanceof McpAgentTool;
+    /** Remote MCP tools are treated as network tools (source-based). */
+    public static boolean isNetworkTool(ToolRegistration registration) {
+        String source = registration == null ? "" : registration.source();
+        return source != null && source.startsWith("mcp:");
     }
 
     private void emitEvent(AgentEvent event) {

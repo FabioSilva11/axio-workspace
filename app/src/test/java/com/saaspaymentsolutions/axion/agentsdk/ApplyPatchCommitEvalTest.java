@@ -6,6 +6,10 @@ import static org.junit.Assert.assertTrue;
 
 import com.saaspaymentsolutions.axion.FileChangeTracker;
 import com.saaspaymentsolutions.axion.FileChangeTrackerWorkspaceTest.FakeWorkspaceFileSystem;
+import com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRegistry;
+import com.saaspaymentsolutions.axion.agentsdk.tools.ApplyPatchExecutor;
+import com.saaspaymentsolutions.axion.agentsdk.tools.ToolRegistration;
+import com.saaspaymentsolutions.axion.agentsdk.tools.WorkspaceToolProvider;
 import com.saaspaymentsolutions.axion.workspace.Workspace;
 import com.saaspaymentsolutions.axion.workspace.WorkspaceManager;
 
@@ -52,7 +56,7 @@ public class ApplyPatchCommitEvalTest {
         fs.writeText("src/Del.java", "obsolete\n");
         ApplyPatchTool tool = new ApplyPatchTool(SC, events, fs);
 
-        AgentToolResult result = tool.execute(null, new JSONObject().put("patch",
+        AgentToolResult result = tool.apply(null,
                 "*** Begin Patch\n"
                         + "*** Add File: src/New.java\n"
                         + "+class New {}\n"
@@ -61,7 +65,7 @@ public class ApplyPatchCommitEvalTest {
                         + "-int a = 1;\n"
                         + "+int a = 10;\n"
                         + "*** Delete File: src/Del.java\n"
-                        + "*** End Patch"));
+                        + "*** End Patch");
 
         assertFalse(result.isError());
 
@@ -103,16 +107,16 @@ public class ApplyPatchCommitEvalTest {
         // UPDATE: original → patch → revert → original
         fs.writeText("src/A.java", "class A {}\n");
         ApplyPatchTool patchTool = new ApplyPatchTool(SC, events, fs);
-        AgentToolResult r1 = patchTool.execute(null, new JSONObject().put("patch",
-                "*** Begin Patch\n*** Update File: src/A.java\n@@\n-class A {}\n+class A {\n+    int x;\n+}\n*** End Patch"));
+        AgentToolResult r1 = patchTool.apply(null,
+                "*** Begin Patch\n*** Update File: src/A.java\n@@\n-class A {}\n+class A {\n+    int x;\n+}\n*** End Patch");
         assertFalse(r1.isError());
         assertTrue(FileChangeTracker.rejectChange(SC, "src/A.java"));
         assertEquals("class A {}\n", fs.readText("src/A.java"));
         FileChangeTracker.clearChanges(SC);
 
         // ADD: nonexistent → patch → revert → nonexistent
-        AgentToolResult r2 = patchTool.execute(null, new JSONObject().put("patch",
-                "*** Begin Patch\n*** Add File: src/Added.java\n+class Added {}\n*** End Patch"));
+        AgentToolResult r2 = patchTool.apply(null,
+                "*** Begin Patch\n*** Add File: src/Added.java\n+class Added {}\n*** End Patch");
         assertFalse(r2.isError());
         assertTrue(fs.exists("src/Added.java"));
         assertTrue(FileChangeTracker.rejectChange(SC, "src/Added.java"));
@@ -121,8 +125,8 @@ public class ApplyPatchCommitEvalTest {
 
         // DELETE: exists → patch → revert → restored with the original content
         fs.writeText("src/Deleted.java", "keep me\n");
-        AgentToolResult r3 = patchTool.execute(null, new JSONObject().put("patch",
-                "*** Begin Patch\n*** Delete File: src/Deleted.java\n*** End Patch"));
+        AgentToolResult r3 = patchTool.apply(null,
+                "*** Begin Patch\n*** Delete File: src/Deleted.java\n*** End Patch");
         assertFalse(r3.isError());
         assertFalse(fs.exists("src/Deleted.java"));
         assertTrue(FileChangeTracker.rejectChange(SC, "src/Deleted.java"));
@@ -138,12 +142,12 @@ public class ApplyPatchCommitEvalTest {
         fs.failDeletes = true; // DELETE op passes validation, fails mid-apply
         ApplyPatchTool tool = new ApplyPatchTool(SC, events, fs);
 
-        AgentToolResult result = tool.execute(null, new JSONObject().put("patch",
+        AgentToolResult result = tool.apply(null,
                 "*** Begin Patch\n"
                         + "*** Update File: src/A.java\n@@\n-original A\n+patched A\n"
                         + "*** Update File: src/B.java\n@@\n-original B\n+patched B\n"
                         + "*** Delete File: src/C.java\n"
-                        + "*** End Patch"));
+                        + "*** End Patch");
 
         assertTrue("the patch must fail", result.isError());
         assertEquals("A must be rolled back to the original", "original A\n", fs.readText("src/A.java"));
@@ -160,16 +164,14 @@ public class ApplyPatchCommitEvalTest {
         fs.writeText("src/One.java", "class One {}\n");
         FakeAgentLlmGateway gateway = new FakeAgentLlmGateway(
                 FakeAgentLlmGateway.ScriptedTurn.toolCall("apply_patch",
-                        new JSONObject().put("patch",
-                                "*** Begin Patch\n*** Update File: src/One.java\n@@\n-class One {}\n+class One { /* v2 */ }\n*** End Patch").toString()),
+                        "*** Begin Patch\n*** Update File: src/One.java\n@@\n-class One {}\n+class One { /* v2 */ }\n*** End Patch"),
                 FakeAgentLlmGateway.ScriptedTurn.text("Patch aplicado."));
 
         AgentRuntime runtime = new AgentRuntime.Builder(gateway)
                 .events(events)
+                .toolRegistry(patchOnlyRegistry()) // apply_patch bound to fs; runtime lends its stream
                 .build();
-        Agent agent = Agent.Builder.forName("coder", "You patch files.")
-                .tools(new ApplyPatchTool(SC, null, fs)) // no stream: runtime must lend its own
-                .build();
+        Agent agent = Agent.Builder.forName("coder", "You patch files.").build();
 
         RunResult result = runtime.run(agent, "Aplique o patch", SC);
 
@@ -192,6 +194,23 @@ public class ApplyPatchCommitEvalTest {
     }
 
     // ------------------------------------------------------------------
+
+    /** A registry carrying ONLY apply_patch, bound to the injected filesystem. */
+    private AxionToolRegistry patchOnlyRegistry() {
+        AxionToolRegistry registry = new AxionToolRegistry();
+        ToolRegistration reg = ToolRegistration.freeform(
+                        "apply_patch",
+                        "The `apply_patch` tool can be used to edit files. This is a FREEFORM tool.",
+                        WorkspaceToolProvider.APPLY_PATCH_GRAMMAR,
+                        new ApplyPatchExecutor((context, stream, scId) -> new ApplyPatchTool(
+                                scId == null || scId.isEmpty() ? context.scId() : scId, stream, fs)))
+                .source("core")
+                .fileMutation(true)
+                .destructive(true)
+                .build();
+        registry.register(reg);
+        return registry;
+    }
 
     private List<AgentEvent.FileChanged> fileChangedEvents() {
         List<AgentEvent.FileChanged> result = new ArrayList<>();

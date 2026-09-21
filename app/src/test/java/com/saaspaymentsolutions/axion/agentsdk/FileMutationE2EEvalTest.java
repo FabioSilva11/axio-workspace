@@ -6,9 +6,10 @@ import static org.junit.Assert.assertTrue;
 
 import com.saaspaymentsolutions.axion.FileChangeTracker;
 import com.saaspaymentsolutions.axion.FileChangeTrackerWorkspaceTest;
-import com.saaspaymentsolutions.axion.Tool;
-import com.saaspaymentsolutions.axion.ToolManager;
-import com.saaspaymentsolutions.axion.port.VoidToolWrapper;
+import com.saaspaymentsolutions.axion.agentsdk.tools.ApplyPatchExecutor;
+import com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRegistry;
+import com.saaspaymentsolutions.axion.agentsdk.tools.ToolRegistration;
+import com.saaspaymentsolutions.axion.agentsdk.tools.WorkspaceToolProvider;
 import com.saaspaymentsolutions.axion.toolcalling.ToolCall;
 import com.saaspaymentsolutions.axion.workspace.Workspace;
 import com.saaspaymentsolutions.axion.workspace.WorkspaceManager;
@@ -60,16 +61,19 @@ public class FileMutationE2EEvalTest {
         FileChangeTracker.clearChanges("sc_e2e");
         FakeAgentLlmGateway gateway = new FakeAgentLlmGateway(
                 // Turn 1: the model edits the file through the registry tool.
-                FakeAgentLlmGateway.ScriptedTurn.toolCall("rewrite_file",
-                        new JSONObject()
-                                .put("uri", "src/Config.java")
-                                .put("new_content", "int timeout = 60;\n")
-                                .toString()),
+                FakeAgentLlmGateway.ScriptedTurn.toolCall("apply_patch",
+                        "*** Begin Patch\n"
+                                + "*** Update File: src/Config.java\n"
+                                + "@@\n"
+                                + "-int timeout = 30;\n"
+                                + "+int timeout = 60;\n"
+                                + "*** End Patch"),
                 // Turn 2: done — the mutation is already on disk.
                 FakeAgentLlmGateway.ScriptedTurn.text("Timeout atualizado para 60."));
 
         AgentRuntime runtime = new AgentRuntime.Builder(gateway)
                 .events(events)
+                .toolRegistry(applyPatchRegistry())
                 .permissions(new PermissionLayer(
                         new ToolPolicy.Builder()
                                 .mutation(ToolPolicy.Rule.ASK_USER)
@@ -78,9 +82,7 @@ public class FileMutationE2EEvalTest {
                         approvals,
                         events))
                 .build();
-        Agent agent = Agent.Builder.forName("coder", "You edit files.")
-                .tools(rewriteTool())
-                .build();
+        Agent agent = Agent.Builder.forName("coder", "You edit files.").build();
 
         RunResult result = runtime.run(agent, "Aumente o timeout", "sc_e2e");
 
@@ -109,7 +111,7 @@ public class FileMutationE2EEvalTest {
                 (AgentEvent.FileChanged) received.get(changed);
         assertEquals("src/Config.java", fileChanged.getPath());
         assertEquals(AgentEvent.FileChangeKind.MODIFIED, fileChanged.getKind());
-        assertEquals("rewrite_file", fileChanged.getTool());
+        assertEquals("apply_patch", fileChanged.getTool());
 
         // The Codex acceptance criterion: no accept click is needed — the file
         // is final the moment the tool completed.
@@ -124,15 +126,18 @@ public class FileMutationE2EEvalTest {
         fs.writeText("src/Config.java", "int timeout = 30;\n");
         approvals.decision = PermissionDecision.DENY;
         FakeAgentLlmGateway gateway = new FakeAgentLlmGateway(
-                FakeAgentLlmGateway.ScriptedTurn.toolCall("rewrite_file",
-                        new JSONObject()
-                                .put("uri", "src/Config.java")
-                                .put("new_content", "int timeout = 60;\n")
-                                .toString()),
+                FakeAgentLlmGateway.ScriptedTurn.toolCall("apply_patch",
+                        "*** Begin Patch\n"
+                                + "*** Update File: src/Config.java\n"
+                                + "@@\n"
+                                + "-int timeout = 30;\n"
+                                + "+int timeout = 60;\n"
+                                + "*** End Patch"),
                 FakeAgentLlmGateway.ScriptedTurn.text("Entendi, não alterei o arquivo."));
 
         AgentRuntime runtime = new AgentRuntime.Builder(gateway)
                 .events(events)
+                .toolRegistry(applyPatchRegistry())
                 .permissions(new PermissionLayer(
                         new ToolPolicy.Builder()
                                 .mutation(ToolPolicy.Rule.ASK_USER)
@@ -141,9 +146,7 @@ public class FileMutationE2EEvalTest {
                         approvals,
                         events))
                 .build();
-        Agent agent = Agent.Builder.forName("coder", "You edit files.")
-                .tools(rewriteTool())
-                .build();
+        Agent agent = Agent.Builder.forName("coder", "You edit files.").build();
 
         RunResult result = runtime.run(agent, "Aumente o timeout", "sc_e2e");
 
@@ -161,23 +164,21 @@ public class FileMutationE2EEvalTest {
         fs.writeText("src/App.java", "class App {}\n");
         FakeAgentLlmGateway gateway = new FakeAgentLlmGateway(
                 FakeAgentLlmGateway.ScriptedTurn.toolCall("apply_patch",
-                        new JSONObject().put("patch",
-                                "*** Begin Patch\n"
-                                        + "*** Update File: src/App.java\n"
-                                        + "@@\n"
-                                        + "-class App {}\n"
-                                        + "+class App {\n"
-                                        + "+    int ready = 1;\n"
-                                        + "+}\n"
-                                        + "*** End Patch").toString()),
+                        "*** Begin Patch\n"
+                                + "*** Update File: src/App.java\n"
+                                + "@@\n"
+                                + "-class App {}\n"
+                                + "+class App {\n"
+                                + "+    int ready = 1;\n"
+                                + "+}\n"
+                                + "*** End Patch"),
                 FakeAgentLlmGateway.ScriptedTurn.text("Patch aplicado."));
 
         AgentRuntime runtime = new AgentRuntime.Builder(gateway)
                 .events(events)
+                .toolRegistry(applyPatchRegistry())
                 .build();
-        Agent agent = Agent.Builder.forName("coder", "You edit files.")
-                .tools(new ApplyPatchTool("sc_e2e", events, fs))
-                .build();
+        Agent agent = Agent.Builder.forName("coder", "You edit files.").build();
 
         RunResult result = runtime.run(agent, "Adicione o campo ready", "sc_e2e");
 
@@ -192,13 +193,21 @@ public class FileMutationE2EEvalTest {
     // helpers
     // ------------------------------------------------------------------
 
-    /** The registry rewrite_file tool adapted for the runtime. */
-    private static AgentTool rewriteTool() {
-        ToolManager manager = new ToolManager();
-        Tool tool = new VoidToolWrapper("rewrite_file", "Rewrite a file.",
-                new JSONObject(), true, true, true);
-        manager.registerTool(tool);
-        return WorkspaceAgents.fromRegistryTool(tool, manager);
+    /** A registry carrying ONLY apply_patch, bound to the injected filesystem. */
+    private AxionToolRegistry applyPatchRegistry() {
+        AxionToolRegistry registry = new AxionToolRegistry();
+        registry.register(ToolRegistration.freeform(
+                        "apply_patch",
+                        "The `apply_patch` tool can be used to edit files. This is a FREEFORM tool.",
+                        WorkspaceToolProvider.APPLY_PATCH_GRAMMAR,
+                        new ApplyPatchExecutor((context, stream, scId) -> new ApplyPatchTool(
+                                scId == null || scId.isEmpty() ? context.scId() : scId,
+                                stream, fs)))
+                .source("core")
+                .fileMutation(true)
+                .destructive(true)
+                .build());
+        return registry;
     }
 
     private static Workspace fakeWorkspace() {

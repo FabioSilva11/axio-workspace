@@ -23,6 +23,8 @@ public final class ToolRegistration {
     private final boolean isFileMutation;
     private final boolean isDestructive;
     private final SandboxConstraint sandbox;
+    /** Optional cooperative-handoff target (@{@code Agent} name) or {@code null}. */
+    private final String handoffTarget;
 
     private ToolRegistration(Builder builder) {
         this.spec = builder.spec;
@@ -33,6 +35,7 @@ public final class ToolRegistration {
         this.isFileMutation = builder.isFileMutation;
         this.isDestructive = builder.isDestructive;
         this.sandbox = builder.sandbox;
+        this.handoffTarget = builder.handoffTarget;
     }
 
     public ToolSpec spec() {
@@ -68,6 +71,21 @@ public final class ToolRegistration {
     /** Optional sandbox pre-check consulted by the router before execution. */
     public SandboxConstraint sandbox() {
         return sandbox;
+    }
+
+    /**
+     * The {@code Agent} name this registration hands off to, or {@code null}
+     * for ordinary tools. The runtime switches the active agent after a
+     * successful execution of a handoff registration (Codex parity: handoffs
+     * are tool metadata, never a separate execution path).
+     */
+    public String handoffTarget() {
+        return handoffTarget;
+    }
+
+    /** Whether this registration is a cooperative handoff to another agent. */
+    public boolean isHandoff() {
+        return handoffTarget != null && !handoffTarget.trim().isEmpty();
     }
 
     /** Convenience: the fully-qualified model name. */
@@ -117,6 +135,7 @@ public final class ToolRegistration {
         private boolean isFileMutation;
         private boolean isDestructive;
         private SandboxConstraint sandbox;
+        private String handoffTarget;
 
         private Builder(ToolSpec spec) {
             this.spec = spec;
@@ -154,6 +173,12 @@ public final class ToolRegistration {
 
         public Builder sandbox(SandboxConstraint sandbox) {
             this.sandbox = sandbox;
+            return this;
+        }
+
+        /** Marks this registration as a handoff to the named {@code Agent}. */
+        public Builder handoffTarget(String targetAgentName) {
+            this.handoffTarget = targetAgentName;
             return this;
         }
 

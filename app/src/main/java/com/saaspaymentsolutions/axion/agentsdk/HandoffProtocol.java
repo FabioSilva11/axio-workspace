@@ -2,9 +2,9 @@ package com.saaspaymentsolutions.axion.agentsdk;
 
 /**
  * Wire protocol for handoffs: the {@link Runner} recognizes the structured
- * payload returned by {@link HandoffTool} and switches the active agent for
- * the next turn, mirroring how openai-agents-js threads handoffs through the
- * tool-call layer.
+ * payload emitted by a handoff {@code ToolRegistration} and switches the active
+ * agent for the next turn, mirroring how openai-agents-js threads handoffs
+ * through the tool-call layer.
  */
 final class HandoffProtocol {
 

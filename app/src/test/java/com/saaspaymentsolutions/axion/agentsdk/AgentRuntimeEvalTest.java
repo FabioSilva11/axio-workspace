@@ -6,6 +6,10 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 import com.saaspaymentsolutions.axion.ChatMessage;
+import com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRegistry;
+import com.saaspaymentsolutions.axion.agentsdk.tools.ApplyPatchExecutor;
+import com.saaspaymentsolutions.axion.agentsdk.tools.ToolRegistration;
+import com.saaspaymentsolutions.axion.agentsdk.tools.WorkspaceToolProvider;
 import com.saaspaymentsolutions.axion.workspace.LocalFolderWorkspaceFileSystem;
 import com.saaspaymentsolutions.axion.workspace.WorkspaceFileSystem;
 
@@ -73,12 +77,42 @@ public class AgentRuntimeEvalTest {
     }
 
     private Agent scriptedAgent() {
-        ApplyPatchTool patchTool = new ApplyPatchTool("sc_eval", null, fs);
-        AgentTool search = new StubSearchTool();
-        AgentTool read = new StubReadTool();
-        return Agent.Builder.forName("coordinator", "You fix workspace bugs.")
-                .tools(search, read, patchTool)
+        // Registry-only: tools live in the registry, not on the agent.
+        return Agent.Builder.forName("coordinator", "You fix workspace bugs.").build();
+    }
+
+    /**
+     * The eval registry: search/read bound to canned read-only answers and
+     * apply_patch bound to the REAL filesystem.
+     */
+    private AxionToolRegistry evalRegistry() {
+        AxionToolRegistry registry = new AxionToolRegistry();
+        ToolRegistration search = ToolRegistration.function(
+                        "search_for_files", "Search files by name.", new org.json.JSONObject())
+                .executor(context -> AgentToolResult.success("src/demo/UserRepository.kt"))
+                .source("test")
                 .build();
+        ToolRegistration read = ToolRegistration.function(
+                        "read_file", "Read a file.", new org.json.JSONObject())
+                .executor(context -> AgentToolResult.success(
+                        "public String getUserName(int id) { ... }"))
+                .source("test")
+                .build();
+        ToolRegistration patch = ToolRegistration.freeform(
+                        "apply_patch",
+                        "The `apply_patch` tool can be used to edit files. This is a FREEFORM tool.",
+                        WorkspaceToolProvider.APPLY_PATCH_GRAMMAR,
+                        new ApplyPatchExecutor((context, stream, scId) -> new ApplyPatchTool(
+                                scId == null || scId.isEmpty() ? context.scId() : scId,
+                                stream, fs)))
+                .source("core")
+                .fileMutation(true)
+                .destructive(true)
+                .build();
+        registry.register(search);
+        registry.register(read);
+        registry.register(patch);
+        return registry;
     }
 
     private List<AgentEvent> runScripted(FakeAgentLlmGateway gateway) {
@@ -88,6 +122,7 @@ public class AgentRuntimeEvalTest {
 
         AgentRuntime runtime = new AgentRuntime.Builder(gateway)
                 .events(stream)
+                .toolRegistry(evalRegistry())
                 .maxTurns(8)
                 .build();
 
@@ -107,8 +142,7 @@ public class AgentRuntimeEvalTest {
                         "{\"query\": \"UserRepository\"}"),
                 FakeAgentLlmGateway.ScriptedTurn.toolCall("read_file",
                         "{\"uri\": \"src/demo/UserRepository.kt\"}"),
-                FakeAgentLlmGateway.ScriptedTurn.toolCall("apply_patch",
-                        "{\"patch\": " + org.json.JSONObject.quote(NPE_PATCH) + "}"),
+                FakeAgentLlmGateway.ScriptedTurn.toolCall("apply_patch", NPE_PATCH),
                 FakeAgentLlmGateway.ScriptedTurn.text(
                         "Fixed: added a null check on cache before reading its length.")
         );
@@ -148,8 +182,7 @@ public class AgentRuntimeEvalTest {
     @Test
     public void eval_policyDeniedMutation_neverTouchesFile() {
         FakeAgentLlmGateway gateway = new FakeAgentLlmGateway(
-                FakeAgentLlmGateway.ScriptedTurn.toolCall("apply_patch",
-                        "{\"patch\": " + org.json.JSONObject.quote(NPE_PATCH) + "}"),
+                FakeAgentLlmGateway.ScriptedTurn.toolCall("apply_patch", NPE_PATCH),
                 FakeAgentLlmGateway.ScriptedTurn.text("I could not modify the file.")
         );
 
@@ -160,6 +193,7 @@ public class AgentRuntimeEvalTest {
         // Interactive policy with no handler => fail closed.
         AgentRuntime runtime = new AgentRuntime.Builder(gateway)
                 .events(stream)
+                .toolRegistry(evalRegistry())
                 .permissions(new PermissionLayer(ToolPolicy.interactive(), null, stream))
                 .maxTurns(8)
                 .build();
@@ -186,14 +220,14 @@ public class AgentRuntimeEvalTest {
     @Test
     public void eval_approvalHandlerAllow_runsMutation() {
         FakeAgentLlmGateway gateway = new FakeAgentLlmGateway(
-                FakeAgentLlmGateway.ScriptedTurn.toolCall("apply_patch",
-                        "{\"patch\": " + org.json.JSONObject.quote(NPE_PATCH) + "}"),
+                FakeAgentLlmGateway.ScriptedTurn.toolCall("apply_patch", NPE_PATCH),
                 FakeAgentLlmGateway.ScriptedTurn.text("Patched with approval.")
         );
 
         EventStream stream = new EventStream(Runnable::run, 128);
         AgentRuntime runtime = new AgentRuntime.Builder(gateway)
                 .events(stream)
+                .toolRegistry(evalRegistry())
                 .permissions(new PermissionLayer(ToolPolicy.interactive(),
                         request -> PermissionDecision.ALLOW, stream))
                 .maxTurns(8)
@@ -205,53 +239,5 @@ public class AgentRuntimeEvalTest {
 
         assertTrue(result.isSuccessful());
         assertEquals(PATCHED, fs.readText("src/demo/UserRepository.kt"));
-    }
-
-    // ------------------------------------------------------------------
-    // read-only stub tools (workspace search/read without Android deps)
-    // ------------------------------------------------------------------
-
-    private static final class StubSearchTool implements AgentTool {
-        @Override
-        public String name() {
-            return "search_for_files";
-        }
-
-        @Override
-        public String description() {
-            return "Search files by name.";
-        }
-
-        @Override
-        public org.json.JSONObject parameters() {
-            return new org.json.JSONObject();
-        }
-
-        @Override
-        public AgentToolResult execute(RunContext context, org.json.JSONObject args) {
-            return AgentToolResult.success("src/demo/UserRepository.kt");
-        }
-    }
-
-    private static final class StubReadTool implements AgentTool {
-        @Override
-        public String name() {
-            return "read_file";
-        }
-
-        @Override
-        public String description() {
-            return "Read a file.";
-        }
-
-        @Override
-        public org.json.JSONObject parameters() {
-            return new org.json.JSONObject();
-        }
-
-        @Override
-        public AgentToolResult execute(RunContext context, org.json.JSONObject args) {
-            return AgentToolResult.success("public String getUserName(int id) { ... }");
-        }
     }
 }

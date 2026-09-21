@@ -4,8 +4,6 @@ import com.saaspaymentsolutions.axion.FileChangeTracker;
 import com.saaspaymentsolutions.axion.workspace.WorkspaceFileSystem;
 import com.saaspaymentsolutions.axion.workspace.WorkspacePath;
 
-import org.json.JSONObject;
-
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -15,6 +13,12 @@ import java.util.List;
  * changes as one patch document which is validated in full before anything
  * is written. Validation is all-or-nothing: if any op fails validation, no
  * file is touched and the model receives a structured error it can retry on.
+ *
+ * <p>This class is the patch ENGINE. It is deliberately NOT an {@code AgentTool}:
+ * the model-facing registration lives in the tool registry
+ * ({@code WorkspaceToolProvider} registers {@code apply_patch} as a FREEFORM
+ * registration whose executor feeds the raw patch document here, bound to the
+ * run's workspace and event stream).</p>
  *
  * <p>Announcement is commit-ordered: {@link AgentEvent.FileChanged} events and
  * {@link FileChangeTracker} entries are produced ONLY after every operation of
@@ -37,7 +41,10 @@ import java.util.List;
  * (rejects traversal) and must not be absolute or contain a drive letter —
  * the workspace filesystem works with relative paths only.</p>
  */
-public final class ApplyPatchTool implements AgentTool {
+public final class ApplyPatchTool {
+
+    /** The registered model-facing name (FREEFORM, {@code WorkspaceToolProvider}). */
+    public static final String NAME = "apply_patch";
 
     private final String scId;
     private final EventStream events;
@@ -53,78 +60,6 @@ public final class ApplyPatchTool implements AgentTool {
         this.scId = scId == null ? "" : scId;
         this.events = events;
         this.injectedFs = injectedFs;
-    }
-
-    /** True when no EventStream was provided and the runtime must lend its own. */
-    boolean hasNoStream() {
-        return events == null;
-    }
-
-    /**
-     * Returns a view of this tool bound to the runtime's own stream and
-     * session id, so {@code FileChanged} events and tracker records flow on
-     * the same channel as every other event of the run — never a detached
-     * stream. The injected filesystem (if any) is preserved.
-     */
-    ApplyPatchTool boundTo(EventStream runtimeEvents, String runtimeScId) {
-        return new ApplyPatchTool(
-                runtimeScId == null || runtimeScId.isEmpty() ? this.scId : runtimeScId,
-                runtimeEvents,
-                this.injectedFs);
-    }
-
-    @Override
-    public String name() {
-        return "apply_patch";
-    }
-
-    @Override
-    public String description() {
-        return "Applies multiple file changes using the Codex patch format. "
-                + "Supports Add File, Update File (hunks with context ' ', removal '-' and addition '+') "
-                + "and Delete File ops. The whole patch is validated before anything is written: if any "
-                + "operation is invalid, no file is modified. If a write fails after validation, the "
-                + "already-applied changes are rolled back and the error is reported.";
-    }
-
-    @Override
-    public JSONObject parameters() {
-        try {
-            return new JSONObject()
-                    .put("type", "object")
-                    .put("properties", new JSONObject()
-                            .put("patch", new JSONObject()
-                                    .put("type", "string")
-                                    .put("description", "Documento de patch completo, entre marcadores "
-                                            + "*** Begin Patch / *** End Patch")))
-                    .put("required", new org.json.JSONArray().put("patch"));
-        } catch (org.json.JSONException e) {
-            return new JSONObject();
-        }
-    }
-
-    @Override
-    public boolean isFileMutation() {
-        return true;
-    }
-
-    @Override
-    public boolean isDestructive() {
-        return true; // Delete File ops and full rewrites are irreversible
-    }
-
-    /**
-     * Backwards-compatible function path: the model-facing wire must be
-     * FREEFORM (the raw patch document, no envelope), but legacy hosts may
-     * still hand in {@code {"patch": "..."}} JSON; both decode to the same
-     * core execution.
-     */
-    @Override
-    public AgentToolResult execute(RunContext context, JSONObject args) {
-        if (args == null || !args.has("patch")) {
-            return AgentToolResult.error("Error: 'patch' argument is required.");
-        }
-        return apply(context, args.optString("patch", ""));
     }
 
     /** FREEFORM execution: the raw patch document, never JSON-wrapped. */
@@ -245,7 +180,7 @@ public final class ApplyPatchTool implements AgentTool {
         if (events != null) {
             for (PatchMutation mutation : applied) {
                 events.emit(new AgentEvent.FileChanged(scId, mutation.path,
-                        mutation.kind, name()));
+                        mutation.kind, NAME));
             }
         }
         return AgentToolResult.success(report.toString().trim());

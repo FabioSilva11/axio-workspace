@@ -1,6 +1,9 @@
 package com.saaspaymentsolutions.axion.agentsdk;
 
 import com.saaspaymentsolutions.axion.ChatMessage;
+import com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRegistry;
+import com.saaspaymentsolutions.axion.agentsdk.tools.ToolRegistration;
+
 import org.json.JSONObject;
 import org.junit.Test;
 
@@ -15,6 +18,10 @@ import static org.junit.Assert.*;
  */
 public class ReadOnlyRequestTest {
 
+    private static AxionToolRegistry emptyRegistry() {
+        return new AxionToolRegistry();
+    }
+
     /**
      * Test A: "O que tem na pasta?" should complete with text, no recovery.
      */
@@ -26,6 +33,7 @@ public class ReadOnlyRequestTest {
         EventStream events = new EventStream();
         AgentRuntime runtime = new AgentRuntime.Builder(gateway)
                 .events(events)
+                .toolRegistry(emptyRegistry())
                 .build();
 
         List<ChatMessage> history = new ArrayList<>();
@@ -64,6 +72,7 @@ public class ReadOnlyRequestTest {
         EventStream events = new EventStream();
         AgentRuntime runtime = new AgentRuntime.Builder(gateway)
                 .events(events)
+                .toolRegistry(emptyRegistry())
                 .build();
 
         RunResult result = runtime.run(
@@ -86,6 +95,7 @@ public class ReadOnlyRequestTest {
         EventStream events = new EventStream();
         AgentRuntime runtime = new AgentRuntime.Builder(gateway)
                 .events(events)
+                .toolRegistry(emptyRegistry())
                 .build();
 
         RunResult result = runtime.run(
@@ -113,14 +123,19 @@ public class ReadOnlyRequestTest {
         gateway.setNextResponse("", List.of(toolCall));
 
         EventStream events = new EventStream();
-        AgentTool mockTool = new StubTool("apply_patch", true);
+        AxionToolRegistry registry = emptyRegistry();
+        registry.register(ToolRegistration.function(
+                        "apply_patch", "Test tool", new JSONObject())
+                .executor(context -> AgentToolResult.success("Tool executed"))
+                .source("test")
+                .fileMutation(true)
+                .build());
         AgentRuntime runtime = new AgentRuntime.Builder(gateway)
                 .events(events)
+                .toolRegistry(registry)
                 .build();
 
-        Agent agent = Agent.Builder.forName("coder", "Code assistant")
-                .tools(mockTool)
-                .build();
+        Agent agent = Agent.Builder.forName("coder", "Code assistant").build();
 
         RunResult result = runtime.run(agent, "Corrija o bug em MainActivity.java", "sc1");
 
@@ -139,6 +154,7 @@ public class ReadOnlyRequestTest {
         EventStream events = new EventStream();
         AgentRuntime runtime = new AgentRuntime.Builder(gateway)
                 .events(events)
+                .toolRegistry(emptyRegistry())
                 .build();
 
         List<ChatMessage> history = new ArrayList<>();
@@ -167,33 +183,6 @@ public class ReadOnlyRequestTest {
     }
 
     // Helper stubs
-
-    private static class StubTool implements AgentTool {
-        private final String name;
-        private final boolean mutation;
-
-        StubTool(String name, boolean mutation) {
-            this.name = name;
-            this.mutation = mutation;
-        }
-
-        @Override
-        public String name() { return name; }
-
-        @Override
-        public String description() { return "Test tool"; }
-
-        @Override
-        public JSONObject parameters() { return new JSONObject(); }
-
-        @Override
-        public AgentToolResult execute(RunContext context, JSONObject args) {
-            return AgentToolResult.success("Tool executed");
-        }
-
-        @Override
-        public boolean isFileMutation() { return mutation; }
-    }
 
     private static class RecordingGateway implements AgentLlmGateway {
         private String nextText;
