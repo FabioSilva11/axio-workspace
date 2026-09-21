@@ -7,6 +7,7 @@ import static org.junit.Assert.assertTrue;
 
 import com.saaspaymentsolutions.axion.ChatMessage;
 import com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRegistry;
+import com.saaspaymentsolutions.axion.agentsdk.tools.LegacyToolAdapter;
 import com.saaspaymentsolutions.axion.agentsdk.tools.ToolCatalog;
 import com.saaspaymentsolutions.axion.agentsdk.tools.ToolRegistration;
 import com.saaspaymentsolutions.axion.agentsdk.tools.WorkspaceToolProvider;
@@ -19,13 +20,16 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Registry-backed catalog wiring (migration, "ToolCatalog canônico no
- * gateway"): the runtime mounts the canonical catalog from the registry when a
- * registry is wired, adapts legacy AgentTools into it, routes execution
- * through the registry, and the gateway overload accepts the ToolCatalog.
+ * gateway"): the runtime mounts the catalog EXCLUSIVELY from the registry —
+ * legacy AgentTool[] sets are never adapted at run time. Legacy tools enter
+ * the model catalog only through an explicit, classification-guarded
+ * {@link LegacyToolAdapter} registration, and execution routes through the
+ * registry.
  */
 public class ToolCatalogRuntimeWiringTest {
 
@@ -77,7 +81,7 @@ public class ToolCatalogRuntimeWiringTest {
     }
 
     @Test
-    public void registryPathMakesAgentToolsNonModelFacingAndAdapterRoutable() throws Exception {
+    public void unregisteredLegacyAgentToolsNeverEnterTheCatalog() throws Exception {
         AxionToolRegistry registry = new AxionToolRegistry();
         WorkspaceToolProvider.registerCoreTools(registry, null);
         CatalogCaptureGateway gateway = new CatalogCaptureGateway();
@@ -86,8 +90,71 @@ public class ToolCatalogRuntimeWiringTest {
                 .maxTurns(2)
                 .build();
 
-        // A legacy agent tool that must be adapted, not declared separately.
-        com.saaspaymentsolutions.axion.agentsdk.AgentTool legacy = new com.saaspaymentsolutions.axion.agentsdk.AgentTool() {
+        // A legacy AgentTool[] on the AGENT must not leak into the catalog:
+        // the runtime no longer adapts agent tools at run time.
+        Agent agent = Agent.Builder.forName("calculator", "")
+                .instructions("You calculate.")
+                .tools(legacyCalcTool())
+                .build();
+
+        RunResult result = runtime.run(agent, "What is 6*7?", "sc-before");
+        assertTrue("registry run must complete: " + result.getOutput()
+                + " | reason: " + result.getFailureReason(), result.isSuccessful());
+        assertTrue("catalog must include core apply_patch", gateway.catalogNames.contains("apply_patch"));
+        assertTrue("catalog must include core exec_command", gateway.catalogNames.contains("exec_command"));
+        assertFalse("a legacy agent tool must NOT be auto-adapted into the model catalog",
+                gateway.catalogNames.contains("legacy_calc"));
+    }
+
+    @Test
+    public void explicitlyAdaptedLegacyToolsAreRegisteredAndRoutable() throws Exception {
+        AxionToolRegistry registry = new AxionToolRegistry();
+        WorkspaceToolProvider.registerCoreTools(registry, null);
+        // Explicit, classification-guarded opt-in: the legacy tool becomes a
+        // registry citizen and only then reaches the model catalog.
+        registry.register(LegacyToolAdapter.register(legacyCalcTool()));
+
+        CatalogCaptureGateway gateway = new CatalogCaptureGateway();
+        AgentRuntime runtime = new AgentRuntime.Builder(gateway)
+                .toolRegistry(registry)
+                .maxTurns(2)
+                .build();
+        Agent agent = Agent.Builder.forName("calculator", "")
+                .instructions("You calculate.")
+                .build();
+
+        // First turn: the agent calls legacy_calc via a tool call. Second
+        // turn: it reports the answer. The capture gateway serves its turn
+        // script exactly once each.
+        final AtomicInteger served = new AtomicInteger(0);
+        gateway.nextProvider = (systemPrompt, catalog, messages, operationContext) -> {
+            if (served.getAndIncrement() == 0) {
+                return new LlmTurnOutput("", "", "tool_calls",
+                        java.util.Arrays.asList(new com.saaspaymentsolutions.axion.toolcalling.ToolCall(
+                                "legacy_calc", "{\"expr\":\"6*7\"}", "call_1")));
+            }
+            return new LlmTurnOutput("result: 42", "", "stop", null);
+        };
+
+        RunResult result = runtime.run(agent, "What is 6*7?", "sc-after");
+        assertTrue("registry run must complete: " + result.getOutput()
+                + " | reason: " + result.getFailureReason(), result.isSuccessful());
+        assertTrue("catalog must include core apply_patch", gateway.catalogNames.contains("apply_patch"));
+        assertTrue("explicitly registered legacy tool is model-visible",
+                gateway.catalogNames.contains("legacy_calc"));
+        // The registry path executed the call through the router: the model
+        // history contains this turn's tool result.
+        boolean sawToolResult = false;
+        for (ChatMessage message : gateway.history) {
+            if (message.getType() == ChatMessage.TYPE_TOOL) {
+                sawToolResult = true;
+            }
+        }
+        assertTrue(sawToolResult);
+    }
+
+    private static com.saaspaymentsolutions.axion.agentsdk.AgentTool legacyCalcTool() {
+        return new com.saaspaymentsolutions.axion.agentsdk.AgentTool() {
             @Override
             public String name() {
                 return "legacy_calc";
@@ -116,39 +183,6 @@ public class ToolCatalogRuntimeWiringTest {
                 return AgentToolResult.success("42");
             }
         };
-        Agent agent = Agent.Builder.forName("calculator", "")
-                .instructions("You calculate.")
-                .tools(legacy)
-                .build();
-
-        // First turn: the agent calls legacy_calc via a tool call. Second
-        // turn: it reports the answer. The capture gateway serves its turn
-        // script exactly once each.
-        final java.util.concurrent.atomic.AtomicInteger served = new java.util.concurrent.atomic.AtomicInteger(0);
-        gateway.nextProvider = (systemPrompt, catalog, messages, operationContext) -> {
-            if (served.getAndIncrement() == 0) {
-                return new LlmTurnOutput("", "", "tool_calls",
-                        java.util.Arrays.asList(new com.saaspaymentsolutions.axion.toolcalling.ToolCall(
-                                "legacy_calc", "{\"expr\":\"6*7\"}", "call_1")));
-            }
-            return new LlmTurnOutput("result: 42", "", "stop", null);
-        };
-
-        RunResult result = runtime.run(agent, "What is 6*7?", "sc-1");
-        assertTrue("registry run must complete: " + result.getOutput()
-                + " | reason: " + result.getFailureReason(), result.isSuccessful());
-        // The runtime called the ToolCatalog overload.
-        assertTrue("catalog must include core apply_patch", gateway.catalogNames.contains("apply_patch"));
-        assertTrue("catalog must include adapted legacy_calc", gateway.catalogNames.contains("legacy_calc"));
-        // The registry path executed the call through the router: the model
-        // history contains this turn's tool result.
-        boolean sawToolResult = false;
-        for (ChatMessage message : gateway.history) {
-            if (message.getType() == ChatMessage.TYPE_TOOL) {
-                sawToolResult = true;
-            }
-        }
-        assertTrue(sawToolResult);
     }
 
     @Test

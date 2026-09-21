@@ -40,13 +40,18 @@ public final class AgentRuntimeFactory {
         ApprovalHandler.Resolver approvals = new ApprovalHandler.Resolver();
         EventStream events = new EventStream();
         // Item (registry-backed catalog): the SINGLE model-facing tool source.
-        // Core/Codex-parity tools are registered once here; the coordinator
-        // agent's legacy AgentTool[] tools are adapted into this registry by
-        // the runtime at run time (AgentTool → adapter), never the reverse.
+        // The Codex-parity core tools are registered once here; legacy void
+        // tools that still have no newer contract (read_file, ls_dir, search*
+        // ...) follow as classification-guarded registry citizens. The
+        // coordinator agent carries no AgentTool[] — nothing is adapted at run
+        // time, so legacy names with a replacement never reach the model.
         com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRegistry registry =
                 new com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRegistry();
         com.saaspaymentsolutions.axion.agentsdk.tools.WorkspaceToolProvider.registerCoreTools(
                 registry, approvals);
+        com.saaspaymentsolutions.axion.ToolManager legacy = new com.saaspaymentsolutions.axion.ToolManager();
+        com.saaspaymentsolutions.axion.port.VoidToolWrapper.registerAllVoidTools(legacy);
+        WorkspaceAgents.registerModelCompatibleTools(registry, legacy);
         return new AgentRuntime.Builder(gateway)
                 .events(events)
                 .permissions(new PermissionLayer(ToolPolicy.interactive(), approvals, events))

@@ -210,9 +210,11 @@ public final class AxionToolRegistry {
     }
 
     /**
-     * The model catalog: every DIRECT exposure. Hidden and deferred tools are
-     * excluded; deferred ones are reachable only through {@code tool_search}.
-     * When {@code codeMode} is true, code-mode-only tools are included too.
+     * The model catalog: every DIRECT exposure plus DEFERRED tools the model
+     * already activated via {@code tool_search}. Hidden and not-yet-activated
+     * deferred tools are excluded. When {@code codeMode} is true, code-mode-only
+     * tools are included too. This is what {@link ToolCatalog#from} snapshots:
+     * a deferred tool discovered in a turn IS part of the next turn's catalog.
      */
     public List<ToolRegistration> modelVisibleTools() {
         return modelVisibleTools(false);
@@ -228,6 +230,10 @@ public final class AxionToolRegistry {
                 boolean visibleNow = codeMode
                         ? exposure.isCodeModeVisible()
                         : exposure.isModelVisible();
+                if (!visibleNow && exposure.isDeferred()
+                        && activatedDeferred.contains(reg.spec().name())) {
+                    visibleNow = true;
+                }
                 if (visibleNow) {
                     visible.add(reg);
                 }

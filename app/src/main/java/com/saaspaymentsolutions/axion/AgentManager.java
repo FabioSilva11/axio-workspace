@@ -392,9 +392,6 @@ public class AgentManager {
         uiAgentForRunCache = com.saaspaymentsolutions.axion.agentsdk.Agent.Builder.forName("coordinator",
                 "You are the workspace coordinator. Use the available tools to "
                         + "explore, read, and modify project files to complete the user's task.")
-                .tools(com.saaspaymentsolutions.axion.agentsdk.WorkspaceAgents
-                        .defaultWorkspaceTools(toolManager, null, scId).toArray(
-                        new com.saaspaymentsolutions.axion.agentsdk.AgentTool[0]))
                 .build();
 
         // The user message is built here (llmContent/references preserved) and
@@ -466,9 +463,6 @@ public class AgentManager {
         uiAgentForRunCache = com.saaspaymentsolutions.axion.agentsdk.Agent.Builder.forName("coordinator",
                 "You are the workspace coordinator. Use the available tools to "
                         + "explore, read, and modify project files to complete the user's task.")
-                .tools(com.saaspaymentsolutions.axion.agentsdk.WorkspaceAgents
-                        .defaultWorkspaceTools(toolManager, null, scId).toArray(
-                        new com.saaspaymentsolutions.axion.agentsdk.AgentTool[0]))
                 .build();
 
         setState(State.THINKING);

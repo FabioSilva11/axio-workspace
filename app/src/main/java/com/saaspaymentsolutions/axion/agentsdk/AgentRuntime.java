@@ -6,7 +6,6 @@ import com.saaspaymentsolutions.axion.ChatMessage;
 import com.saaspaymentsolutions.axion.agentsdk.tools.AgentToolExecutor;
 import com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRegistry;
 import com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRouter;
-import com.saaspaymentsolutions.axion.agentsdk.tools.LegacyToolAdapter;
 import com.saaspaymentsolutions.axion.agentsdk.tools.ToolCatalog;
 import com.saaspaymentsolutions.axion.agentsdk.tools.ToolRegistration;
 import com.saaspaymentsolutions.axion.toolcalling.ToolCall;
@@ -217,7 +216,7 @@ public final class AgentRuntime {
                         // set is NOT the model-facing catalog anymore.
                         turn = gateway.completeTurn(
                                 resolveSystemPrompt(activeAgent, context),
-                                toolCatalogFor(activeAgent),
+                                toolCatalogFor(),
                                 history,
                                 runContextIdentity);
                     } else {
@@ -510,23 +509,13 @@ public final class AgentRuntime {
     }
 
     /**
-     * Registry-backed model catalog for this turn (migration): the registry's
-     * DIRECT tools, plus the active agent's own legacy tools adapted into the
-     * registry as FUNCTION registrations (AgentTool → adapter). Tools whose
-     * name is already taken by the core registry are NOT adapted — one
-     * canonical apply_patch, never a second model-facing path.
+     * Registry-backed model catalog for this turn (migration): exactly the
+     * registry's DIRECT tools. Legacy {@code AgentTool[]} sets are NOT adapted
+     * at run time — the catalog has a single source
+     * ({@link ToolCatalog#from(AxionToolRegistry)}) and hosts register legacy
+     * tools explicitly via {@code LegacyToolAdapter} (classification-guarded).
      */
-    private synchronized ToolCatalog toolCatalogFor(Agent agent) {
-        for (AgentTool tool : withParityTools(agent)) {
-            if (registry.contains(tool.name())) {
-                continue;
-            }
-            try {
-                registry.register(LegacyToolAdapter.register(tool));
-            } catch (AxionToolRegistry.DuplicateToolException e) {
-                // A concurrent registration won the name; the existing one is canonical.
-            }
-        }
+    private synchronized ToolCatalog toolCatalogFor() {
         return ToolCatalog.from(registry);
     }
 

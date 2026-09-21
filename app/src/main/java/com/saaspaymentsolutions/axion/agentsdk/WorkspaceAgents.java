@@ -3,6 +3,8 @@ package com.saaspaymentsolutions.axion.agentsdk;
 import com.saaspaymentsolutions.axion.Tool;
 import com.saaspaymentsolutions.axion.ToolExecResult;
 import com.saaspaymentsolutions.axion.ToolManager;
+import com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRegistry;
+import com.saaspaymentsolutions.axion.agentsdk.tools.LegacyToolAdapter;
 
 import org.json.JSONObject;
 
@@ -12,6 +14,12 @@ import java.util.List;
 /**
  * Bridges the existing Void-ported tool registry ({@link ToolManager}) into
  * {@link AgentTool}s and exposes ready-made {@link Agent} factories.
+ *
+ * <p>Migration: this class is NOT a model-facing catalog source anymore. The
+ * production coordinator agent carries no {@code AgentTool[]}; hosts that want
+ * a legacy Tool model-visible must register it into the
+ * {@link AxionToolRegistry} via {@link #registerModelCompatibleTools(...)},
+ * where {@link LegacyToolAdapter} applies the replacement classification.</p>
  */
 public final class WorkspaceAgents {
 
@@ -74,6 +82,26 @@ public final class WorkspaceAgents {
             }
         }
         return tools;
+    }
+
+    /**
+     * Registers the legacy {@link ToolManager} tools the model may KEEP using
+     * into the registry — classification-guarded by {@link LegacyToolAdapter}.
+     * Only {@link LegacyToolAdapter.LegacyKind#LEGACY_MODEL_COMPATIBLE} tools
+     * become model-visible DIRECT registrations; names superseded by a newer
+     * contract (run_command, edit_file, rewrite_file, ...) are skipped, so the
+     * old and the new contract never coexist in the model catalog.
+     */
+    public static void registerModelCompatibleTools(AxionToolRegistry registry, ToolManager manager) {
+        if (registry == null || manager == null) {
+            return;
+        }
+        for (Tool tool : manager.getToolsForChatMode("agent")) {
+            if (LegacyToolAdapter.classify(tool.getName()) != LegacyToolAdapter.LegacyKind.LEGACY_MODEL_COMPATIBLE) {
+                continue;
+            }
+            registry.register(LegacyToolAdapter.register(fromRegistryTool(tool, manager)));
+        }
     }
 
     /**

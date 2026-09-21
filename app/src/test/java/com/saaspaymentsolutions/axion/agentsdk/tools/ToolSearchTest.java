@@ -11,6 +11,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 import org.junit.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -67,6 +68,24 @@ public class ToolSearchTest {
                     reg.spec().name().name().startsWith("deferred_"));
         }
         assertEquals(DEFERRED_TOOLS, registry.deferredTools().size());
+    }
+
+    @Test
+    public void activatedDeferredToolsAppearInTheNextCatalogSnapshot() throws Exception {
+        AxionToolRegistry registry = buildRegistry();
+        ToolRegistration search = registry.get("tool_search");
+        search.executor().execute(execute(search, "{\"query\":\"deferred_tool_3\"}"));
+
+        assertTrue(registry.isDeferredActivated(ToolName.plain("deferred_tool_3")));
+        List<String> names = new ArrayList<>();
+        for (ToolRegistration reg : ToolCatalog.from(registry).registrations()) {
+            names.add(reg.spec().qualifiedName());
+        }
+        assertTrue("an activated deferred tool must appear in the next catalog snapshot",
+                names.contains("deferred_tool_3"));
+        assertFalse("a not-yet-activated deferred tool stays out of the catalog",
+                names.contains("deferred_tool_4"));
+        assertTrue(names.contains("tool_search"));
     }
 
     @Test
