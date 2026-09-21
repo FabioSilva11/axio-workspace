@@ -2865,6 +2865,13 @@ public class AiProviderService {
         // sanitizing detector for old integrations (explicit LEGACY path).
         if (listener instanceof EmissionTracker
                 && ((EmissionTracker) listener).nativeToolCallsOnly) {
+            // v2 contract (Codex ResponseItem parity): the structured envelope
+            // IS the tool-call source. The result object also carries the calls
+            // for callers that inspect it, but the runtime gateway collects ONLY
+            // through StreamListener.onToolCall — so every native call MUST be
+            // emitted here. Not emitting meant tool calls silently never reached
+            // AgentRuntime in production (fix: native calls now reach the turn).
+            emitToolCalls(nativeCalls, listener);
             return new ToolCallParseResult("native",
                     new ArrayList<>(nativeCalls), content, reasoning);
         }
@@ -2874,7 +2881,16 @@ public class AiProviderService {
                         reasoning,
                         nativeCalls,
                         availableToolNames(tools)));
-        for (ToolCall call : result.getToolCalls()) {
+        emitToolCalls(result.getToolCalls(), listener);
+        return result;
+    }
+
+    /** Emits provider-structured tool calls through the listener (native AND legacy paths). */
+    static void emitToolCalls(List<ToolCall> calls, StreamListener listener) {
+        if (calls == null || listener == null) {
+            return;
+        }
+        for (ToolCall call : calls) {
             if (call != null && call.isValid()) {
                 listener.onToolCall(
                         call.getName(),
@@ -2882,7 +2898,6 @@ public class AiProviderService {
                         call.getId());
             }
         }
-        return result;
     }
 
     private List<String> availableToolNames(JSONArray tools) {
