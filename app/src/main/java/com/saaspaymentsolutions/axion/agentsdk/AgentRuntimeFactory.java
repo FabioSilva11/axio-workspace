@@ -81,6 +81,11 @@ public final class AgentRuntimeFactory {
                 registry, approvals);
         com.saaspaymentsolutions.axion.agentsdk.tools.WorkspaceToolProvider.registerWorkspaceReadTools(
                 registry);
+        // Mutation tools (create/delete/edit/rewrite/move/rename/copy) are
+        // now first-class ToolRegistrations too, so the model never needs to
+        // emulate them through exec_command/shell (see ToolSelectionPolicy).
+        com.saaspaymentsolutions.axion.agentsdk.tools.WorkspaceToolProvider.registerWorkspaceMutationTools(
+                registry);
         com.saaspaymentsolutions.axion.agentsdk.tools.McpToolSource.discover(mcpPrefs, registry);
         // Item (permission model): the safe default WORKSPACE + ON_REQUEST.
         // Reads run automatically; workspace writes / shell / network ask the

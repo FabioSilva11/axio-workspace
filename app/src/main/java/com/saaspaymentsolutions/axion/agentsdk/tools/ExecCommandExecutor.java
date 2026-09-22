@@ -38,6 +38,12 @@ final class ExecCommandExecutor implements ToolExecutor {
         if (cmd.isEmpty()) {
             return AgentToolResult.error("Error: 'cmd' must not be empty.");
         }
+        // Guardrail (not just prompt hope): reject commands that a
+        // specialized workspace tool already covers, per ToolSelectionPolicy.
+        ShellFallbackPolicy.Verdict verdict = ShellFallbackPolicy.evaluate(ctx.scId(), cmd);
+        if (!verdict.allowed) {
+            return AgentToolResult.error(verdict.blockedMessage);
+        }
         // Legacy internal bridging: the Void service understands command/cwd/
         // timeout_seconds; map the Codex keys onto it.
         try {
@@ -66,14 +72,13 @@ final class ExecCommandExecutor implements ToolExecutor {
         }
         String sessionId = String.valueOf(args.opt("session_id"));
         String chars = args.optString("chars", "");
-        if (chars.isEmpty()) {
-            return AgentToolResult.error(
-                    "Error: 'chars' must not be empty; pass the input to send to the session.");
-        }
+        // Codex-style contract: empty `chars` means "poll session output
+        // without writing", not an error. Do not reject it.
         try {
             JSONObject internal = new JSONObject();
             internal.put("command", chars);
             internal.put("persistent_terminal_id", sessionId);
+            internal.put("poll_only", chars.isEmpty());
             String output = VoidPortToolsService.executeTool(
                     ctx.scId(), RUN_PERSISTENT_COMMAND, internal);
             return AgentToolResult.success(output);

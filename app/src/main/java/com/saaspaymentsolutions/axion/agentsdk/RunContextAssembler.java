@@ -36,6 +36,7 @@ public final class RunContextAssembler {
     /** Provenance of a fragment (item 12: know where each instruction came from). */
     public enum FragmentSource {
         AGENT_INSTRUCTIONS,
+        TOOL_USAGE_POLICY,
         PROJECT_INSTRUCTIONS,
         WORKSPACE_STATE,
         TASK_MEMORY
@@ -117,6 +118,12 @@ public final class RunContextAssembler {
             fragments.add(new Fragment(FragmentSource.AGENT_INSTRUCTIONS,
                     agent.instructions() == null ? "" : agent.instructions().trim()));
         }
+        // Requirement 9: the "specialized tool > shell" rule is a permanent,
+        // structural fragment of every run's prompt — not a string only the
+        // UI happens to show. It is rendered from ToolSelectionPolicy so this
+        // is the single source of truth for the instruction text.
+        fragments.add(new Fragment(FragmentSource.TOOL_USAGE_POLICY,
+                com.saaspaymentsolutions.axion.agentsdk.tools.ToolSelectionPolicy.TOOL_USAGE_POLICY_PROMPT));
         if (instructions != null && !instructions.trim().isEmpty()) {
             fragments.add(new Fragment(FragmentSource.PROJECT_INSTRUCTIONS,
                     "<project_instructions>\n" + instructions.trim() + "\n</project_instructions>"));

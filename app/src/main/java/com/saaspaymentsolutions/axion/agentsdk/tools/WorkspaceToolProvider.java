@@ -98,6 +98,34 @@ public final class WorkspaceToolProvider {
      * {@code ToolManager}/{@code WorkspaceAgents} bridge is gone.
      */
     public static void registerWorkspaceReadTools(AxionToolRegistry registry) {
+        registerWorkspaceToolFamily(registry, WORKSPACE_READ_TOOL_NAMES,
+                name -> new WorkspaceReadExecutor(name),
+                name -> ToolCapability.READ);
+    }
+
+    /**
+     * Registers the workspace MUTATION tools ({@code create_file_or_folder},
+     * {@code delete_file_or_folder}, {@code edit_file}, {@code rewrite_file},
+     * {@code move_file}, {@code rename_file}, {@code copy_file}) as
+     * first-class {@link ToolRegistration}s, per {@code
+     * ToolSelectionPolicy}: these must be reachable directly by the model
+     * instead of being emulated through {@code exec_command}/shell. Execution
+     * is delegated through {@link WorkspaceMutationExecutor}, which in turn
+     * calls {@code VoidPortToolsService.executeTool(...)} — never the shell.
+     */
+    public static void registerWorkspaceMutationTools(AxionToolRegistry registry) {
+        registerWorkspaceToolFamily(registry, WORKSPACE_MUTATION_TOOL_NAMES,
+                WorkspaceMutationExecutor::new,
+                name -> DESTRUCTIVE_MUTATION_TOOL_NAMES.contains(name)
+                        ? new ToolCapability[]{ToolCapability.WORKSPACE_WRITE, ToolCapability.DESTRUCTIVE}
+                        : new ToolCapability[]{ToolCapability.WORKSPACE_WRITE});
+    }
+
+    /** Shared MCP-schema-to-ToolRegistration plumbing for a named family of tools. */
+    private static void registerWorkspaceToolFamily(AxionToolRegistry registry,
+                                                     java.util.Set<String> names,
+                                                     java.util.function.Function<String, ToolExecutor> executorFactory,
+                                                     java.util.function.Function<String, Object> capabilityFactory) {
         JSONArray mcpSchemas =
                 com.saaspaymentsolutions.axion.port.VoidPortToolsService.getAllToolsAsMCP();
         for (int i = 0; i < mcpSchemas.length(); i++) {
@@ -107,28 +135,93 @@ public final class WorkspaceToolProvider {
                 continue;
             }
             String name = fn.optString("name", "").trim();
-            if (!WORKSPACE_READ_TOOL_NAMES.contains(name)) {
+            if (!names.contains(name)) {
                 continue;
             }
             JSONObject parameters = fn.optJSONObject("parameters");
             if (parameters == null) {
                 parameters = new JSONObject();
             }
-            registry.register(ToolRegistration.builder(ToolSpec.function(
-                            ToolName.plain(name),
-                            fn.optString("description", ""),
-                            parameters))
-                    .executor(new WorkspaceReadExecutor(name))
-                    .source("workspace")
-                    .capability(ToolCapability.READ)
-                    .build());
+            String description = preferredToolDescription(name, fn.optString("description", ""));
+            ToolRegistration.Builder builder = ToolRegistration.builder(ToolSpec.function(
+                            ToolName.plain(name), description, parameters))
+                    .executor(executorFactory.apply(name))
+                    .source("workspace");
+            Object capability = capabilityFactory.apply(name);
+            if (capability instanceof ToolCapability[]) {
+                ToolCapability[] caps = (ToolCapability[]) capability;
+                builder.capabilities(caps);
+                for (ToolCapability c : caps) {
+                    if (c == ToolCapability.DESTRUCTIVE) {
+                        builder.destructive(true);
+                    }
+                }
+            } else {
+                builder.capability((ToolCapability) capability);
+            }
+            if (WORKSPACE_MUTATION_TOOL_NAMES.contains(name)) {
+                builder.fileMutation(true);
+            }
+            registry.register(builder.build());
         }
+    }
+
+    /**
+     * Appends an explicit "prefer this over exec_command" instruction to a
+     * tool's model-facing description (Requirement 8: tool descriptions must
+     * say which tool is preferred, so the preference does not rely solely on
+     * the model "remembering" a rule from the system prompt).
+     */
+    private static String preferredToolDescription(String name, String baseDescription) {
+        String suffix = SHELL_ALTERNATIVE_HINTS.get(name);
+        if (suffix == null) {
+            return baseDescription;
+        }
+        return baseDescription + "\n\n" + suffix;
+    }
+
+    private static final java.util.Map<String, String> SHELL_ALTERNATIVE_HINTS = buildShellAlternativeHints();
+
+    private static java.util.Map<String, String> buildShellAlternativeHints() {
+        java.util.Map<String, String> m = new java.util.HashMap<>();
+        m.put("read_file", "Use this tool to inspect a file. Do NOT use exec_command with cat, head, "
+                + "tail, sed or similar commands when this tool can perform the operation.");
+        m.put("ls_dir", "Use this instead of exec_command with ls, dir or similar commands.");
+        m.put("get_dir_tree", "Use this instead of shell commands such as tree or find when the goal "
+                + "is to understand project structure.");
+        m.put("search_pathnames_only", "Use this instead of find, ls pipelines or shell pathname searches.");
+        m.put("search_for_files", "Use this instead of grep, rg or shell text searches.");
+        m.put("search_in_file", "Use this instead of grep, rg or shell text searches within a single file.");
+        m.put("get_file_info", "Use this instead of exec_command with stat, ls -l or similar commands.");
+        m.put("create_file_or_folder", "Use this instead of mkdir/touch shell commands.");
+        m.put("edit_file", "Edits a file using SEARCH/REPLACE blocks. Use this instead of sed, perl, "
+                + "python or shell redirection for editing.");
+        m.put("rewrite_file", "Replaces the full contents of a file. Use this instead of shell "
+                + "redirection or heredoc editing.");
+        m.put("delete_file_or_folder", "Deletes a file or folder. Use this instead of rm/rmdir shell commands.");
+        m.put("move_file", "Use this instead of the mv shell command.");
+        m.put("rename_file", "Use this instead of the mv shell command when only the name changes.");
+        m.put("copy_file", "Use this instead of the cp shell command.");
+        return m;
     }
 
     private static final java.util.Set<String> WORKSPACE_READ_TOOL_NAMES =
             new java.util.HashSet<>(Arrays.asList(
                     "read_file", "ls_dir", "get_dir_tree",
-                    "search_pathnames_only", "search_for_files", "search_in_file"));
+                    "search_pathnames_only", "search_for_files", "search_in_file",
+                    "get_file_info"));
+
+    private static final java.util.Set<String> WORKSPACE_MUTATION_TOOL_NAMES =
+            new java.util.HashSet<>(Arrays.asList(
+                    "create_file_or_folder", "delete_file_or_folder", "edit_file",
+                    "rewrite_file", "move_file", "rename_file", "copy_file"));
+
+    private static final java.util.Set<String> DESTRUCTIVE_MUTATION_TOOL_NAMES =
+            new java.util.HashSet<>(Arrays.asList("delete_file_or_folder"));
+
+    // WorkspaceMutationExecutor now lives in its own file (see
+    // WorkspaceMutationExecutor.java): ToolRegistration -> WorkspaceMutationExecutor
+    // -> VoidPortToolsService.executeTool(...), never through exec_command/shell.
 
     /** Executes one workspace read tool through the VoidToolsService bridge. */
     private static final class WorkspaceReadExecutor implements ToolExecutor {

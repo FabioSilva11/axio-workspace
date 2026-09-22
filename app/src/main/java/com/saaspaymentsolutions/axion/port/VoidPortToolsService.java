@@ -622,9 +622,6 @@ public final class VoidPortToolsService {
             // java.io.File. ProjectPathResolver below is only a fallback for
             // sessions with no workspace open.
             WorkspaceFileSystem ws = com.saaspaymentsolutions.axion.agentsdk.RuntimeFileContext.effectiveFileSystem();
-            if (ws == null) {
-                ws = WorkspaceManager.getActiveFileSystem();
-            }
             if (ws != null) {
                 return createThroughWorkspace(scId, ws, uriStr, isFolder);
             }
@@ -712,9 +709,6 @@ public final class VoidPortToolsService {
             // ProjectPathResolver path below is only a fallback for sessions with no
             // workspace open.
             WorkspaceFileSystem ws = com.saaspaymentsolutions.axion.agentsdk.RuntimeFileContext.effectiveFileSystem();
-            if (ws == null) {
-                ws = WorkspaceManager.getActiveFileSystem();
-            }
             if (ws != null) {
                 return deleteThroughWorkspace(scId, ws, uriStr, isRecursive);
             }
@@ -849,9 +843,6 @@ public final class VoidPortToolsService {
             }
             com.saaspaymentsolutions.axion.workspace.WorkspaceFileSystem fs =
                     com.saaspaymentsolutions.axion.agentsdk.RuntimeFileContext.effectiveFileSystem();
-            if (fs == null) {
-                fs = com.saaspaymentsolutions.axion.workspace.WorkspaceManager.getActiveFileSystem();
-            }
             if (fs != null) {
                 boolean ok = fs.move(source, destination);
                 return new ToolCallResult(ok ? "File moved successfully from " + source + " to " + destination : "Failed to move file");
@@ -880,9 +871,6 @@ public final class VoidPortToolsService {
             }
             com.saaspaymentsolutions.axion.workspace.WorkspaceFileSystem fs =
                     com.saaspaymentsolutions.axion.agentsdk.RuntimeFileContext.effectiveFileSystem();
-            if (fs == null) {
-                fs = com.saaspaymentsolutions.axion.workspace.WorkspaceManager.getActiveFileSystem();
-            }
             if (fs != null) {
                 boolean ok = fs.rename(uri, newName);
                 return new ToolCallResult(ok ? "File renamed successfully to " + newName : "Failed to rename file");
@@ -910,9 +898,6 @@ public final class VoidPortToolsService {
             }
             com.saaspaymentsolutions.axion.workspace.WorkspaceFileSystem fs =
                     com.saaspaymentsolutions.axion.agentsdk.RuntimeFileContext.effectiveFileSystem();
-            if (fs == null) {
-                fs = com.saaspaymentsolutions.axion.workspace.WorkspaceManager.getActiveFileSystem();
-            }
             if (fs != null) {
                 boolean ok = fs.copy(source, destination);
                 return new ToolCallResult(ok ? "File copied successfully from " + source + " to " + destination : "Failed to copy file");
@@ -935,9 +920,6 @@ public final class VoidPortToolsService {
             }
             com.saaspaymentsolutions.axion.workspace.WorkspaceFileSystem fs =
                     com.saaspaymentsolutions.axion.agentsdk.RuntimeFileContext.effectiveFileSystem();
-            if (fs == null) {
-                fs = com.saaspaymentsolutions.axion.workspace.WorkspaceManager.getActiveFileSystem();
-            }
             if (fs != null) {
                 com.saaspaymentsolutions.axion.workspace.WorkspaceFileSystem.FileMetadata meta = fs.getMetadata(uri);
                 if (meta != null) {
@@ -1117,12 +1099,22 @@ public final class VoidPortToolsService {
                 return new ToolCallResult("Terminal não encontrado: " + terminalId);
             }
 
-            java.io.OutputStream os = process.getOutputStream();
-            os.write((command + "\n").getBytes(StandardCharsets.UTF_8));
-            os.flush();
+            // Codex-style write_stdin contract: empty `command` (chars) means
+            // "poll for output without writing" — do not send a spurious
+            // newline keystroke to the session in that case.
+            boolean pollOnly = command == null || command.isEmpty();
+            if (!pollOnly) {
+                java.io.OutputStream os = process.getOutputStream();
+                os.write((command + "\n").getBytes(StandardCharsets.UTF_8));
+                os.flush();
+            }
 
-            // Wait for command to complete (with timeout)
-            Thread.sleep(TimeUnit.SECONDS.toMillis(MAX_TERMINAL_BG_COMMAND_TIME_SECONDS));
+            // Wait for command to complete (with timeout). A poll-only call
+            // still waits briefly so recently produced output has a chance
+            // to be flushed before we read it.
+            Thread.sleep(pollOnly
+                    ? Math.min(TimeUnit.SECONDS.toMillis(MAX_TERMINAL_BG_COMMAND_TIME_SECONDS), 1000)
+                    : TimeUnit.SECONDS.toMillis(MAX_TERMINAL_BG_COMMAND_TIME_SECONDS));
 
             String result = trimTerminalOutput(drainTerminalOutput(terminalId, false));
             
@@ -1268,29 +1260,76 @@ public final class VoidPortToolsService {
         return normalized.length() > 100000 ? normalized.substring(0, 100000) : normalized;
     }
 
+    /**
+     * Reads whatever output is available from a terminal without blocking.
+     * Used for a still-running/persistent terminal, or after force-killing a
+     * timed-out one-shot process, where there is no guarantee the stream will
+     * ever reach EOF.
+     */
     private static String drainTerminalOutput(String terminalId, boolean readUntilEnd) throws IOException {
+        if (readUntilEnd) {
+            return drainTerminalOutputUntilEof(terminalId);
+        }
         BufferedReader reader = terminalReaders.get(terminalId);
         StringBuilder output = terminalOutputs.get(terminalId);
         if (reader == null || output == null) {
             return "";
         }
-
         long start = System.currentTimeMillis();
-        while (readUntilEnd || reader.ready() || (System.currentTimeMillis() - start < 200)) {
+        while (reader.ready() || (System.currentTimeMillis() - start < 200)) {
             if (reader.ready()) {
                 String line = reader.readLine();
                 if (line == null) break;
                 output.append(line).append("\n");
                 start = System.currentTimeMillis(); // Reset timer if we are getting data
             } else {
-                if (readUntilEnd) {
-                   // If we must read until end, wait a bit for more data
-                   try { Thread.sleep(50); } catch (Exception ignored) {}
-                } else {
-                   break; 
-                }
+                break;
             }
-            if (readUntilEnd && !activeTerminals.containsKey(terminalId)) break; // Process died
+        }
+        return output.toString();
+    }
+
+    /**
+     * Reads a ONE-SHOT command's remaining output. Called only after
+     * {@code process.waitFor(...)} has already returned true, i.e. the
+     * process has terminated and its stdout will reach EOF on its own —
+     * there is no live process left whose membership in
+     * {@code activeTerminals} could be used (or needed) as a stop condition.
+     *
+     * <p>Bug fixed here: the previous implementation gated continuation on
+     * {@code reader.ready()}, which for a process stream returns {@code
+     * false} at EOF instead of signalling completion (it reflects "would a
+     * read block", not "has the stream ended"), and then re-checked {@code
+     * activeTerminals.containsKey(terminalId)} — a key that is only removed
+     * by the caller *after* this method returns. That created a circular
+     * wait: {@code ready()} never true at EOF combined with a liveness flag
+     * that could never go false during the call, so the loop could spin
+     * forever without making progress. Since the process has already
+     * exited, it is now safe (and correct) to issue a plain blocking {@code
+     * readLine()} — it returns immediately once the OS delivers the
+     * buffered output and returns {@code null} promptly at EOF. A hard wall
+     * clock cap is kept only as a defensive backstop, not as the primary
+     * termination signal.
+     */
+    private static String drainTerminalOutputUntilEof(String terminalId) throws IOException {
+        BufferedReader reader = terminalReaders.get(terminalId);
+        StringBuilder output = terminalOutputs.get(terminalId);
+        if (reader == null || output == null) {
+            return "";
+        }
+        long deadline = System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(10);
+        while (true) {
+            String line = reader.readLine(); // blocking, but the process already exited -> returns promptly
+            if (line == null) {
+                break; // real EOF
+            }
+            output.append(line).append("\n");
+            if (System.currentTimeMillis() > deadline) {
+                // Defensive backstop only: should not trigger in practice
+                // once the process has exited, but guarantees we never hang
+                // the tool call indefinitely if the stream misbehaves.
+                break;
+            }
         }
         return output.toString();
     }
@@ -1483,6 +1522,23 @@ public final class VoidPortToolsService {
         array.put(createToolMCP("rewrite_file",
             "Edits a file, deleting all the old contents and replacing them with your new contents. Use this tool if you want to edit a file you just created.",
             new String[]{"uri", "new_content"}, null));
+
+        array.put(createToolMCP("move_file",
+            "Moves a file or folder from one path to another within the workspace.",
+            new String[]{"source", "destination"}, null));
+
+        array.put(createToolMCP("rename_file",
+            "Renames a file or folder in place, keeping it in the same directory.",
+            new String[]{"uri", "new_name"}, null));
+
+        array.put(createToolMCP("copy_file",
+            "Copies a file or folder from one path to another within the workspace.",
+            new String[]{"source", "destination"}, null));
+
+        array.put(createToolMCP("get_file_info",
+            "Returns metadata about a file or folder (size, type, last modified) without reading its full contents.",
+            new String[]{"uri"}, null));
+
         array.put(createToolMCP("update_plan",
             "Updates the model-maintained plan shown to the user. Send the full plan, one line per step: pending|running|done: title.",
             new String[]{"plan"}, null));
@@ -1757,7 +1813,19 @@ public final class VoidPortToolsService {
                         args.opt("terminal_id") != null ? args.opt("terminal_id") : args.opt("terminalId"),
                         args.opt("timeout_seconds") != null ? args.opt("timeout_seconds") : args.opt("timeoutSeconds"));
                     break;
-                    
+
+                case "run_persistent_command":
+                    // Bug fix: this case was previously missing, so write_stdin
+                    // always fell through to the "unknown tool" default below.
+                    // Codex-style contract: an empty/absent "command" (chars)
+                    // means "poll session output without writing" and must not
+                    // be treated as an error.
+                    result = runPersistentCommand(scId,
+                        args.opt("command"),
+                        args.opt("persistent_terminal_id") != null
+                                ? args.opt("persistent_terminal_id") : args.opt("persistentTerminalId"));
+                    break;
+
                 default:
                     if ("get_file".equals(toolName)) {
                         return SketchApplication.getContext().getString(R.string.chat_tool_get_file_alias_error);
@@ -1942,9 +2010,6 @@ public final class VoidPortToolsService {
             String norm = com.saaspaymentsolutions.axion.workspace.WorkspacePath.normalize(uriStr);
             com.saaspaymentsolutions.axion.workspace.WorkspaceFileSystem fs =
                     com.saaspaymentsolutions.axion.agentsdk.RuntimeFileContext.effectiveFileSystem();
-            if (fs == null) {
-                fs = com.saaspaymentsolutions.axion.workspace.WorkspaceManager.getActiveFileSystem();
-            }
             if (fs != null && fs.exists(norm) && !fs.isDirectory(norm)) {
                 return fs.readText(norm);
             }
@@ -1966,9 +2031,6 @@ public final class VoidPortToolsService {
             String norm = com.saaspaymentsolutions.axion.workspace.WorkspacePath.normalize(uriStr);
             com.saaspaymentsolutions.axion.workspace.WorkspaceFileSystem fs =
                     com.saaspaymentsolutions.axion.agentsdk.RuntimeFileContext.effectiveFileSystem();
-            if (fs == null) {
-                fs = com.saaspaymentsolutions.axion.workspace.WorkspaceManager.getActiveFileSystem();
-            }
             if (fs != null) {
                 fs.writeText(norm, content);
                 return true;

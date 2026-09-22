@@ -80,8 +80,17 @@ public final class PermissionEvaluator {
      * arguments.
      */
     public static Decision evaluate(PermissionConfig config, ToolRegistration registration, ToolCall call) {
-        if (config == null || registration == null) {
-            return Decision.ALLOW;
+        // Fail-closed (Requirement 39): an unknown registration is never
+        // trusted with ALLOW-by-default. There is nothing to evaluate a
+        // capability against, so the safe outcome is DENY.
+        if (registration == null) {
+            return Decision.DENY;
+        }
+        // A missing config is not "no restrictions" — it falls back to the
+        // known-safe WORKSPACE + ON_REQUEST profile (reads allowed, risky
+        // capabilities PROMPT) rather than ALLOW-everything.
+        if (config == null) {
+            config = PermissionConfig.workspaceRequest();
         }
         if (registration.isHandoff()) {
             return Decision.ALLOW;
