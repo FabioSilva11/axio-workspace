@@ -569,6 +569,7 @@ public class AgentManager {
         private final java.util.Map<String, ChatMessage> toolBubbles =
                 new java.util.LinkedHashMap<>();
         private String pendingApprovalRequestId = "";
+        private String pendingApprovalCallId = "";
         private volatile String lastOutput = "";
         private volatile String lastStatus = "";
         /** Single reducer: every run event derives the composer status. */
@@ -730,6 +731,7 @@ public class AgentManager {
             liveAssistant = null;
             toolBubbles.clear();
             pendingApprovalRequestId = "";
+            pendingApprovalCallId = "";
             statusReducer.reset();
         }
 
@@ -770,6 +772,71 @@ public class AgentManager {
                 }
                 listener.onProcessingFinished();
             });
+        }
+
+        /** Outcome of {@link #findOrCreateToolCard}: the card + whether it was born here. */
+        private static final class ToolCard {
+            final ChatMessage message;
+            final boolean created;
+
+            ToolCard(ChatMessage message, boolean created) {
+                this.message = message;
+                this.created = created;
+            }
+        }
+
+        /**
+         * The single UI card of a tool call. Identity = callId: the card comes
+         * from the bubble map, else from a message already seeded into the shared
+         * conversation list by the runtime's synchronised upsert (race winner —
+         * the {@code EventStream} delivers asynchronously), and is only created
+         * when neither holds one. Reads/writes of the shared list run under its
+         * monitor so the runtime's upsert never races this adoption: whichever
+         * side gets there first wins, the other one reuses the same object.
+         */
+        private ToolCard findOrCreateToolCard(String callId, String toolName, String args) {
+            ChatMessage inMap = toolBubbles.get(callId);
+            if (inMap != null) {
+                return new ToolCard(inMap, false);
+            }
+            if (messages != null) {
+                synchronized (messages) {
+                    inMap = toolBubbles.get(callId);
+                    if (inMap != null) {
+                        return new ToolCard(inMap, false);
+                    }
+                    ChatMessage seeded = findToolInMessages(messages, callId);
+                    if (seeded != null) {
+                        toolBubbles.put(callId, seeded);
+                        return new ToolCard(seeded, false);
+                    }
+                    ChatMessage bubble = new ChatMessage(toolName, args,
+                            System.currentTimeMillis(), callId);
+                    toolBubbles.put(callId, bubble);
+                    messages.add(bubble);
+                    return new ToolCard(bubble, true);
+                }
+            }
+            ChatMessage bubble = new ChatMessage(toolName, args,
+                    System.currentTimeMillis(), callId);
+            toolBubbles.put(callId, bubble);
+            return new ToolCard(bubble, true);
+        }
+
+        /** Finds an already-appended TYPE_TOOL message of {@code callId}. */
+        private static ChatMessage findToolInMessages(java.util.List<ChatMessage> list, String callId) {
+            if (list == null || callId == null || callId.trim().isEmpty()) {
+                return null;
+            }
+            String normalized = callId.trim();
+            for (ChatMessage message : list) {
+                if (message != null && message.getType() == ChatMessage.TYPE_TOOL
+                        && message.getToolId() != null
+                        && normalized.equals(message.getToolId().trim())) {
+                    return message;
+                }
+            }
+            return null;
         }
 
         private void onAgentEvent(com.saaspaymentsolutions.axion.agentsdk.AgentEvent event) {
@@ -831,25 +898,23 @@ public class AgentManager {
                 String callId = started.getCall() == null ? "" : safeText(started.getCall().getId());
                 String args = started.getCall() == null ? "{}" : safeText(started.getCall().getArguments());
                 closeLiveAssistant();
-                ChatMessage existing = toolBubbles.get(callId);
-                if (existing == null) {
-                    ChatMessage bubble = new ChatMessage(tool, args, System.currentTimeMillis(), callId);
-                    bubble.setToolRunning(true);
-                    bubble.setToolState("running_now");
+                ToolCard card = findOrCreateToolCard(callId, tool, args);
+                ChatMessage bubble = card.message;
+                bubble.setToolRunning(true);
+                bubble.setToolState("running_now");
+                if (card.created) {
                     bubble.setStatus(stringOf(R.string.chat_tool_status_running));
                     bubble.setDisplayContent(stringOf(R.string.chat_tool_running_message));
-                    toolBubbles.put(callId, bubble);
-                    if (messages != null) {
-                        synchronized (messages) {
-                            messages.add(bubble);
-                        }
-                    }
-                    uiExecutor.execute(() -> listener.onMessageAdded(bubble));
-                } else {
-                    existing.setToolRunning(true);
-                    existing.setToolState("running_now");
-                    uiExecutor.execute(() -> listener.onMessageUpdated(existing));
                 }
+                ChatToolLog.d("tool", "TOOL_UI_STARTED callId=" + callId + " tool=" + tool
+                        + " messageIdentity=" + bubble.toolMessageIdentity());
+                uiExecutor.execute(() -> {
+                    if (card.created) {
+                        listener.onMessageAdded(bubble);
+                    } else {
+                        listener.onMessageUpdated(bubble);
+                    }
+                });
             } else if (event instanceof com.saaspaymentsolutions.axion.agentsdk.AgentEvent.ToolCallCompleted) {
                 com.saaspaymentsolutions.axion.agentsdk.AgentEvent.ToolCallCompleted completed =
                         (com.saaspaymentsolutions.axion.agentsdk.AgentEvent.ToolCallCompleted) event;
@@ -859,33 +924,36 @@ public class AgentManager {
                         || !completed.getResult().isError();
                 String resultText = completed.getResult() == null
                         ? "" : safeText(completed.getResult().output());
-                ChatMessage existing = toolBubbles.get(callId);
-                final ChatMessage bubble;
-                if (existing == null) {
-                    // Completion without a visible start (deduped or approval path).
-                    bubble = new ChatMessage(tool, "{}", System.currentTimeMillis(), callId);
-                    toolBubbles.put(callId, bubble);
-                    if (messages != null) {
-                        synchronized (messages) {
-                            messages.add(bubble);
-                        }
-                    }
-                    uiExecutor.execute(() -> listener.onMessageAdded(bubble));
+                ToolCard card = findOrCreateToolCard(callId, tool, "{}");
+                ChatMessage bubble = card.message;
+                if (bubble.isRejected()) {
+                    // Approval denied earlier: keep the rejected card's visual
+                    // state — one card serves the whole lifecycle of the call.
+                    bubble.setToolRunning(false);
+                    bubble.setToolError(!success);
+                    bubble.setToolResult(resultText);
                 } else {
-                    bubble = existing;
+                    bubble.setToolRunning(false);
+                    bubble.setToolError(!success);
+                    bubble.setToolState(success ? "success" : "error");
+                    bubble.setToolResult(resultText);
+                    bubble.setStatus(stringOf(success
+                            ? R.string.chat_tool_status_done
+                            : R.string.chat_tool_status_error));
+                    bubble.setDisplayContent(stringOf(success
+                            ? R.string.chat_tool_done_message
+                            : R.string.chat_tool_error_message));
+                    bubble.setExpanded(!success);
                 }
-                bubble.setToolRunning(false);
-                bubble.setToolError(!success);
-                bubble.setToolState(success ? "success" : "error");
-                bubble.setToolResult(resultText);
-                bubble.setStatus(stringOf(success
-                        ? R.string.chat_tool_status_done
-                        : R.string.chat_tool_status_error));
-                bubble.setDisplayContent(stringOf(success
-                        ? R.string.chat_tool_done_message
-                        : R.string.chat_tool_error_message));
-                bubble.setExpanded(!success);
-                uiExecutor.execute(() -> listener.onMessageUpdated(bubble));
+                ChatToolLog.d("tool", "TOOL_UI_COMPLETED callId=" + callId + " tool=" + tool
+                        + " messageIdentity=" + bubble.toolMessageIdentity());
+                uiExecutor.execute(() -> {
+                    if (card.created) {
+                        listener.onMessageAdded(bubble);
+                    } else {
+                        listener.onMessageUpdated(bubble);
+                    }
+                });
                 boolean mutation = isMutationTool(tool);
                 uiExecutor.execute(() -> listener.onToolExecuted(tool, mutation));
             } else if (event instanceof com.saaspaymentsolutions.axion.agentsdk.AgentEvent.FileChanged) {
@@ -899,32 +967,33 @@ public class AgentManager {
                         (com.saaspaymentsolutions.axion.agentsdk.AgentEvent.ApprovalRequired) event;
                 String requestId = required.getRequest() == null
                         ? "" : safeText(required.getRequest().getId());
+                // Identity = callId, NOT the opaque request id: approval, started
+                // and completed of the SAME call must share one card.
+                String callId = required.getCall() == null
+                        ? "" : safeText(required.getCall().getId());
                 pendingApprovalRequestId = requestId;
-                ChatMessage existing = toolBubbles.get(requestId);
+                pendingApprovalCallId = callId;
                 final ChatMessage bubble;
-                if (existing == null && required.getRequest() != null) {
+                if (required.getRequest() != null) {
                     String args = required.getRequest().getCall() == null
                             ? "{}" : safeText(required.getRequest().getCall().getArguments());
-                    bubble = new ChatMessage(required.getTool(), args,
-                            System.currentTimeMillis(), requestId);
-                    toolBubbles.put(requestId, bubble);
-                    if (messages != null) {
-                        synchronized (messages) {
-                            messages.add(bubble);
-                        }
-                    }
-                    uiExecutor.execute(() -> listener.onMessageAdded(bubble));
-                } else {
-                    bubble = existing;
-                }
-                if (bubble != null) {
+                    ToolCard card = findOrCreateToolCard(callId, required.getTool(), args);
+                    bubble = card.message;
                     bubble.setRequiresApproval(true);
                     bubble.setToolState("tool_request");
                     bubble.setStatus(stringOf(R.string.chat_tool_status_waiting_approval));
                     bubble.setDisplayContent(ChatMessage.hasVisibleText(required.getTool())
                             ? stringOf(R.string.chat_tool_approval_message_named, required.getTool())
                             : stringOf(R.string.chat_tool_status_waiting_approval));
-                    uiExecutor.execute(() -> listener.onMessageUpdated(bubble));
+                    uiExecutor.execute(() -> {
+                        if (card.created) {
+                            listener.onMessageAdded(bubble);
+                        } else {
+                            listener.onMessageUpdated(bubble);
+                        }
+                    });
+                } else {
+                    bubble = null;
                 }
                 uiExecutor.execute(() -> listener.onApprovalRequired(requestId, required.getTool()));
             } else if (event instanceof com.saaspaymentsolutions.axion.agentsdk.AgentEvent.PermissionResolved) {
@@ -932,8 +1001,9 @@ public class AgentManager {
                         (com.saaspaymentsolutions.axion.agentsdk.AgentEvent.PermissionResolved) event;
                 // The resolved request is the one the bridge parked; the event
                 // itself carries tool/decision/state (no requestId payload).
-                ChatMessage bubble = toolBubbles.get(pendingApprovalRequestId);
+                ChatMessage bubble = toolBubbles.get(pendingApprovalCallId);
                 pendingApprovalRequestId = "";
+                pendingApprovalCallId = "";
                 if (bubble != null && !resolved.isAllowed()
                         && resolved.getState() != com.saaspaymentsolutions.axion.agentsdk.ApprovalHandler.ApprovalState.ALLOWED) {
                     bubble.setToolRunning(false);

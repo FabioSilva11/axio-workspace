@@ -228,6 +228,18 @@ public class ChatMessage {
         this.toolId = toolId;
     }
 
+    /**
+     * Stable identity of a tool message for diagnostics and regression
+     * assertions (one tool call == one ChatMessage, identity = callId).
+     * Combines the JVM identity hash (same object == same card), the
+     * creation timestamp, and the persisted {@code toolId}.
+     */
+    public String toolMessageIdentity() {
+        return System.identityHashCode(this) + ":"
+                + timestamp + ":"
+                + (toolId == null ? "" : toolId);
+    }
+
     @Nullable
     public String getToolState() {
         return toolState;

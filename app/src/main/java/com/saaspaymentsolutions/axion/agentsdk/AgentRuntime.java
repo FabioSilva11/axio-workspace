@@ -3,6 +3,7 @@ package com.saaspaymentsolutions.axion.agentsdk;
 import com.saaspaymentsolutions.axion.AiChatSettingsHelper;
 import com.saaspaymentsolutions.axion.AiOperationContext;
 import com.saaspaymentsolutions.axion.ChatMessage;
+import com.saaspaymentsolutions.axion.ChatToolLog;
 import com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRegistry;
 import com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRouter;
 import com.saaspaymentsolutions.axion.agentsdk.tools.ToolCatalog;
@@ -595,14 +596,49 @@ public final class AgentRuntime {
     }
 
     private static void appendToolResult(List<ChatMessage> history, ToolCall call, String output) {
-        ChatMessage toolMessage = new ChatMessage("", ChatMessage.TYPE_TOOL, System.currentTimeMillis());
-        toolMessage.setToolName(call.getName());
-        toolMessage.setToolArgs(call.getArguments());
-        toolMessage.setToolId(call.getId());
-        toolMessage.setToolRunning(false);
-        toolMessage.setToolResult(output);
-        toolMessage.setToolError(output != null && output.startsWith("Error"));
-        history.add(toolMessage);
+        if (history == null || call == null) {
+            return;
+        }
+        String toolName = call.getName();
+        String callId = call.getId() == null ? "" : call.getId().trim();
+        boolean error = output != null && output.startsWith("Error");
+        // Identity = callId: one tool call == exactly one TYPE_TOOL in history.
+        // The HostBridge card lives in the SAME list this method appends to, so
+        // this is an UPSERT — the semantic entry and the visual card are one
+        // ChatMessage. Creating a second message here was the duplicate-card bug.
+        ChatMessage toolMessage;
+        synchronized (history) {
+            toolMessage = findToolMessage(history, callId);
+            if (toolMessage == null) {
+                toolMessage = new ChatMessage(toolName, call.getArguments(),
+                        System.currentTimeMillis(), callId);
+                toolMessage.setToolRunning(false);
+                history.add(toolMessage);
+            }
+            toolMessage.setToolResult(output);
+            toolMessage.setToolError(error);
+            toolMessage.setToolRunning(false);
+        }
+        // The result stays in the model context via this very message; the tag
+        // lets a regression trace confirm 1 call → 1 message (no duplicate).
+        ChatToolLog.d("tool", "TOOL_HISTORY_RESULT callId=" + callId + " tool=" + toolName
+                + " messageIdentity=" + toolMessage.toolMessageIdentity());
+    }
+
+    /** Finds the single tool message of {@code callId}; null when absent/blank. */
+    private static ChatMessage findToolMessage(List<ChatMessage> history, String toolId) {
+        if (history == null || toolId == null || toolId.trim().isEmpty()) {
+            return null;
+        }
+        String normalized = toolId.trim();
+        for (ChatMessage message : history) {
+            if (message != null && message.getType() == ChatMessage.TYPE_TOOL
+                    && message.getToolId() != null
+                    && normalized.equals(message.getToolId().trim())) {
+                return message;
+            }
+        }
+        return null;
     }
 
     private static String latestUserText(List<ChatMessage> messages) {
