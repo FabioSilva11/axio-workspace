@@ -32,6 +32,25 @@ public class AiRetryController {
     private static final double JITTER_PERCENT = 0.20;
 
     /**
+     * Marcadores de erros determinísticos de request/schema. Repetir a mesma
+     * chamada só repetiria a mesma rejeição, então nunca são retriáveis —
+     * mesmo quando o status HTTP bruto seria retriável (ex.: um 5xx que na
+     * verdade é um erro de validação de declaração de ferramenta).
+     */
+    private static final String[] DETERMINISTIC_ERROR_MARKERS = {
+            "invalid_argument",
+            "invalid tool declaration",
+            "schema validation",
+            "validation error",
+            "malformed request",
+            "unknown field",
+            "unknown name",
+            "cannot find field",
+            "invalid_request_error",
+            "unsupported field",
+    };
+
+    /**
      * Resultado da avaliação de retry.
      */
     public static class RetryDecision {
@@ -92,7 +111,13 @@ public class AiRetryController {
         if (attemptNumber >= MAX_ATTEMPTS) {
             return RetryDecision.noRetry("Limite global de tentativas atingido (" + MAX_ATTEMPTS + ")");
         }
-        
+
+        // Erros determinísticos (400 / INVALID_ARGUMENT / schema inválido /
+        // campo desconhecido / malformed request) não melhoram ao repetir.
+        if (isDeterministicRequestError(statusCode, errorBody)) {
+            return RetryDecision.noRetry("Erro determinístico de request/schema do provider");
+        }
+
         // Classificar se o erro permite retry
         if (statusCode > 0) {
             // Erro HTTP
@@ -135,6 +160,28 @@ public class AiRetryController {
                 || statusCode == 502
                 || statusCode == 503
                 || statusCode == 504;
+    }
+
+    /**
+     * Erro determinístico de request/schema: 400 ou um corpo que declare
+     * INVALID_ARGUMENT, declaração de ferramenta inválida, erro de validação
+     * de schema, malformed request ou campo desconhecido. Repetir a mesma
+     * chamada reproduziria exatamente a mesma rejeição.
+     */
+    private boolean isDeterministicRequestError(int statusCode, @Nullable String errorBody) {
+        if (statusCode == 400) {
+            return true;
+        }
+        if (errorBody == null || errorBody.trim().isEmpty()) {
+            return false;
+        }
+        String lower = errorBody.toLowerCase(java.util.Locale.ROOT);
+        for (String marker : DETERMINISTIC_ERROR_MARKERS) {
+            if (lower.contains(marker)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

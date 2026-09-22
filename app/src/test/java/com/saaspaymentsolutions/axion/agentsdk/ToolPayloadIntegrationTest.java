@@ -5,6 +5,7 @@ import com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRegistry;
 import com.saaspaymentsolutions.axion.agentsdk.tools.ProviderCatalogPayload;
 import com.saaspaymentsolutions.axion.agentsdk.tools.ProviderToolCapabilities;
 import com.saaspaymentsolutions.axion.agentsdk.tools.ToolCatalog;
+import com.saaspaymentsolutions.axion.agentsdk.tools.ToolRegistration;
 import com.saaspaymentsolutions.axion.agentsdk.tools.ToolSpecSerializer;
 import com.saaspaymentsolutions.axion.agentsdk.tools.WorkspaceToolProvider;
 import org.json.JSONArray;
@@ -146,8 +147,21 @@ public class ToolPayloadIntegrationTest {
         assertFalse("Should not allow additional properties",
                 parameters.optBoolean("additionalProperties", true));
 
-        assertNotNull("work must declare an output_schema",
-                function.optJSONObject("output_schema"));
+        // The provider-bound FUNCTION_ONLY wire must NOT carry output_schema —
+        // it is rejected by current transports. The internal spec keeps it.
+        assertFalse("output_schema must not be sent on the FUNCTION_ONLY wire",
+                function.has("output_schema"));
+    }
+
+    @Test
+    public void contextRemainingTool_internalOutputSchemaPreserved() {
+        ToolRegistration ctx = ToolCatalog.from(coreRegistry()).get("get_context_remaining");
+        assertNotNull("get_context_remaining must be registered", ctx);
+        assertNotNull("outputSchema must stay available on the internal spec",
+                ctx.spec().outputSchema());
+        assertEquals("object", ctx.spec().outputSchema().optString("type"));
+        assertNotNull(ctx.spec().outputSchema().optJSONObject("properties")
+                .opt("tokens_left"));
     }
 
     @Test

@@ -20,6 +20,11 @@ package com.saaspaymentsolutions.axion.agentsdk.tools;
  *       shape that carries deferred-tool discovery;</li>
  *   <li><b>supportsDeferredTools</b> — the transport can represent
  *       loader-deferred tools (only when native tool_search is available);</li>
+ *   <li><b>supportsOutputSchema</b> — whether the transport accepts an
+ *       {@code output_schema} inside a function declaration. Function-only /
+ *       OpenAI-compatible transports today reject it, so {@link #FUNCTION_ONLY}
+ *       declares it unsupported and the serializer drops it at the wire while
+ *       {@link ToolSpec#outputSchema()} stays intact internally;</li>
  *   <li>the three <b>...FallbackTo...</b> flags declare an EXPLICIT downgrade
  *       path. The serializer only downgrades a kind when the capability says
  *       the fallback exists — never silently.</li>
@@ -38,6 +43,7 @@ public final class ProviderToolCapabilities {
     private final boolean supportsNamespaces;
     private final boolean supportsToolSearch;
     private final boolean supportsDeferredTools;
+    private final boolean supportsOutputSchema;
     private final boolean freeformFallbackToFunction;
     private final boolean namespaceFallbackToFunctions;
     private final boolean toolSearchFallbackToFunction;
@@ -48,6 +54,7 @@ public final class ProviderToolCapabilities {
         this.supportsNamespaces = b.supportsNamespaces;
         this.supportsToolSearch = b.supportsToolSearch;
         this.supportsDeferredTools = b.supportsDeferredTools;
+        this.supportsOutputSchema = b.supportsOutputSchema;
         this.freeformFallbackToFunction = b.freeformFallbackToFunction;
         this.namespaceFallbackToFunctions = b.namespaceFallbackToFunctions;
         this.toolSearchFallbackToFunction = b.toolSearchFallbackToFunction;
@@ -89,10 +96,21 @@ public final class ProviderToolCapabilities {
     }
 
     /**
+     * Whether the transport accepts {@code output_schema} inside a function
+     * declaration. {@code false} for function-only / OpenAI-compatible
+     * transports: the serializer strips the field at the wire while the
+     * {@code ToolSpec} keeps its output schema internally.
+     */
+    public boolean supportsOutputSchema() {
+        return supportsOutputSchema;
+    }
+
+    /**
      * Function-only transports (every provider family in this app today):
      * freeform and namespace are carried through the EXPLICIT fallback path;
      * tool_search has no representable shape and is omitted (never flattened
-     * into a function, never claimed as supported).
+     * into a function, never claimed as supported). {@code output_schema} is
+     * NOT accepted on this wire, so it is dropped at serialization.
      */
     public static final ProviderToolCapabilities FUNCTION_ONLY = builder()
             .supportsFunctionTools(true)
@@ -103,6 +121,7 @@ public final class ProviderToolCapabilities {
             .supportsToolSearch(false)
             .toolSearchFallbackToFunction(false)
             .supportsDeferredTools(false)
+            .supportsOutputSchema(false)
             .build();
 
     /** Codex-style per-kind wire: every kind is carried natively, no fallback. */
@@ -125,6 +144,7 @@ public final class ProviderToolCapabilities {
         private boolean supportsNamespaces;
         private boolean supportsToolSearch;
         private boolean supportsDeferredTools;
+        private boolean supportsOutputSchema = true;
         private boolean freeformFallbackToFunction;
         private boolean namespaceFallbackToFunctions;
         private boolean toolSearchFallbackToFunction;
@@ -151,6 +171,11 @@ public final class ProviderToolCapabilities {
 
         public Builder supportsDeferredTools(boolean value) {
             this.supportsDeferredTools = value;
+            return this;
+        }
+
+        public Builder supportsOutputSchema(boolean value) {
+            this.supportsOutputSchema = value;
             return this;
         }
 

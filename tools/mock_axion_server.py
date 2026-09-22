@@ -41,84 +41,169 @@ STATE = {
     "traffic_logs": [],
 }
 
+# Cabeçalhos que podem transportar credenciais. Nunca aparecem nos logs.
+_SENSITIVE_AUTH_HEADERS = {
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "set-cookie",
+    "x-api-key",
+    "api-key",
+    "x-goog-api-key",
+}
+
+# Chaves de corpo que podem transportar credenciais/secrets.
+_SENSITIVE_BODY_KEYS = {
+    "authorization",
+    "api_key",
+    "apikey",
+    "access_token",
+    "refresh_token",
+    "auth",
+    "secret",
+    "password",
+    "passwd",
+    "cookie",
+    "session",
+}
+
+
+def is_sensitive_header_name(name):
+    return str(name).strip().lower() in _SENSITIVE_AUTH_HEADERS
+
+
+def redact_headers(headers):
+    """Substitui qualquer valor de cabeçalho sensível por [REDACTED]."""
+    if not headers:
+        return {}
+    out = {}
+    for k, v in dict(headers).items():
+        if is_sensitive_header_name(k):
+            out[k] = "[REDACTED]"
+        else:
+            out[k] = v
+    return out
+
+
+def redact_body(body):
+    """Redacta recursivamente chaves sensíveis (tokens, keys, secrets)."""
+    if isinstance(body, dict):
+        out = {}
+        for k, v in body.items():
+            name = str(k).strip().lower()
+            sensitive = name in _SENSITIVE_BODY_KEYS or any(
+                marker in name for marker in ("token", "apikey", "secret", "password"))
+            out[k] = "[REDACTED]" if sensitive else redact_body(v)
+        return out
+    if isinstance(body, (list, tuple)):
+        return [redact_body(v) for v in body]
+    return body
+
+
+class UpstreamResult:
+    """Resposta bruta do upstream que preserva status/body/headers originais.
+
+    O proxy NÃO converte mais erros do upstream em 500: se a API real
+    responder 400, o cliente recebe 400 com o corpo original.
+    """
+
+    __slots__ = ("status_code", "text", "content_type", "headers", "streaming", "response")
+
+    def __init__(self, status_code, text, content_type, headers,
+                 streaming=False, response=None):
+        self.status_code = status_code
+        self.text = text if text is not None else ""
+        self.content_type = (content_type or "application/json") \
+            if not streaming else "text/event-stream"
+        self.headers = dict(headers) if headers else {}
+        self.streaming = streaming
+        self.response = response
+
 
 def log_traffic(direction, endpoint, headers, body, response_data=None, status_code=None, error=None):
-    """Registra todo o tráfego HTTP para análise."""
+    """Registra todo o tráfego HTTP para análise, SEM credenciais.
+
+    Nunca registra Authorization, Bearer tokens, API keys, cookies,
+    credenciais ou secrets reais — tudo é substituído por [REDACTED].
+    """
     timestamp = datetime.now().isoformat()
+
+    # Redação ANTES de qualquer formatação/armazenamento: os logs só veem
+    # valores seguros, nunca os tokens reais.
+    safe_headers = redact_headers(headers)
+    safe_body = redact_body(body)
+    safe_response_data = redact_body(response_data) if response_data is not None else None
+
     log_entry = {
         "timestamp": timestamp,
         "direction": direction,  # "REQUEST" ou "RESPONSE"
         "endpoint": endpoint,
-        "headers": dict(headers) if headers else {},
-        "body": body,
+        "headers": safe_headers,
+        "body": safe_body,
     }
-    
-    if response_data is not None:
-        log_entry["response"] = response_data
+
+    if safe_response_data is not None:
+        log_entry["response"] = safe_response_data
     if status_code is not None:
         log_entry["status_code"] = status_code
     if error is not None:
         log_entry["error"] = str(error)
-    
+
     STATE["traffic_logs"].append(log_entry)
-    
+
     # Formata para texto legível
     txt_log = f"\n{'='*100}\n"
     txt_log += f"[{timestamp}] {direction}\n"
     txt_log += f"{'='*100}\n"
     txt_log += f"Endpoint: {endpoint}\n"
-    
+
     if direction == "REQUEST":
         txt_log += f"\n--- HEADERS ---\n"
-        if headers:
-            for key, value in dict(headers).items():
-                # Esconde parcialmente a API key por segurança
-                if key == "Authorization" and "Bearer" in str(value):
-                    txt_log += f"{key}: Bearer sk-...{str(value)[-20:]}\n"
-                else:
-                    txt_log += f"{key}: {value}\n"
-        
+        if safe_headers:
+            for key, value in dict(safe_headers).items():
+                txt_log += f"{key}: {value}\n"
+
         txt_log += f"\n--- BODY ---\n"
-        if body:
-            txt_log += json.dumps(body, indent=2, ensure_ascii=False)
+        if safe_body:
+            txt_log += json.dumps(safe_body, indent=2, ensure_ascii=False)
         else:
             txt_log += "(vazio)"
         txt_log += "\n"
-        
+
     elif direction == "RESPONSE":
         txt_log += f"\n--- STATUS ---\n"
         txt_log += f"HTTP {status_code}\n"
-        
+
         if error:
             txt_log += f"\n--- ERRO ---\n"
             txt_log += f"{error}\n"
         else:
             txt_log += f"\n--- RESPONSE HEADERS ---\n"
-            if headers:
-                for key, value in dict(headers).items():
+            if safe_headers:
+                for key, value in dict(safe_headers).items():
                     txt_log += f"{key}: {value}\n"
-            
+
             txt_log += f"\n--- RESPONSE BODY ---\n"
-            if response_data == "[STREAMING]":
+            if safe_response_data == "[STREAMING]":
                 txt_log += "[STREAMING RESPONSE - dados enviados em chunks]\n"
-            elif response_data:
-                txt_log += json.dumps(response_data, indent=2, ensure_ascii=False)
+            elif safe_response_data is not None:
+                txt_log += json.dumps(safe_response_data, indent=2, ensure_ascii=False)
             else:
                 txt_log += "(vazio)"
             txt_log += "\n"
-    
+
     txt_log += f"{'='*100}\n"
-    
+
     # Imprime no console
     print(txt_log)
-    
+
     # Salva no arquivo JSON
     try:
         with open(LOG_FILE_JSON, 'w', encoding='utf-8') as f:
             json.dump(STATE["traffic_logs"], f, indent=2, ensure_ascii=False)
     except Exception as e:
         print(f"Erro ao salvar log JSON: {e}")
-    
+
     # Salva no arquivo TXT (append)
     try:
         with open(LOG_FILE_TXT, 'a', encoding='utf-8') as f:
@@ -128,21 +213,23 @@ def log_traffic(direction, endpoint, headers, body, response_data=None, status_c
 
 
 def forward_to_external_api(path, headers, body, stream=False):
-    """Encaminha a requisição para a API externa e retorna a resposta."""
+    """Encaminha a requisição para a API externa preservando a resposta.
+
+    Retorna um {@code UpstreamResult} com o status/body/headers ORIGINAIS do
+    upstream — um 4xx/5xx não é mais convertido em 500 pelo proxy.
+    """
     url = EXTERNAL_API_URL + path
-    
-    # Prepara headers para a API externa
+
+    # Prepara headers para a API externa (nunca logados sem redação).
     forward_headers = {
         "Authorization": f"Bearer {EXTERNAL_API_KEY}",
         "Content-Type": "application/json",
     }
-    
-    # Log do request
+
     log_traffic("REQUEST", url, forward_headers, body)
-    
+
     try:
         if stream:
-            # Para requisições com stream
             response = requests.post(
                 url,
                 headers=forward_headers,
@@ -150,47 +237,67 @@ def forward_to_external_api(path, headers, body, stream=False):
                 stream=True,
                 timeout=60
             )
-            response.raise_for_status()
-            
-            log_traffic("RESPONSE", url, response.headers, None, 
-                       response_data="[STREAMING]", status_code=response.status_code)
-            
-            return response, None
-        else:
-            # Para requisições normais
-            response = requests.post(
-                url,
-                headers=forward_headers,
-                json=body,
-                timeout=60
-            )
-            response.raise_for_status()
-            
-            response_json = response.json()
-            log_traffic("RESPONSE", url, response.headers, None, 
-                       response_data=response_json, status_code=response.status_code)
-            
-            # Atualiza estatísticas
-            if "usage" in response_json:
-                STATE["total_tokens_used"] += response_json["usage"].get("total_tokens", 0)
+            status_code = response.status_code
+            if 200 <= status_code < 300:
+                log_traffic("RESPONSE", url, response.headers, None,
+                            response_data="[STREAMING]", status_code=status_code)
+                STATE["successful_requests"] += 1
+                return UpstreamResult(status_code, "", "text/event-stream",
+                                      response.headers, streaming=True, response=response)
+
+            # Stream rejeitado (ex.: 400): lê o corpo e repassa o status real.
+            error_text = response.text
+            log_traffic("RESPONSE", url, response.headers, None,
+                        response_data=error_text, status_code=status_code)
+            STATE["failed_requests"] += 1
+            return UpstreamResult(
+                status_code, error_text,
+                response.headers.get("Content-Type", "application/json"),
+                response.headers)
+
+        response = requests.post(
+            url,
+            headers=forward_headers,
+            json=body,
+            timeout=60
+        )
+        status_code = response.status_code
+        response_body = None
+        try:
+            response_body = response.json()
+        except ValueError:
+            response_body = None
+
+        log_traffic("RESPONSE", url, response.headers, None,
+                    response_data=response_body if response_body is not None else response.text,
+                    status_code=status_code)
+
+        if 200 <= status_code < 300:
+            if isinstance(response_body, dict) and "usage" in response_body:
+                STATE["total_tokens_used"] += response_body.get("total_tokens", 0)
             STATE["successful_requests"] += 1
-            
-            return None, response_json
-            
+        else:
+            STATE["failed_requests"] += 1
+
+        return UpstreamResult(
+            status_code, response.text,
+            response.headers.get("Content-Type", "application/json"),
+            response.headers)
+
     except requests.exceptions.RequestException as e:
         error_msg = str(e)
-        log_traffic("RESPONSE", url, None, None, error=error_msg, status_code=getattr(e.response, 'status_code', 500))
+        upstream_status = getattr(e.response, 'status_code', 500)
+        upstream_text = ""
+        if hasattr(e, 'response') and e.response is not None:
+            try:
+                upstream_text = e.response.text
+            except Exception:
+                upstream_text = ""
+        log_traffic("RESPONSE", url, None, None, error=error_msg, status_code=upstream_status)
         STATE["failed_requests"] += 1
-        
-        # Tenta extrair mensagem de erro da resposta
-        try:
-            if hasattr(e, 'response') and e.response is not None:
-                error_json = e.response.json()
-                return None, {"error": error_json}
-        except:
-            pass
-            
-        return None, {"error": {"message": error_msg, "type": "proxy_error"}}
+        return UpstreamResult(
+            upstream_status, upstream_text or error_msg,
+            "application/json", {})
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -326,38 +433,41 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         stream = bool(payload.get("stream"))
-        
-        # Encaminha para a API externa
-        stream_response, json_response = forward_to_external_api(
+
+        # Encaminha para a API externa preservando o status/body originais:
+        # se o upstream responder 400/4xx/5xx, o cliente recebe o MESMO status,
+        # nunca um 500 inventado pelo proxy.
+        upstream = forward_to_external_api(
             "/chat/completions",
             self.headers,
             payload,
             stream=stream
         )
-        
-        if stream_response:
-            # Streaming response
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream")
+
+        if upstream is None:
+            self._send(500, json.dumps({"error": {"message": "Resposta vazia da API"}}))
+            return
+
+        if upstream.streaming and 200 <= upstream.status_code < 400:
+            # Streaming response — encaminha os chunks e o status originais.
+            self.send_response(upstream.status_code)
+            self.send_header("Content-Type",
+                             upstream.headers.get("Content-Type", "text/event-stream"))
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
-            
+
             try:
-                for chunk in stream_response.iter_content(chunk_size=None, decode_unicode=False):
+                for chunk in upstream.response.iter_content(chunk_size=None, decode_unicode=False):
                     if chunk:
                         self.wfile.write(chunk)
                         self.wfile.flush()
             except Exception as e:
                 print(f"Erro no streaming: {e}")
-                
-        elif json_response:
-            # JSON response
-            if "error" in json_response:
-                self._send(500, json.dumps(json_response, ensure_ascii=False))
-            else:
-                self._send(200, json.dumps(json_response, ensure_ascii=False))
-        else:
-            self._send(500, json.dumps({"error": {"message": "Resposta vazia da API"}}))
+            return
+
+        # JSON (ou stream rejeitado): repassa status + body + Content-Type do
+        # upstream, inclusive para erros (400 INVALID_ARGUMENT etc.).
+        self._send(upstream.status_code, upstream.text, upstream.content_type)
 
 
 if __name__ == "__main__":

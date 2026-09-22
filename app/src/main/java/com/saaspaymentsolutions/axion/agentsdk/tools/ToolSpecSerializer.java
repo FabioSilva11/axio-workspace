@@ -120,7 +120,9 @@ public final class ToolSpecSerializer {
      *   <li>TOOL_SEARCH → native tool_search wire when supported, else
      *       function fallback ONLY when declared, else omitted (never claimed
      *       as supported);</li>
-     *   <li>FUNCTION → function envelope on every current transport.</li>
+     *   <li>FUNCTION → function envelope on every current transport, with
+     *       {@code output_schema} present only when the capability accepts it
+     *       ({@link ProviderToolCapabilities#supportsOutputSchema()}).</li>
      * </ul>
      *
      * The returned {@link ProviderCatalogPayload} records any fallback that
@@ -228,7 +230,7 @@ public final class ToolSpecSerializer {
                                          ProviderToolCapabilities caps, boolean[] fallback) {
         switch (reg.spec().type()) {
             case FUNCTION: {
-                JSONObject function = functionEntry(reg);
+                JSONObject function = functionEntry(reg, caps.supportsOutputSchema());
                 if (function != null) {
                     out.put(function);
                 }
@@ -287,6 +289,18 @@ public final class ToolSpecSerializer {
     }
 
     private static JSONObject functionEntry(ToolRegistration reg) {
+        return functionEntry(reg, true);
+    }
+
+    /**
+     * Serializes a FUNCTION registration as an OpenAI-style
+     * {@code {"type":"function","function":{...}}} entry. {@code output_schema}
+     * is emitted ONLY when {@code includeOutputSchema} is true — the provider
+     * boundary decides via {@link ProviderToolCapabilities#supportsOutputSchema()}
+     * so function-only transports never receive a field they reject, while the
+     * internal spec keeps its output schema intact.
+     */
+    private static JSONObject functionEntry(ToolRegistration reg, boolean includeOutputSchema) {
         FunctionToolSpec spec = (FunctionToolSpec) reg.spec();
         try {
             JSONObject function = new JSONObject()
@@ -294,7 +308,7 @@ public final class ToolSpecSerializer {
                     .put("description", spec.description())
                     .put("parameters", spec.parameters());
             function.put("strict", false);
-            if (spec.outputSchema() != null) {
+            if (includeOutputSchema && spec.outputSchema() != null) {
                 function.put("output_schema", spec.outputSchema());
             }
             return new JSONObject().put("type", "function").put("function", function);

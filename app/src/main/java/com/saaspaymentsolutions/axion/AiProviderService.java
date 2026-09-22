@@ -762,6 +762,7 @@ public class AiProviderService {
             }
             if (geminiTools.length() > 0) {
                 jsonBody.put("tools", geminiTools);
+                logProviderTools(listener, geminiTools);
             }
 
             // API key is sent via the x-goog-api-key header (see buildGeminiHeaders)
@@ -874,6 +875,7 @@ public class AiProviderService {
                 JSONArray requestTools = OpenAiToolSchemaNormalizer.forRequest(
                         tools, "openai".equalsIgnoreCase(providerId));
                 jsonBody.put("tools", requestTools);
+                logProviderTools(listener, requestTools);
                 if (!"ollama".equals(providerId)) {
                     jsonBody.put("tool_choice", "auto");
                 }
@@ -1014,6 +1016,7 @@ public class AiProviderService {
                 }
                 jsonBody.put("tools", anthropicTools);
                 jsonBody.put("tool_choice", new JSONObject().put("type", "auto"));
+                logProviderTools(listener, anthropicTools);
             }
 
             AiProviderAdapter adapter = providerAdapters.get(providerConfig.family);
@@ -2600,6 +2603,50 @@ public class AiProviderService {
             }
         }
         return anthropicTools;
+    }
+
+    /**
+     * Registra as ferramentas EFETIVAMENTE serializadas no payload final
+     * enviado ao provider (toolIndex / toolName / toolType). A contagem vem do
+     * array final — nunca de um número contado antes da serialização.
+     */
+    private void logProviderTools(StreamListener listener, JSONArray finalTools) {
+        if (finalTools == null) {
+            android.util.Log.d(TAG, "Tools count (final payload): 0");
+            return;
+        }
+        android.util.Log.d(TAG, "Tools count (final payload): " + finalTools.length());
+        int emitted = 0;
+        for (int i = 0; i < finalTools.length(); i++) {
+            JSONObject entry = finalTools.optJSONObject(i);
+            if (entry == null) {
+                continue;
+            }
+            JSONArray declarations = entry.optJSONArray("functionDeclarations");
+            if (declarations != null && declarations.length() > 0) {
+                for (int j = 0; j < declarations.length(); j++) {
+                    JSONObject decl = declarations.optJSONObject(j);
+                    if (decl == null) {
+                        continue;
+                    }
+                    android.util.Log.d(TAG, "toolIndex=" + emitted
+                            + ", toolType=function"
+                            + ", toolName=" + decl.optString("name", "?"));
+                    emitted++;
+                }
+                continue;
+            }
+            String type = entry.optString("type", "?");
+            JSONObject function = entry.optJSONObject("function");
+            String name = function != null ? function.optString("name", "?")
+                    : entry.optString("name", "?");
+            android.util.Log.d(TAG, "toolIndex=" + emitted
+                    + ", toolType=" + type
+                    + ", toolName=" + name);
+            emitted++;
+        }
+        emitDebug(listener, "ferramentas -> payload final com " + emitted
+                + " tool(s) registradas");
     }
 
     private JSONArray convertToolsToGemini(JSONArray openAiTools) {
