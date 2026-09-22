@@ -26,8 +26,9 @@ import java.util.List;
  * <ul>
  *   <li>the factory's own {@code AxionToolRegistry → ToolCatalog} is what the
  *       gateway receives (core tools present, replaced legacy names absent);</li>
- *   <li>the {@link ToolPolicy#interactive()} permission layer parks the call
- *       and the host resolves it by {@code requestId} (auto-approver);</li>
+ *   <li>the factory's default permission layer ({@link PermissionConfig}
+ *       WORKSPACE + ON_REQUEST) evaluates {@code get_context_remaining} as a
+ *       safe READ tool and lets it run without parking;</li>
  *   <li>the call executes through the {@link AxionToolRouter} and its result
  *       lands in the shared conversation;</li>
  *   <li>a second host turn runs on the accumulated history.</li>
@@ -39,7 +40,7 @@ public class ChatRuntimeAssemblyE2ETest {
             "You are the workspace coordinator. Use the available tools to "
                     + "explore, read, and modify project files to complete the user's task.";
 
-    /** Auto-approves every tool call the runtime parks (interactive policy). */
+    /** Resolves any tool call the runtime parks (kept for approval flows). */
     private static final class AutoApprover implements AgentManager.AgentListener {
         final List<String> approvedTools = Collections.synchronizedList(new ArrayList<>());
         final List<String> executedTools = Collections.synchronizedList(new ArrayList<>());
@@ -138,9 +139,12 @@ public class ChatRuntimeAssemblyE2ETest {
         assertFalse("run_command must never reach a provider",
                 gateway.wasToolExposed("run_command"));
 
-        // The interactive policy parked the call and the host resolver decided it.
-        assertEquals(1, listener.approvedTools.size());
-        assertEquals("get_context_remaining", listener.approvedTools.get(0));
+        // The default WORKSPACE + ON_REQUEST layer classifies
+        // get_context_remaining as a safe READ tool: it runs straight through
+        // without parking (zero approval prompts), unlike a SHELL/WRITE tool
+        // which would wait for the host resolver.
+        assertTrue("safe read tool must not require approval",
+                listener.approvedTools.isEmpty());
         assertTrue("execution reported to the UI", listener.executedTools.contains("get_context_remaining"));
         assertTrue("no resolution failures", listener.processingFailures.isEmpty());
 

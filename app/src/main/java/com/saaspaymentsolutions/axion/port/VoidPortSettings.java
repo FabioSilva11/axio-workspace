@@ -26,6 +26,12 @@ public final class VoidPortSettings {
     public static final String PREF_CUSTOM_MODELS = "custom_models_json";
     public static final String PREF_PROVIDER_CONFIGS = "provider_configs_v1";
     public static final String PREF_CHAT_MODE = "chat_mode";
+
+    /** Persistent permission mode for the chat agent ("ask"/"read"/"full"). */
+    public static final String PREF_PERMISSION_MODE = "permission_mode";
+    public static final String PERMISSION_MODE_ASK = "ask";
+    public static final String PERMISSION_MODE_READ = "read";
+    public static final String PERMISSION_MODE_FULL = "full";
     public static final String PREF_MULTI_AGENT_MODE = "multi_agent_mode";
     public static final String PREF_MCP_CONFIG = "mcp_config_json";
     public static final String PREF_CHAT_WEB_SEARCH = "chat_web_search_enabled";
@@ -148,6 +154,50 @@ public final class VoidPortSettings {
 
     public static void setChatMode(SharedPreferences prefs, String mode) {
         prefs.edit().putString(PREF_CHAT_MODE, normalizeChatMode(mode)).apply();
+    }
+
+    /**
+     * Persistent permission mode for the chat agent. "ask" (WORKSPACE +
+     * ON_REQUEST) is the default; "read" and "full" mirror the UI selector.
+     * Full access is never a default — it is only set after explicit user
+     * confirmation.
+     */
+    public static String getPermissionMode(SharedPreferences prefs) {
+        if (prefs == null) {
+            return PERMISSION_MODE_ASK;
+        }
+        String mode = prefs.getString(PREF_PERMISSION_MODE, PERMISSION_MODE_ASK);
+        if (PERMISSION_MODE_ASK.equals(mode)
+                || PERMISSION_MODE_READ.equals(mode)
+                || PERMISSION_MODE_FULL.equals(mode)) {
+            return mode;
+        }
+        return PERMISSION_MODE_ASK;
+    }
+
+    public static void setPermissionMode(SharedPreferences prefs, String mode) {
+        if (prefs == null) {
+            return;
+        }
+        prefs.edit().putString(PREF_PERMISSION_MODE, getPermissionMode0(mode)).apply();
+    }
+
+    private static String getPermissionMode0(String mode) {
+        if (PERMISSION_MODE_READ.equals(mode) || PERMISSION_MODE_FULL.equals(mode)) {
+            return mode;
+        }
+        return PERMISSION_MODE_ASK;
+    }
+
+    /** Maps a persisted permission mode to the runtime's immutable config. */
+    public static com.saaspaymentsolutions.axion.agentsdk.PermissionConfig permissionConfigForMode(String mode) {
+        if (PERMISSION_MODE_READ.equals(mode)) {
+            return com.saaspaymentsolutions.axion.agentsdk.PermissionConfig.readOnly();
+        }
+        if (PERMISSION_MODE_FULL.equals(mode)) {
+            return com.saaspaymentsolutions.axion.agentsdk.PermissionConfig.fullAccess();
+        }
+        return com.saaspaymentsolutions.axion.agentsdk.PermissionConfig.workspaceRequest();
     }
 
     public static String getMultiAgentMode(SharedPreferences prefs) {

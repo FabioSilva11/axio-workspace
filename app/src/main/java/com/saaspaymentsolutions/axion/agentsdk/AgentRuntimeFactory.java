@@ -20,7 +20,7 @@ import android.content.Context;
  *   <li>a MANDATORY {@link PermissionLayer} — the {@link ApprovalHandler}
  *       interactive resolver parks requests until the UI resolves them by
  *       {@code requestId}; mutation/shell NEVER execute merely because the
- *       host forgot a policy (safe default = interactive);</li>
+ *       host forgot a policy (safe default = WORKSPACE + ON_REQUEST);</li>
  *   <li>the runtime's own {@link EventStream} — the {@code HostBridge}
  *       subscribes to THIS stream, not to a second one.</li>
  * </ul>
@@ -82,9 +82,13 @@ public final class AgentRuntimeFactory {
         com.saaspaymentsolutions.axion.agentsdk.tools.WorkspaceToolProvider.registerWorkspaceReadTools(
                 registry);
         com.saaspaymentsolutions.axion.agentsdk.tools.McpToolSource.discover(mcpPrefs, registry);
+        // Item (permission model): the safe default WORKSPACE + ON_REQUEST.
+        // Reads run automatically; workspace writes / shell / network ask the
+        // user before executing. The host UI switches the profile via
+        // AgentRuntime#updatePermissionConfig.
         return new AgentRuntime.Builder(gateway)
                 .events(events)
-                .permissions(new PermissionLayer(ToolPolicy.interactive(), approvals, events))
+                .permissions(new PermissionLayer(approvals, events))
                 .toolRegistry(registry)
                 // Removed: expectFileMutations(true) - Codex alignment
                 // The runtime no longer forces mutations for all chats.

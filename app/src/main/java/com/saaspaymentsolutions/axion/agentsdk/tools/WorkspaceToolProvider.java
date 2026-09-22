@@ -3,6 +3,7 @@ package com.saaspaymentsolutions.axion.agentsdk.tools;
 import com.saaspaymentsolutions.axion.agentsdk.AgentToolResult;
 import com.saaspaymentsolutions.axion.agentsdk.ApprovalHandler;
 import com.saaspaymentsolutions.axion.agentsdk.RunContext;
+import com.saaspaymentsolutions.axion.agentsdk.ToolCapability;
 import com.saaspaymentsolutions.axion.agentsdk.schema.ToolJsonSchema;
 
 import org.json.JSONArray;
@@ -119,6 +120,7 @@ public final class WorkspaceToolProvider {
                             parameters))
                     .executor(new WorkspaceReadExecutor(name))
                     .source("workspace")
+                    .capability(ToolCapability.READ)
                     .build());
         }
     }
@@ -157,6 +159,7 @@ public final class WorkspaceToolProvider {
                 .source("core")
                 .fileMutation(true)
                 .destructive(true)
+                .capabilities(ToolCapability.WORKSPACE_WRITE, ToolCapability.DESTRUCTIVE)
                 .build();
         registry.register(reg);
     }
@@ -185,6 +188,7 @@ public final class WorkspaceToolProvider {
                 .executor(new ExecCommandExecutor())
                 .source("core")
                 .requiresApproval(true)
+                .capability(ToolCapability.SHELL)
                 .build();
         registry.register(exec);
 
@@ -204,6 +208,7 @@ public final class WorkspaceToolProvider {
                 .executor(ExecCommandExecutor.WRITE_STDIN)
                 .source("core")
                 .requiresApproval(true)
+                .capability(ToolCapability.SHELL)
                 .build();
         registry.register(stdin);
     }
@@ -231,6 +236,7 @@ public final class WorkspaceToolProvider {
                         ToolJsonSchema.object(updatePlanProps, Arrays.asList("plan"), false).toJson()))
                 .executor(new UpdatePlanExecutor())
                 .source("core")
+                .capability(ToolCapability.READ)
                 .build();
         registry.register(updatePlan);
 
@@ -263,6 +269,7 @@ public final class WorkspaceToolProvider {
                         ToolJsonSchema.object(requestProps, Arrays.asList("questions"), false).toJson()))
                 .executor(new RequestUserInputExecutor(handler))
                 .source("core")
+                .capability(ToolCapability.READ)
                 .build();
         registry.register(requestInput);
     }
@@ -316,6 +323,7 @@ public final class WorkspaceToolProvider {
                         }
                     })
                     .source("core")
+                    .capability(ToolCapability.READ)
                     .build();
             registry.register(ctx);
         } catch (org.json.JSONException e) {
@@ -344,6 +352,7 @@ public final class WorkspaceToolProvider {
                         ToolJsonSchema.object(noProps, Arrays.asList(), false).toJson()))
                 .executor(ClockTools.currentTimeExecutor())
                 .source("core")
+                .capability(ToolCapability.READ)
                 .build();
         registry.register(currTime);
 
@@ -359,6 +368,7 @@ public final class WorkspaceToolProvider {
                         ToolJsonSchema.object(sleepProps, Arrays.asList("duration_ms"), false).toJson()))
                 .executor(ClockTools.sleepExecutor())
                 .source("core")
+                .capability(ToolCapability.READ)
                 .build();
         registry.register(sleep);
 
@@ -369,6 +379,7 @@ public final class WorkspaceToolProvider {
                         ToolJsonSchema.object(noProps, Arrays.asList(), false).toJson()))
                 .executor(ctx -> AgentToolResult.success("{\"started\":true}"))
                 .source("core")
+                .capability(ToolCapability.READ)
                 .build();
         registry.register(newContext);
     }
@@ -392,6 +403,7 @@ public final class WorkspaceToolProvider {
                         params))
                 .executor(new ToolSearchTool(registry))
                 .source("core")
+                .capability(ToolCapability.READ)
                 .build();
         registry.register(toolSearch);
     }

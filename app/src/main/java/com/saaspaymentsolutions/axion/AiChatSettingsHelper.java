@@ -56,6 +56,14 @@ public final class AiChatSettingsHelper {
         VoidPortSettings.setMultiAgentMode(prefs, mode);
     }
 
+    public static String getPermissionMode(SharedPreferences prefs) {
+        return VoidPortSettings.getPermissionMode(prefs);
+    }
+
+    public static void setPermissionMode(SharedPreferences prefs, String mode) {
+        VoidPortSettings.setPermissionMode(prefs, mode);
+    }
+
     public static List<ModelOption> getVisibleModelOptions(SharedPreferences prefs) {
         List<ModelOption> options = new ArrayList<>();
         for (VoidPortSettings.ModelOption option : VoidPortSettings.getVisibleModelOptions(prefs)) {

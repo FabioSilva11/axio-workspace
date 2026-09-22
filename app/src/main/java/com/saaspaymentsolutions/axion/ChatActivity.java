@@ -371,6 +371,12 @@ public class ChatActivity extends BaseAppCompatActivity {
                 });
             }
         });
+        // Apply the persisted permission mode to the freshly built runtime
+        // (the factory defaults to WORKSPACE + ON_REQUEST). Full access is
+        // never applied unless the user explicitly confirmed it.
+        SharedPreferences settingsPrefs = AiChatSettingsHelper.prefs(this);
+        agentManager.setPermissionConfig(VoidPortSettings.permissionConfigForMode(
+                VoidPortSettings.getPermissionMode(settingsPrefs)));
         reconcileManagedReferenceGrants();
         applyPlanUi();
     }
@@ -506,6 +512,7 @@ public class ChatActivity extends BaseAppCompatActivity {
         // Configurar Speech-to-Text
         // ConfiguraÃ§Ã£o do Seletor de Modelo
         btnChatMode = findViewById(R.id.btn_chat_mode);
+        View btnPermissions = findViewById(R.id.btn_permissions);
         btnModelSelector = findViewById(R.id.btn_model_selector);
         btnOnlineSearch = findViewById(R.id.btn_online_search);
         btnMcpServers = findViewById(R.id.btn_mcp_servers);
@@ -516,6 +523,7 @@ public class ChatActivity extends BaseAppCompatActivity {
         AiChatSettingsHelper.ensureValidCurrentSelection(prefs);
         updateChatModeUI();
         updateModelUI();
+        updatePermissionsUi(prefs);
         updateRunStatus("");
         updateChangedFilesSummary();
         updateThreadSummary();
@@ -534,6 +542,9 @@ public class ChatActivity extends BaseAppCompatActivity {
         }
         if (btnMcpServers != null) {
             btnMcpServers.setOnClickListener(v -> showMcpServersSheet());
+        }
+        if (btnPermissions != null) {
+            btnPermissions.setOnClickListener(v -> showPermissionsMenu(prefs));
         }
 
         layoutRunStatus = findViewById(R.id.layout_run_status);
@@ -893,6 +904,28 @@ public class ChatActivity extends BaseAppCompatActivity {
             textChatMode.setText(R.string.chat_mode_agent);
         }
         updateComposerToolUi();
+    }
+
+    private void updatePermissionsUi(SharedPreferences prefs) {
+        if (prefs == null) {
+            prefs = AiChatSettingsHelper.prefs(this);
+        }
+        TextView pill = findViewById(R.id.text_permissions_status);
+        if (pill == null) {
+            return;
+        }
+        String mode = VoidPortSettings.getPermissionMode(prefs);
+        int labelRes;
+        if (VoidPortSettings.PERMISSION_MODE_READ.equals(mode)) {
+            labelRes = R.string.chat_permission_read_only;
+        } else if (VoidPortSettings.PERMISSION_MODE_FULL.equals(mode)) {
+            labelRes = R.string.chat_permission_full_access;
+        } else {
+            labelRes = R.string.chat_permission_ask_approval;
+        }
+        String label = getString(labelRes);
+        pill.setText(getString(R.string.chat_permission_mode_format, label));
+        pill.setVisibility(View.VISIBLE);
     }
 
     private void showModelSelectorMenu(SharedPreferences prefs) {
@@ -1301,6 +1334,61 @@ public class ChatActivity extends BaseAppCompatActivity {
         } else {
             projectDisplayName = getString(R.string.chat_default_project_name);
         }
+    }
+
+    private void showPermissionsMenu(SharedPreferences prefs) {
+        View anchor = findViewById(R.id.btn_permissions);
+        if (anchor == null) {
+            anchor = textRunStatus;
+        }
+        PopupMenu popup = new PopupMenu(this, anchor);
+        popup.getMenu().add(1, 1, 0, getString(R.string.chat_permission_ask_approval));
+        popup.getMenu().add(1, 2, 1, getString(R.string.chat_permission_read_only));
+        popup.getMenu().add(1, 3, 2, getString(R.string.chat_permission_full_access));
+        popup.getMenu().setGroupCheckable(1, true, true);
+
+        String mode = VoidPortSettings.getPermissionMode(prefs);
+        int checked = VoidPortSettings.PERMISSION_MODE_READ.equals(mode)
+                ? 2
+                : VoidPortSettings.PERMISSION_MODE_FULL.equals(mode) ? 3 : 1;
+        android.view.MenuItem item = popup.getMenu().findItem(checked);
+        if (item != null) {
+            item.setChecked(true);
+        }
+
+        popup.setOnMenuItemClickListener(menuItem -> {
+            if (menuItem.getItemId() == 3) {
+                showFullAccessConfirmation(prefs);
+                return true;
+            }
+            if (menuItem.getItemId() == 2) {
+                setPermissionMode(prefs, VoidPortSettings.PERMISSION_MODE_READ);
+            } else if (menuItem.getItemId() == 1) {
+                setPermissionMode(prefs, VoidPortSettings.PERMISSION_MODE_ASK);
+            }
+            return true;
+        });
+        popup.show();
+    }
+
+    private void showFullAccessConfirmation(SharedPreferences prefs) {
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.chat_full_access_dialog_title)
+                .setMessage(R.string.chat_full_access_dialog_message)
+                .setNegativeButton(R.string.cancel, null)
+                .setPositiveButton(R.string.chat_activate, (dialog, which) ->
+                        setPermissionMode(prefs, VoidPortSettings.PERMISSION_MODE_FULL))
+                .show();
+    }
+
+    private void setPermissionMode(SharedPreferences prefs, String mode) {
+        VoidPortSettings.setPermissionMode(prefs, mode);
+        com.saaspaymentsolutions.axion.agentsdk.PermissionConfig config =
+                VoidPortSettings.permissionConfigForMode(mode);
+        if (agentManager != null) {
+            agentManager.setPermissionConfig(config);
+        }
+        updatePermissionsUi(prefs);
     }
 
     private void loadChatHistory() {
@@ -2340,12 +2428,19 @@ public class ChatActivity extends BaseAppCompatActivity {
         if (getSupportActionBar() != null) {
             getSupportActionBar().setSubtitle(null);
         }
-        // O andamento agora aparece apenas no item de resposta da conversa.
-        // Mantemos o status em currentRunStatus para os painéis auxiliares, mas
-        // o banner legado não deve competir com o placeholder da lista.
+        // O andamento aparece apenas no banner de status do compositor. O texto é
+        // derivado do RunStatusReducer (TurnStarted mantém THINKING; ações de
+        // ferramenta/aprovação retornam exatamente uma vez). Quando o status é
+        // vazio (READY/COMPLETED) o banner esconde junto com os pontos.
         if (layoutRunStatus != null && textRunStatus != null && runStatusDots != null) {
-            runStatusDots.stopAnimation();
-            layoutRunStatus.setVisibility(View.GONE);
+            if (ChatMessage.hasVisibleText(safeStatus)) {
+                textRunStatus.setText(safeStatus);
+                layoutRunStatus.setVisibility(View.VISIBLE);
+                runStatusDots.startAnimation();
+            } else {
+                runStatusDots.stopAnimation();
+                layoutRunStatus.setVisibility(View.GONE);
+            }
         }
         // Status de streaming muda muitas vezes por segundo. Atualizar todos os
         // painéis aqui reconstruía Artefatos fora da tela, recalculava diffs e

@@ -270,6 +270,8 @@
     <string name="myprojects_settings_message_package_rename">Changing the package name after creating Android Studio projects is not recommended.</string>
     <string name="theme_random_generated">Random theme generated.</string>
     <string name="chat_status_thinking">Thinking…</string>
+    <string name="chat_status_working">Working…</string>
+    <string name="chat_status_cancelling">Cancelling…</string>
     <string name="chat_status_compacting_context">Compacting conversation context…</string>
     <string name="chat_background_channel_name">AI runs</string>
     <string name="chat_background_channel_description">Keeps the conversation running while another app is open.</string>
@@ -292,6 +294,14 @@
     <string name="chat_tool_done_message">Tool completed successfully.</string>
     <string name="chat_tool_running_message">Running tool…</string>
     <string name="chat_tool_approval_message_named">Approve the %1$s tool?</string>
+    <string name="chat_permissions_label">Permissions</string>
+    <string name="chat_permission_ask_approval">Ask for approval</string>
+    <string name="chat_permission_read_only">Read only</string>
+    <string name="chat_permission_full_access">Full access</string>
+    <string name="chat_permission_mode_format">Permissions: %1$s</string>
+    <string name="chat_full_access_dialog_title">Enable full access?</string>
+    <string name="chat_full_access_dialog_message">The agent will be able to create, modify, and delete files and run tools without asking for approval. Enable?</string>
+    <string name="chat_activate">Enable</string>
     <string name="chat_project_not_found">Project not found.</string>
     <string name="chat_no_models_available_short">No models available</string>
     <string name="chat_mode_chat">Chat</string>

@@ -1,6 +1,8 @@
 package com.saaspaymentsolutions.axion.agentsdk.tools.mcp;
 
 import com.saaspaymentsolutions.axion.agentsdk.AgentToolResult;
+import com.saaspaymentsolutions.axion.agentsdk.PermissionEvaluator;
+import com.saaspaymentsolutions.axion.agentsdk.ToolCapability;
 import com.saaspaymentsolutions.axion.agentsdk.tools.ToolExecutor;
 import com.saaspaymentsolutions.axion.agentsdk.tools.ToolName;
 import com.saaspaymentsolutions.axion.agentsdk.tools.ToolRegistration;
@@ -59,11 +61,14 @@ public final class McpToolAdapter {
                     ? AgentToolResult.error(result)
                     : AgentToolResult.success(result);
         };
-        return ToolRegistration.builder(ToolSpec.function(
+        ToolRegistration.Builder builder = ToolRegistration.builder(ToolSpec.function(
                         name, description, parameters))
                 .executor(executor)
-                .source("mcp:" + identity.serverName())
-                .build();
+                .source("mcp:" + identity.serverName());
+        for (ToolCapability capability : PermissionEvaluator.mcpCapabilities(identity.toolName())) {
+            builder.capability(capability);
+        }
+        return builder.build();
     }
 
     /** Normalises an MCP input schema into a valid json-schema parameter object. */

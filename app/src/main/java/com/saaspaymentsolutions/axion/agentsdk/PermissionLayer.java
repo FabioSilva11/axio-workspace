@@ -3,29 +3,48 @@ package com.saaspaymentsolutions.axion.agentsdk;
 import com.saaspaymentsolutions.axion.agentsdk.tools.ToolRegistration;
 import com.saaspaymentsolutions.axion.toolcalling.ToolCall;
 
+import java.util.Set;
+
 /**
- * Enforces the {@link ToolPolicy} on every tool call before execution,
- * porting Codex's decision model (Skip / NeedsApproval / Forbidden) to the
- * Axion runtime: DENY short-circuits, ASK_USER parks the request with the
- * {@link ApprovalHandler} until the host resolves it explicitly
- * ({@code resolve(requestId, decision)} / {@code cancel(requestId)}) or it
- * times out (fail closed). The model never decides.
+ * ENFORCEMENT point of the permission model. It does not decide policy — the
+ * {@link PermissionEvaluator} does, from tool metadata — it only carries out
+ * the decision (Codex parity: Skip / NeedsApproval / Forbidden).
  *
- * <p>The layer is part of the runtime's MANDATORY contract (item 15): a
- * {@code null} policy layer is replaced by a safe-default
- * {@link ToolPolicy#interactive()} — mutation/shell never execute merely
- * because the host forgot to configure the policy.</p>
+ * <ul>
+ *   <li><b>ALLOW</b> → execute;</li>
+ *   <li><b>DENY</b>   → short-circuit with a {@code PolicyDenied} (never
+ *       converted, no matter the approval policy);</li>
+ *   <li><b>PROMPT</b> → park the call with the {@link ApprovalHandler} until
+ *       the host resolves it explicitly ({@code resolve(requestId, decision)}
+ *       / {@code cancel(requestId)}) or it times out (fail closed). The model
+ *       never decides.</li>
+ * </ul>
  *
- * <p>The layer classifies a {@link ToolRegistration} from its metadata — the
- * single source of truth: shell name → shell policy, MCP source → network
- * policy, destructive/file-mutation flags → destructive/mutation policy,
- * everything else → unknown. No {@code AgentTool} participates.</p>
+ * <p>The layer is part of the runtime's MANDATORY contract: a missing policy
+ * is replaced by the safe default {@code PermissionConfig.workspaceRequest()}
+ * (WORKSPACE + ON_REQUEST) — workspace writes and shell travel never execute
+ * merely because the host forgot to configure the policy.</p>
+ *
+ * <p>Two models coexist here: the new immutable {@link PermissionConfig}
+ * model (profile + approval policy, default since the runtime factory now
+ * builds it) and the deprecated {@link ToolPolicy} model kept exclusively so
+ * legacy tests keep verifying the original classification. Production NEVER
+ * constructs the deprecated form.</p>
  */
 public final class PermissionLayer {
 
-    private final ToolPolicy policy;
     private final ApprovalHandler approvalHandler;
     private final EventStream events;
+
+    /**
+     * Legacy rule policy. {@code null} means the new
+     * {@link PermissionConfig} model is in force.
+     */
+    @Deprecated
+    private final ToolPolicy policy;
+
+    /** Active permission config; swapped atomically by the host UI. */
+    private volatile PermissionConfig config;
 
     /** Snapshot of the last resolved request's lifecycle (UI/debug). */
     private volatile ApprovalHandler.ApprovalRecord lastRecord;
@@ -40,10 +59,30 @@ public final class PermissionLayer {
     private final java.util.Set<String> cancelledIds =
             java.util.concurrent.ConcurrentHashMap.newKeySet();
 
+    /**
+     * Legacy policy-based layer (tests/back-compat only). Keeps the exact
+     * ToolPolicy classification behaviour; {@link #permissionConfig()} stays
+     * {@code null} until an update switches the model.
+     */
+    @Deprecated
     public PermissionLayer(ToolPolicy policy, ApprovalHandler approvalHandler, EventStream events) {
         this.policy = policy == null ? ToolPolicy.interactive() : policy;
         this.approvalHandler = approvalHandler;
         this.events = events;
+        this.config = null;
+    }
+
+    /** New model: explicit immutable config (profile + approval policy). */
+    public PermissionLayer(PermissionConfig config, ApprovalHandler approvalHandler, EventStream events) {
+        this.policy = null;
+        this.approvalHandler = approvalHandler;
+        this.events = events;
+        this.config = config == null ? PermissionConfig.workspaceRequest() : config;
+    }
+
+    /** New model: safe default WORKSPACE + ON_REQUEST. */
+    public PermissionLayer(ApprovalHandler approvalHandler, EventStream events) {
+        this(PermissionConfig.workspaceRequest(), approvalHandler, events);
     }
 
     /** Outcome of a policy check for one tool call. */
@@ -63,6 +102,64 @@ public final class PermissionLayer {
         if (registration == null) {
             return Outcome.PROCEED; // unknown tool handled by the caller
         }
+        if (config != null) {
+            return checkWithConfig(registration, call, scId);
+        }
+        return checkWithLegacyPolicy(registration, call, scId);
+    }
+
+    // ------------------------------------------------------------------
+    // New model (PermissionConfig + PermissionEvaluator)
+    // ------------------------------------------------------------------
+
+    private Outcome checkWithConfig(ToolRegistration registration, ToolCall call, String scId) {
+        String toolName = registration.spec().name().name();
+        PermissionEvaluator.Decision decision =
+                PermissionEvaluator.evaluate(config, registration, call);
+        if (decision == PermissionEvaluator.Decision.ALLOW) {
+            return Outcome.PROCEED;
+        }
+        if (decision == PermissionEvaluator.Decision.DENY) {
+            String reason = "Policy denies tool '" + toolName + "' in this mode.";
+            emitEvent(new AgentEvent.PolicyDenied(scId, toolName, reason));
+            return Outcome.BLOCKED;
+        }
+        return parkForApproval(registration, call, scId, toolName,
+                "The policy requires user confirmation to execute '" + toolName + "'.");
+    }
+
+    /** The immutable config in force (null while legacy policy mode is active). */
+    public PermissionConfig permissionConfig() {
+        return config;
+    }
+
+    /** Host UI switches the mode; takes effect on the next tool check. */
+    public void updatePermissionConfig(PermissionConfig config) {
+        if (config != null) {
+            this.config = config;
+        }
+    }
+
+    private PermissionConfig configOrDefault() {
+        PermissionConfig current = config;
+        return current == null ? PermissionConfig.workspaceRequest() : current;
+    }
+
+    /** New-model hook: the capabilities the evaluator resolves for a tool. */
+    public Set<ToolCapability> capabilitiesForPublicForTest(ToolRegistration registration) {
+        return PermissionEvaluator.capabilitiesOf(registration);
+    }
+
+    /** New-model hook: the evaluator decision under the current config. */
+    public PermissionEvaluator.Decision decisionForPublicForTest(ToolRegistration registration) {
+        return PermissionEvaluator.evaluate(configOrDefault(), registration, null);
+    }
+
+    // ------------------------------------------------------------------
+    // Legacy model (ToolPolicy) — kept for back-compat tests only
+    // ------------------------------------------------------------------
+
+    private Outcome checkWithLegacyPolicy(ToolRegistration registration, ToolCall call, String scId) {
         String toolName = registration.spec().name().name();
         ToolPolicy.Rule rule = ruleFor(registration);
         if (rule == ToolPolicy.Rule.DENY) {
@@ -73,16 +170,89 @@ public final class PermissionLayer {
         if (rule == ToolPolicy.Rule.ALLOW) {
             return Outcome.PROCEED;
         }
-        // ASK_USER
+        return parkForApproval(registration, call, scId, toolName,
+                "The policy requires user confirmation to execute '" + toolName + "'.");
+    }
+
+    private ToolPolicy.Rule ruleFor(ToolRegistration registration) {
+        if (registration.isHandoff()) {
+            // Handoffs are always allowed: the model transfers control
+            // between agents already configured by the host.
+            return ToolPolicy.Rule.ALLOW;
+        }
+        String toolName = registration.spec().name().name();
+        if (isShellTool(toolName)) {
+            return policy.shell();
+        }
+        if (isNetworkTool(registration)) {
+            return policy.network();
+        }
+        // ToolRegistration metadata (the single source of truth) is what
+        // drives mutation/destructive classification.
+        if (registration.isDestructive()) {
+            return policy.destructive();
+        }
+        if (registration.isFileMutation()) {
+            return policy.mutation();
+        }
+        // Name-based fallback only covers known mutating tool names whose
+        // registration lost the original metadata; everything else stays
+        // unknown.
+        if (isKnownMutatingToolName(toolName)) {
+            return toolName.startsWith("delete")
+                    ? policy.destructive()
+                    : policy.mutation();
+        }
+        return policy.unknown();
+    }
+
+    /** Package-private test hook exposing the classification of a tool. */
+    ToolPolicy.Rule ruleForPublicForTest(ToolRegistration registration) {
+        return ruleFor(registration);
+    }
+
+    /**
+     * Mutating tool names from the Void registry. Used as a safety net when a
+     * {@code Tool} implementation does not carry the metadata flags, so
+     * mutating tools are never classified as {@code unknown} by accident.
+     */
+    public static boolean isKnownMutatingToolName(String toolName) {
+        return "edit_file".equals(toolName)
+                || "rewrite_file".equals(toolName)
+                || "create_file_or_folder".equals(toolName)
+                || "delete_file_or_folder".equals(toolName)
+                || "apply_patch".equals(toolName);
+    }
+
+    /** Terminal/persistent-terminal tool names used by the Void registry. */
+    public static boolean isShellTool(String toolName) {
+        return "run_command".equals(toolName)
+                || "run_persistent_command".equals(toolName)
+                || "open_persistent_terminal".equals(toolName)
+                || "kill_persistent_terminal".equals(toolName);
+    }
+
+    /** Remote MCP tools are treated as network tools (source-based). */
+    public static boolean isNetworkTool(ToolRegistration registration) {
+        String source = registration == null ? "" : registration.source();
+        return source != null && source.startsWith("mcp:");
+    }
+
+    // ------------------------------------------------------------------
+    // Shared approval parking (PROMPT / ASK_USER)
+    // ------------------------------------------------------------------
+
+    private Outcome parkForApproval(ToolRegistration registration, ToolCall call, String scId,
+                                    String toolName, String reason) {
         if (approvalHandler == null) {
             // No host to ask: fail closed instead of silently executing.
-            String reason = "Tool '" + toolName + "' requires approval but no approval handler is configured.";
-            emitEvent(new AgentEvent.PolicyDenied(scId, toolName, reason));
+            String message = "Tool '" + toolName
+                    + "' requires approval but no approval handler is configured.";
+            emitEvent(new AgentEvent.PolicyDenied(scId, toolName, message));
             return Outcome.BLOCKED;
         }
         PermissionRequest request = new PermissionRequest(
-                "perm_" + java.util.UUID.randomUUID(), toolName, call,
-                "The policy requires user confirmation to execute '" + toolName + "'.");
+                "perm_" + java.util.UUID.randomUUID(), toolName, call, reason);
         // Track state transitions for the UI/telemetry.
         approvalHandler.addStateListener(this::recordState);
         // The layer owns its pending registry and the resolution channel:
@@ -213,70 +383,6 @@ public final class PermissionLayer {
 
     private void recordState(ApprovalHandler.ApprovalRecord record) {
         this.lastRecord = record;
-    }
-
-    private ToolPolicy.Rule ruleFor(ToolRegistration registration) {
-        if (registration.isHandoff()) {
-            // Handoffs are always allowed: the model transfers control
-            // between agents already configured by the host.
-            return ToolPolicy.Rule.ALLOW;
-        }
-        String toolName = registration.spec().name().name();
-        if (isShellTool(toolName)) {
-            return policy.shell();
-        }
-        if (isNetworkTool(registration)) {
-            return policy.network();
-        }
-        // ToolRegistration metadata (the single source of truth) is what
-        // drives mutation/destructive classification.
-        if (registration.isDestructive()) {
-            return policy.destructive();
-        }
-        if (registration.isFileMutation()) {
-            return policy.mutation();
-        }
-        // Name-based fallback only covers known mutating tool names whose
-        // registration lost the original metadata; everything else stays
-        // unknown.
-        if (isKnownMutatingToolName(toolName)) {
-            return toolName.startsWith("delete")
-                    ? policy.destructive()
-                    : policy.mutation();
-        }
-        return policy.unknown();
-    }
-
-    /** Package-private test hook exposing the classification of a tool. */
-    ToolPolicy.Rule ruleForPublicForTest(ToolRegistration registration) {
-        return ruleFor(registration);
-    }
-
-    /**
-     * Mutating tool names from the Void registry. Used as a safety net when a
-     * {@code Tool} implementation does not carry the metadata flags, so
-     * mutating tools are never classified as {@code unknown} by accident.
-     */
-    public static boolean isKnownMutatingToolName(String toolName) {
-        return "edit_file".equals(toolName)
-                || "rewrite_file".equals(toolName)
-                || "create_file_or_folder".equals(toolName)
-                || "delete_file_or_folder".equals(toolName)
-                || "apply_patch".equals(toolName);
-    }
-
-    /** Terminal/persistent-terminal tool names used by the Void registry. */
-    public static boolean isShellTool(String toolName) {
-        return "run_command".equals(toolName)
-                || "run_persistent_command".equals(toolName)
-                || "open_persistent_terminal".equals(toolName)
-                || "kill_persistent_terminal".equals(toolName);
-    }
-
-    /** Remote MCP tools are treated as network tools (source-based). */
-    public static boolean isNetworkTool(ToolRegistration registration) {
-        String source = registration == null ? "" : registration.source();
-        return source != null && source.startsWith("mcp:");
     }
 
     private void emitEvent(AgentEvent event) {

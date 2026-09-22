@@ -62,15 +62,6 @@ public class AgentManager {
     private static final java.util.regex.Pattern TOOL_NAME_SANITIZER =
             java.util.regex.Pattern.compile("[^a-zA-Z0-9_\\-.]");
 
-    public enum State {
-        IDLE,
-        THINKING,
-        AWAITING_APPROVAL,
-        EXECUTING_TOOL,
-        FINISHED,
-        ERROR
-    }
-
     private final Context context;
     private final String scId;
     private final List<ChatMessage> messages;
@@ -82,7 +73,7 @@ public class AgentManager {
     private final ChatCheckpointManager checkpointManager;
     private AiRequestHandle currentRequestHandle;
 
-    private State currentState = State.IDLE;
+    private boolean running = false;
     private ChatMessage pendingToolMessage;
     private ChatMessage currentStreamingMessage;
     private int runVersion = 0;
@@ -266,8 +257,19 @@ public class AgentManager {
         return uiAgentForRunCache;
     }
 
-    public State getCurrentState() {
-        return currentState;
+    public boolean isRunning() {
+        return running;
+    }
+
+    /**
+     * The UI switches the permission mode (workspace+ask, read-only, full
+     * access). Forwarded to the v2 runtime layer; takes effect on the next
+     * tool check.
+     */
+    public void setPermissionConfig(com.saaspaymentsolutions.axion.agentsdk.PermissionConfig config) {
+        if (uiRuntime != null) {
+            uiRuntime.updatePermissionConfig(config);
+        }
     }
 
     @Nullable
@@ -277,7 +279,7 @@ public class AgentManager {
 
     /** Restores the local context checkpoint for the conversation being opened. */
     public void restoreCompactionState(@Nullable String summary, int compactedUntil) {
-        if (currentState != State.IDLE) return;
+        if (running) return;
         historySummary = limitCompactionSummary(summary);
         historyCompactedUntil = Math.max(0, Math.min(compactedUntil, messages.size()));
         lastCompactionMessageCount = historySummary.isEmpty() ? -1 : messages.size();
@@ -290,27 +292,6 @@ public class AgentManager {
 
     public ChatCheckpointManager.RollbackResult rollbackLastCheckpoint() {
         return checkpointManager.rollbackLatestCheckpoint(scId, messages);
-    }
-
-    private void setState(State state) {
-        this.currentState = state;
-        ChatFlowLogger.event("agent", "state", String.valueOf(state));
-        String statusText = "";
-        switch (state) {
-            case THINKING:
-                statusText = getString(R.string.chat_status_thinking);
-                break;
-            case AWAITING_APPROVAL:
-                statusText = getString(R.string.chat_tool_status_waiting_approval);
-                break;
-            case EXECUTING_TOOL:
-                statusText = getString(R.string.chat_tool_status_running);
-                break;
-            case IDLE:
-                statusText = "";
-                break;
-        }
-        updateRunStatus(statusText);
     }
 
     // ------------------------------------------------------------------
@@ -359,8 +340,8 @@ public class AgentManager {
      * this class keeps only controller responsibilities.
      */
     public void processUserMessage(String userText, String contextPayload, List<ChatReference> stagingSelections) {
-        if (currentState != State.IDLE) {
-            ChatFlowLogger.event("agent", "message_ignored", "state=" + currentState);
+        if (running) {
+            ChatFlowLogger.event("agent", "message_ignored", "state=running");
             return;
         }
         if (uiRuntime == null || uiHostBridge == null) {
@@ -373,7 +354,7 @@ public class AgentManager {
         ChatFlowLogger.event("agent", "turn_started", "chars=" + displayText.length()
                 + ", references=" + (stagingSelections == null ? 0 : stagingSelections.size()));
 
-        setState(State.THINKING);
+        running = true;
         requestPattern = PatternMatcher.analyze(displayText, contextPayload, stagingSelections);
         captureOperationContextForRun();
         beginRunIdentity();
@@ -398,15 +379,14 @@ public class AgentManager {
                 uiHostBridge.processUserMessage(userMsg);
                 mainHandler.post(() -> {
                     if (version == runVersion) {
-                        setState(State.IDLE);
+                        running = false;
                     }
                 });
             } catch (Exception e) {
                 mainHandler.post(() -> {
                     if (version == runVersion) {
-                        setState(State.ERROR);
+                        running = false;
                         listener.onError(e.getMessage() == null ? "Run failed" : e.getMessage());
-                        setState(State.IDLE);
                     }
                 });
             }
@@ -427,7 +407,7 @@ public class AgentManager {
     }
 
     public void continueFromExistingMessage(@Nullable ChatMessage sourceMessage) {
-        if (currentState != State.IDLE) {
+        if (running) {
             return;
         }
         // Regenerate/continue runs through the SAME v2 runtime as a fresh
@@ -453,22 +433,21 @@ public class AgentManager {
                         + "explore, read, and modify project files to complete the user's task.")
                 .build();
 
-        setState(State.THINKING);
+        running = true;
         final int version = runVersion;
         executorForRuns().execute(() -> {
             try {
                 uiHostBridge.processHistory(messages);
                 mainHandler.post(() -> {
                     if (version == runVersion) {
-                        setState(State.IDLE);
+                        running = false;
                     }
                 });
             } catch (Exception e) {
                 mainHandler.post(() -> {
                     if (version == runVersion) {
-                        setState(State.ERROR);
+                        running = false;
                         listener.onError(e.getMessage() == null ? "Run failed" : e.getMessage());
-                        setState(State.IDLE);
                     }
                 });
             }
@@ -476,7 +455,7 @@ public class AgentManager {
     }
 
     public boolean cancelCurrentRun() {
-        if (currentState == State.IDLE) {
+        if (!running) {
             return false;
         }
 
@@ -486,7 +465,9 @@ public class AgentManager {
         // runtime.run returns. Nothing here may execute tools or continue the
         // run afterwards — there is no second executor left.
         runVersion++;
-        if (uiRuntime != null) {
+        if (uiHostBridge != null) {
+            uiHostBridge.cancel();
+        } else if (uiRuntime != null) {
             uiRuntime.cancel();
         }
         if (currentOperationContext != null) {
@@ -505,7 +486,7 @@ public class AgentManager {
      * append an old response to the newly opened conversation.
      */
     public void resetConversationState() {
-        boolean wasActive = currentState != State.IDLE;
+        boolean wasActive = running;
         // v2 teardown: cancel parked approvals with the run.
         if (uiRuntime != null) {
             uiRuntime.cancel();
@@ -544,7 +525,7 @@ public class AgentManager {
         multiAgentPreparationInFlight = false;
         multiAgentReviewInFlight = false;
         multiAgentReviewRounds = 0;
-        setState(State.IDLE);
+        running = false;
         if (wasActive) {
             listener.onProcessingFinished();
         }
@@ -590,6 +571,9 @@ public class AgentManager {
         private String pendingApprovalRequestId = "";
         private volatile String lastOutput = "";
         private volatile String lastStatus = "";
+        /** Single reducer: every run event derives the composer status. */
+        private final com.saaspaymentsolutions.axion.agentsdk.RunStatusReducer statusReducer =
+                new com.saaspaymentsolutions.axion.agentsdk.RunStatusReducer();
 
         /** Production constructor: UI callbacks are posted to the main looper. */
         public HostBridge(com.saaspaymentsolutions.axion.agentsdk.AgentRuntime runtime,
@@ -717,6 +701,8 @@ public class AgentManager {
 
         /** Cooperative cancellation of the run in flight. */
         public void cancel() {
+            statusReducer.requestCancellation();
+            postStatus(statusTextFor(statusReducer.state()));
             runtime.cancel();
         }
 
@@ -744,6 +730,7 @@ public class AgentManager {
             liveAssistant = null;
             toolBubbles.clear();
             pendingApprovalRequestId = "";
+            statusReducer.reset();
         }
 
         private void finalizeRunPresentation(com.saaspaymentsolutions.axion.agentsdk.RunResult result) {
@@ -795,11 +782,16 @@ public class AgentManager {
                     && !scId.equals(event.getScId()))) {
                 return;
             }
-            if (event instanceof com.saaspaymentsolutions.axion.agentsdk.AgentEvent.RunStarted) {
-                postStatus(lastStatus);
-            } else if (event instanceof com.saaspaymentsolutions.axion.agentsdk.AgentEvent.TurnStarted) {
-                postStatus("");
-            } else if (event instanceof com.saaspaymentsolutions.axion.agentsdk.AgentEvent.AssistantMessageDelta) {
+            // The reducer owns the composer status: every run event derives a
+            // status (TurnStarted keeps THINKING; tools/approvals/cancels all
+            // round-trip exactly once). This replaces the old scattered
+            // postStatus(...) calls that could clear the indicator early.
+            publishReducedStatus(event);
+            // TurnStarted intentionally has NO branch here: the reducer keeps
+            // THINKING visible (the old postStatus("") could clear the banner
+            // right after it appeared). Streaming/assistant/tool branches below
+            // only ever materialize chat bubbles, never status text.
+            if (event instanceof com.saaspaymentsolutions.axion.agentsdk.AgentEvent.AssistantMessageDelta) {
                 String delta = ((com.saaspaymentsolutions.axion.agentsdk.AgentEvent.AssistantMessageDelta) event).getDelta();
                 if (!ChatMessage.hasVisibleText(delta)) {
                     return;
@@ -858,7 +850,6 @@ public class AgentManager {
                     existing.setToolState("running_now");
                     uiExecutor.execute(() -> listener.onMessageUpdated(existing));
                 }
-                postStatus(statusForTool(tool));
             } else if (event instanceof com.saaspaymentsolutions.axion.agentsdk.AgentEvent.ToolCallCompleted) {
                 com.saaspaymentsolutions.axion.agentsdk.AgentEvent.ToolCallCompleted completed =
                         (com.saaspaymentsolutions.axion.agentsdk.AgentEvent.ToolCallCompleted) event;
@@ -895,7 +886,6 @@ public class AgentManager {
                         : R.string.chat_tool_error_message));
                 bubble.setExpanded(!success);
                 uiExecutor.execute(() -> listener.onMessageUpdated(bubble));
-                postStatus("");
                 boolean mutation = isMutationTool(tool);
                 uiExecutor.execute(() -> listener.onToolExecuted(tool, mutation));
             } else if (event instanceof com.saaspaymentsolutions.axion.agentsdk.AgentEvent.FileChanged) {
@@ -936,7 +926,6 @@ public class AgentManager {
                             : stringOf(R.string.chat_tool_status_waiting_approval));
                     uiExecutor.execute(() -> listener.onMessageUpdated(bubble));
                 }
-                postStatus(stringOf(R.string.chat_tool_status_waiting_approval));
                 uiExecutor.execute(() -> listener.onApprovalRequired(requestId, required.getTool()));
             } else if (event instanceof com.saaspaymentsolutions.axion.agentsdk.AgentEvent.PermissionResolved) {
                 com.saaspaymentsolutions.axion.agentsdk.AgentEvent.PermissionResolved resolved =
@@ -945,7 +934,6 @@ public class AgentManager {
                 // itself carries tool/decision/state (no requestId payload).
                 ChatMessage bubble = toolBubbles.get(pendingApprovalRequestId);
                 pendingApprovalRequestId = "";
-                postStatus("");
                 if (bubble != null && !resolved.isAllowed()
                         && resolved.getState() != com.saaspaymentsolutions.axion.agentsdk.ApprovalHandler.ApprovalState.ALLOWED) {
                     bubble.setToolRunning(false);
@@ -1012,6 +1000,37 @@ public class AgentManager {
         private void postStatus(String status) {
             lastStatus = status == null ? "" : status;
             uiExecutor.execute(() -> listener.onStatusChanged(lastStatus));
+        }
+
+        /** Feeds one event into the reducer and publishes the resulting status. */
+        private void publishReducedStatus(com.saaspaymentsolutions.axion.agentsdk.AgentEvent event) {
+            statusReducer.reduce(event);
+            postStatus(statusTextFor(statusReducer.state()));
+        }
+
+        /** Maps a reduced state to the composer header text (never a chat bubble). */
+        private String statusTextFor(com.saaspaymentsolutions.axion.agentsdk.AgentUiState state) {
+            if (state == null) {
+                return "";
+            }
+            switch (state.getRunStatus()) {
+                case WORKING:
+                    return stringOf(R.string.chat_status_working);
+                case THINKING:
+                    return stringOf(R.string.chat_status_thinking);
+                case WAITING_APPROVAL:
+                    return stringOf(R.string.chat_tool_status_waiting_approval);
+                case RUNNING_TOOL:
+                    return statusForTool(state.getActiveTool());
+                case CANCELLING:
+                    return stringOf(R.string.chat_status_cancelling);
+                case ERROR:
+                    return stringOf(R.string.chat_tool_status_error);
+                case READY:
+                case COMPLETED:
+                default:
+                    return "";
+            }
         }
 
         private String stringOf(int resId, Object... args) {

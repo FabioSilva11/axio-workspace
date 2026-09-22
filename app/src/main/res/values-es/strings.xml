@@ -957,5 +957,15 @@
     <string name="skill_error_content_required">Ingresa el contenido/instrucciones de la skill</string>
     <string name="skill_delete_title">Eliminar skill</string>
     <string name="skill_delete_message">¿Quitar la skill &quot;%1$s&quot;? Esta acción no se puede deshacer.</string>
+    <string name="chat_status_working">Trabajando…</string>
+    <string name="chat_status_cancelling">Cancelando…</string>
+    <string name="chat_permissions_label">Permisos</string>
+    <string name="chat_permission_ask_approval">Pedir aprobación</string>
+    <string name="chat_permission_read_only">Solo lectura</string>
+    <string name="chat_permission_full_access">Acceso completo</string>
+    <string name="chat_permission_mode_format">Permisos: %1$s</string>
+    <string name="chat_full_access_dialog_title">¿Activar acceso completo?</string>
+    <string name="chat_full_access_dialog_message">El agente podrá crear, modificar y eliminar archivos y ejecutar herramientas sin pedir aprobación. ¿Activar?</string>
+    <string name="chat_activate">Activar</string>
 
 </resources>

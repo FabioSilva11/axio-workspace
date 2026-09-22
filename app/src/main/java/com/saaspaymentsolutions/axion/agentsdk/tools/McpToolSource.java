@@ -3,6 +3,7 @@ package com.saaspaymentsolutions.axion.agentsdk.tools;
 import android.content.SharedPreferences;
 
 import com.saaspaymentsolutions.axion.agentsdk.AgentToolResult;
+import com.saaspaymentsolutions.axion.agentsdk.ToolCapability;
 import com.saaspaymentsolutions.axion.port.VoidPortMcpChannel;
 
 import org.json.JSONArray;
@@ -58,6 +59,7 @@ public final class McpToolSource {
                         .executor(ctx -> AgentToolResult.success(
                                 VoidPortMcpChannel.callTool(prefs, name, ctx.functionArguments())))
                         .source(serverName == null ? "mcp" : "mcp:" + serverName)
+                        .capability(ToolCapability.NETWORK)
                         .build();
                 registry.register(registration);
             }

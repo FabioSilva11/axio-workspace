@@ -414,6 +414,21 @@ public final class AgentRuntime {
         return permissions.cancel(requestId);
     }
 
+    /** The immutable permission config in force, or {@code null} (no layer). */
+    public PermissionConfig permissionConfig() {
+        return permissions == null ? null : permissions.permissionConfig();
+    }
+
+    /**
+     * The UI switches the permission mode (workspace+ask, read-only, full
+     * access). Takes effect on the next tool check of the current run.
+     */
+    public void updatePermissionConfig(PermissionConfig config) {
+        if (permissions != null) {
+            permissions.updatePermissionConfig(config);
+        }
+    }
+
     // ------------------------------------------------------------------
     // helpers
     // ------------------------------------------------------------------

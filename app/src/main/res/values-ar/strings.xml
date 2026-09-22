@@ -957,5 +957,15 @@
     <string name="skill_error_content_required">أدخل محتوى/تعليمات المهارة</string>
     <string name="skill_delete_title">حذف المهارة</string>
     <string name="skill_delete_message">إزالة المهارة &quot;%1$s&quot;؟ لا يمكن التراجع عن هذا الإجراء.</string>
+    <string name="chat_status_working">جارٍ العمل…</string>
+    <string name="chat_status_cancelling">جارٍ الإلغاء…</string>
+    <string name="chat_permissions_label">الأذونات</string>
+    <string name="chat_permission_ask_approval">طلب الموافقة</string>
+    <string name="chat_permission_read_only">قراءة فقط</string>
+    <string name="chat_permission_full_access">وصول كامل</string>
+    <string name="chat_permission_mode_format">الأذونات: %1$s</string>
+    <string name="chat_full_access_dialog_title">تفعيل الوصول الكامل؟</string>
+    <string name="chat_full_access_dialog_message">سيتمكن الوكيل من إنشاء وتعديل وحذف الملفات وتشغيل الأدوات دون طلب موافقة. تفعيل؟</string>
+    <string name="chat_activate">تفعيل</string>
 
 </resources>

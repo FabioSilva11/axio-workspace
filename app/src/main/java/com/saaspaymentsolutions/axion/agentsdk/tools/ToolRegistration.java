@@ -1,6 +1,11 @@
 package com.saaspaymentsolutions.axion.agentsdk.tools;
 
 import com.saaspaymentsolutions.axion.agentsdk.AgentToolResult;
+import com.saaspaymentsolutions.axion.agentsdk.ToolCapability;
+
+import java.util.Collections;
+import java.util.EnumSet;
+import java.util.Set;
 
 /**
  * A registered tool: the immutable binding of a {@link ToolSpec} (wire
@@ -26,6 +31,13 @@ public final class ToolRegistration {
     /** Optional cooperative-handoff target (@{@code Agent} name) or {@code null}. */
     private final String handoffTarget;
 
+    /**
+     * Declared {@link ToolCapability}s (codex tool metadata parity). Declared
+     * metadata is the single source of truth for the {@code PermissionEvaluator};
+     * names are only a defensive fallback when nothing was declared.
+     */
+    private final Set<ToolCapability> capabilities;
+
     private ToolRegistration(Builder builder) {
         this.spec = builder.spec;
         this.exposure = builder.exposure == null ? ToolExposure.direct() : builder.exposure;
@@ -36,6 +48,7 @@ public final class ToolRegistration {
         this.isDestructive = builder.isDestructive;
         this.sandbox = builder.sandbox;
         this.handoffTarget = builder.handoffTarget;
+        this.capabilities = EnumSet.copyOf(builder.capabilities);
     }
 
     public ToolSpec spec() {
@@ -88,6 +101,14 @@ public final class ToolRegistration {
         return handoffTarget != null && !handoffTarget.trim().isEmpty();
     }
 
+    /**
+     * Declared capabilities (unmodifiable; empty when not declared — the
+     * evaluator then falls back to defensive inference).
+     */
+    public Set<ToolCapability> capabilities() {
+        return Collections.unmodifiableSet(capabilities);
+    }
+
     /** Convenience: the fully-qualified model name. */
     public String qualifiedName() {
         return spec.qualifiedName();
@@ -137,6 +158,8 @@ public final class ToolRegistration {
         private SandboxConstraint sandbox;
         private String handoffTarget;
 
+        private final Set<ToolCapability> capabilities = EnumSet.noneOf(ToolCapability.class);
+
         private Builder(ToolSpec spec) {
             this.spec = spec;
         }
@@ -179,6 +202,22 @@ public final class ToolRegistration {
         /** Marks this registration as a handoff to the named {@code Agent}. */
         public Builder handoffTarget(String targetAgentName) {
             this.handoffTarget = targetAgentName;
+            return this;
+        }
+
+        /** Declares one capability for this tool (see {@link ToolCapability}). */
+        public Builder capability(ToolCapability capability) {
+            if (capability != null) {
+                this.capabilities.add(capability);
+            }
+            return this;
+        }
+
+        /** Declares several capabilities for this tool. */
+        public Builder capabilities(ToolCapability... capabilities) {
+            if (capabilities != null) {
+                Collections.addAll(this.capabilities, capabilities);
+            }
             return this;
         }
 

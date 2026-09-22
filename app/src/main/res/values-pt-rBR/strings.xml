@@ -272,6 +272,8 @@
     <string name="myprojects_settings_message_package_rename">Não é recomendável alterar o nome do pacote após a criação de projetos do Android Studio.</string>
     <string name="theme_random_generated">Tema aleatório gerado.</string>
     <string name="chat_status_thinking">Pensando…</string>
+    <string name="chat_status_working">Trabalhando…</string>
+    <string name="chat_status_cancelling">Cancelando…</string>
     <string name="chat_status_compacting_context">Compactando o contexto da conversa…</string>
     <string name="chat_background_channel_name">Execuções da IA</string>
     <string name="chat_background_channel_description">Mantém a conversa em execução ao abrir outro aplicativo.</string>
@@ -294,6 +296,14 @@
     <string name="chat_tool_done_message">Ferramenta concluída com sucesso.</string>
     <string name="chat_tool_running_message">Executando ferramenta…</string>
     <string name="chat_tool_approval_message_named">Aprovar a ferramenta %1$s?</string>
+    <string name="chat_permissions_label">Permissões</string>
+    <string name="chat_permission_ask_approval">Pedir aprovação</string>
+    <string name="chat_permission_read_only">Somente leitura</string>
+    <string name="chat_permission_full_access">Acesso completo</string>
+    <string name="chat_permission_mode_format">Permissões: %1$s</string>
+    <string name="chat_full_access_dialog_title">Ativar acesso completo?</string>
+    <string name="chat_full_access_dialog_message">O agente poderá criar, modificar e excluir arquivos e executar ferramentas de acesso completo sem pedir aprovação. Ativar?</string>
+    <string name="chat_activate">Ativar</string>
     <string name="chat_project_not_found">Projeto não encontrado.</string>
     <string name="chat_no_models_available_short">Nenhum modelo disponível</string>
     <string name="chat_mode_chat">Conversa</string>

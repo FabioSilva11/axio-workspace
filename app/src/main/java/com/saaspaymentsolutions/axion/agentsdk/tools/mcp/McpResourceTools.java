@@ -1,6 +1,7 @@
 package com.saaspaymentsolutions.axion.agentsdk.tools.mcp;
 
 import com.saaspaymentsolutions.axion.agentsdk.AgentToolResult;
+import com.saaspaymentsolutions.axion.agentsdk.ToolCapability;
 import com.saaspaymentsolutions.axion.agentsdk.tools.ToolExecutor;
 import com.saaspaymentsolutions.axion.agentsdk.tools.ToolName;
 import com.saaspaymentsolutions.axion.agentsdk.tools.ToolRegistration;
@@ -44,6 +45,7 @@ public final class McpResourceTools {
                                 new String[]{"cursor", "Opaque cursor from a previous list_mcp_resources call; omit for the first page."})))
                 .executor(resourceExecutor(invoker, "resources/list"))
                 .source("core:mcp")
+                .capabilities(ToolCapability.READ, ToolCapability.NETWORK)
                 .build();
     }
 
@@ -59,6 +61,7 @@ public final class McpResourceTools {
                                 new String[]{"cursor", "Opaque cursor from a previous list_mcp_resource_templates call; omit for the first page."})))
                 .executor(resourceExecutor(invoker, "resources/templates/list"))
                 .source("core:mcp")
+                .capabilities(ToolCapability.READ, ToolCapability.NETWORK)
                 .build();
     }
 
