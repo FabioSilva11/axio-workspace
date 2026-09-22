@@ -288,13 +288,11 @@
                 android:textColorHint="@color/chat_text_hint"
                 android:textSize="15sp" />
 
-            <LinearLayout
+            <androidx.constraintlayout.widget.ConstraintLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="2dp"
-                android:gravity="center_vertical"
                 android:minHeight="40dp"
-                android:orientation="horizontal"
                 android:paddingBottom="2dp">
 
                 <ImageView
@@ -304,50 +302,65 @@
                     android:background="?attr/selectableItemBackgroundBorderless"
                     android:contentDescription="@string/chat_model_selector_content_description"
                     android:padding="1dp"
-                    android:src="@drawable/kelivo_icon_codex" />
+                    android:src="@drawable/kelivo_icon_codex"
+                    app:layout_constraintBottom_toBottomOf="parent"
+                    app:layout_constraintStart_toStartOf="parent"
+                    app:layout_constraintTop_toTopOf="parent" />
 
                 <ImageView
                     android:id="@+id/btn_online_search"
                     android:layout_width="32dp"
                     android:layout_height="32dp"
-                    android:layout_marginStart="8dp"
                     android:background="?attr/selectableItemBackgroundBorderless"
                     android:contentDescription="@string/chat_online_search"
                     android:padding="6dp"
                     android:src="@drawable/ic_kelivo_globe"
+                    app:layout_constraintBottom_toBottomOf="parent"
+                    app:layout_constraintStart_toEndOf="@id/btn_model_selector"
+                    android:layout_marginStart="8dp"
+                    app:layout_constraintTop_toTopOf="parent"
                     app:tint="@color/chat_text_secondary" />
 
                 <ImageView
                     android:id="@+id/btn_chat_mode"
                     android:layout_width="32dp"
                     android:layout_height="32dp"
-                    android:layout_marginStart="8dp"
                     android:background="?attr/selectableItemBackgroundBorderless"
                     android:contentDescription="@string/chat_mode_agent"
                     android:padding="6dp"
                     android:src="@drawable/kelivo_icon_idea_01_stroke_rounded"
+                    app:layout_constraintBottom_toBottomOf="parent"
+                    app:layout_constraintStart_toEndOf="@id/btn_online_search"
+                    android:layout_marginStart="8dp"
+                    app:layout_constraintTop_toTopOf="parent"
                     app:tint="@color/chat_text_primary" />
 
                 <ImageView
                     android:id="@+id/btn_permissions"
                     android:layout_width="32dp"
                     android:layout_height="32dp"
-                    android:layout_marginStart="8dp"
                     android:background="?attr/selectableItemBackgroundBorderless"
                     android:contentDescription="@string/chat_permissions_label"
                     android:padding="6dp"
                     android:src="@drawable/ic_mtrl_shield_lock"
+                    app:layout_constraintBottom_toBottomOf="parent"
+                    app:layout_constraintStart_toEndOf="@id/btn_chat_mode"
+                    android:layout_marginStart="8dp"
+                    app:layout_constraintTop_toTopOf="parent"
                     app:tint="@color/chat_text_primary" />
 
                 <ImageView
                     android:id="@+id/btn_mcp_servers"
                     android:layout_width="32dp"
                     android:layout_height="32dp"
-                    android:layout_marginStart="8dp"
                     android:background="?attr/selectableItemBackgroundBorderless"
                     android:contentDescription="@string/chat_mcp_servers"
                     android:padding="6dp"
                     android:src="@drawable/ic_kelivo_hammer"
+                    app:layout_constraintBottom_toBottomOf="parent"
+                    app:layout_constraintStart_toEndOf="@id/btn_permissions"
+                    android:layout_marginStart="8dp"
+                    app:layout_constraintTop_toTopOf="parent"
                     app:tint="@color/chat_text_secondary" />
 
                 <TextView
@@ -355,11 +368,6 @@
                     android:layout_width="0dp"
                     android:layout_height="0dp"
                     android:visibility="gone" />
-
-                <View
-                    android:layout_width="0dp"
-                    android:layout_height="1dp"
-                    android:layout_weight="1" />
 
                 <TextView
                     android:id="@+id/text_permissions_status"
@@ -369,6 +377,13 @@
                     android:layout_marginEnd="8dp"
                     android:background="@drawable/bg_chat_thread_badge"
                     android:contentDescription="@string/chat_permissions_label"
+                    android:drawableStart="@drawable/ic_mtrl_shield_lock"
+                    android:drawablePadding="4dp"
+                    android:ellipsize="end"
+                    android:gravity="center_vertical"
+                    android:includeFontPadding="false"
+                    android:maxLines="1"
+                    android:maxWidth="180dp"
                     android:paddingStart="10dp"
                     android:paddingTop="4dp"
                     android:paddingEnd="10dp"
@@ -376,7 +391,13 @@
                     android:text="@string/chat_permission_mode_format"
                     android:textColor="@color/chat_text_secondary"
                     android:textSize="12sp"
-                    android:visibility="gone" />
+                    android:visibility="gone"
+                    app:drawableTint="@color/chat_text_secondary"
+                    app:layout_constrainedWidth="true"
+                    app:layout_constraintBottom_toBottomOf="parent"
+                    app:layout_constraintEnd_toStartOf="@id/btn_attach"
+                    app:layout_constraintStart_toEndOf="@id/btn_mcp_servers"
+                    app:layout_constraintTop_toTopOf="parent" />
 
                 <TextView
                     android:id="@+id/text_current_model"
@@ -392,43 +413,57 @@
                     android:contentDescription="@string/chat_attach_content_description"
                     android:padding="6dp"
                     android:src="@drawable/kelivo_lucide_plus"
+                    app:layout_constraintBottom_toBottomOf="parent"
+                    app:layout_constraintStart_toEndOf="@id/text_permissions_status"
+                    app:layout_constraintTop_toTopOf="parent"
                     app:tint="@color/chat_text_primary" />
 
                 <ImageView
                     android:id="@+id/btn_microphone"
                     android:layout_width="32dp"
                     android:layout_height="32dp"
-                    android:layout_marginStart="8dp"
                     android:background="?attr/selectableItemBackgroundBorderless"
                     android:contentDescription="@string/chat_voice_content_description"
                     android:padding="6dp"
                     android:src="@drawable/kelivo_lucide_mic"
+                    app:layout_constraintBottom_toBottomOf="parent"
+                    app:layout_constraintStart_toEndOf="@id/btn_attach"
+                    android:layout_marginStart="8dp"
+                    app:layout_constraintTop_toTopOf="parent"
                     app:tint="@color/chat_text_primary" />
 
                 <ImageView
                     android:id="@+id/btn_cancel_run"
                     android:layout_width="32dp"
                     android:layout_height="32dp"
-                    android:layout_marginStart="8dp"
                     android:background="?attr/selectableItemBackgroundBorderless"
                     android:contentDescription="@string/chat_cancel_current_run_content_description"
                     android:padding="7dp"
                     android:src="@drawable/kelivo_icon_stop"
-                    app:tint="@color/chat_text_secondary"
-                    android:visibility="gone" />
+                    android:visibility="gone"
+                    app:layout_constraintBottom_toBottomOf="parent"
+                    app:layout_constraintStart_toEndOf="@id/btn_microphone"
+                    android:layout_marginStart="8dp"
+                    android:layout_marginEnd="8dp"
+                    app:layout_constraintEnd_toStartOf="@id/btn_send"
+                    app:layout_constraintTop_toTopOf="parent"
+                    app:tint="@color/chat_text_secondary" />
 
                 <ImageView
                     android:id="@+id/btn_send"
                     android:layout_width="32dp"
                     android:layout_height="32dp"
-                    android:layout_marginStart="8dp"
                     android:background="@drawable/bg_kelivo_send"
                     android:contentDescription="@string/chat_send_content_description"
                     android:padding="7dp"
                     android:scaleType="centerInside"
                     android:src="@drawable/kelivo_lucide_arrow_up"
+                    app:layout_constraintBottom_toBottomOf="parent"
+                    app:layout_constraintEnd_toEndOf="parent"
+                    app:layout_constraintStart_toEndOf="@id/btn_cancel_run"
+                    app:layout_constraintTop_toTopOf="parent"
                     app:tint="@color/chat_text_secondary" />
-            </LinearLayout>
+            </androidx.constraintlayout.widget.ConstraintLayout>
         </LinearLayout>
 
         </com.google.android.material.card.MaterialCardView>

@@ -924,7 +924,8 @@ public class ChatActivity extends BaseAppCompatActivity {
             labelRes = R.string.chat_permission_ask_approval;
         }
         String label = getString(labelRes);
-        pill.setText(getString(R.string.chat_permission_mode_format, label));
+        pill.setText(label);
+        pill.setContentDescription(getString(R.string.chat_permission_mode_format, label));
         pill.setVisibility(View.VISIBLE);
     }
 
@@ -2353,9 +2354,6 @@ public class ChatActivity extends BaseAppCompatActivity {
     private void showProgress(boolean show) {
         if (btnCancelRun != null) {
             btnCancelRun.setVisibility(show ? View.VISIBLE : View.GONE);
-        }
-        if (btnSend != null) {
-            btnSend.setVisibility(show ? View.GONE : View.VISIBLE);
         }
     }
 
