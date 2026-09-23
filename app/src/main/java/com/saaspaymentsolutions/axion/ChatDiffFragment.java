@@ -206,7 +206,21 @@ public class ChatDiffFragment extends Fragment {
         }
 
         private void computeDiffsAsync(int position) {
-            final int generation = ++refreshGeneration;
+            // Bug fix: this used to do `++refreshGeneration` — bumping a
+            // SHARED counter on every call. Once bind() started triggering
+            // this eagerly for every visible row (not just the one row the
+            // user taps to expand), several rows compute concurrently, and
+            // each new row's call invalidated every other in-flight row's
+            // result via this same counter (`generation != refreshGeneration`
+            // below would then be true for the earlier rows). Their real
+            // result was silently dropped, leaving diffCache stuck on the
+            // empty `pendingDiffs` placeholder forever — which rendered as
+            // "Sem alterações" once expanded, even for a genuinely modified
+            // file, and never retried (the cache already "contained" that
+            // position). refreshGeneration must only change on a full list
+            // reload (see refreshDiffs()/submit()); a single row's compute
+            // must only READ the current epoch, never bump it itself.
+            final int generation = refreshGeneration;
             diffCache.put(position, pendingDiffs); // placeholder while computing
             final FileChangeTracker.FileChange change = items.get(position);
             new Thread(() -> {
