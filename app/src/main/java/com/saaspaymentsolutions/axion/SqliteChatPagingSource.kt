@@ -25,7 +25,7 @@ internal class SqliteChatPagingSource(
 
     override suspend fun load(params: LoadParams<Int>): LoadResult<Int, ChatPagingItem> {
         return try {
-            val showAds = false
+            val showAds = true
             val requestedStart = params.key
             val window = storage.loadPagingWindow(
                 projectId,
