@@ -192,6 +192,95 @@ public class RuntimeV2OnlyTest {
                 updated.stream().anyMatch(ChatMessage::isBot));
     }
 
+    @Test
+    public void bridge_showsThinkingBubble_whenTurnGoesStraightToToolCall_andRemovesEmptyOne() throws Exception {
+        // Scripted turn 1: the model calls a tool with NO text before it (the
+        // common "tool-first" case). Turn 2: a final text answer.
+        FakeAgentLlmGateway gateway = new FakeAgentLlmGateway(
+                FakeAgentLlmGateway.ScriptedTurn.toolCall("read_file", "{\"uri\":\"a.txt\"}"),
+                FakeAgentLlmGateway.ScriptedTurn.text("here is the file"));
+
+        com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRegistry registry =
+                new com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRegistry();
+        registry.register(com.saaspaymentsolutions.axion.agentsdk.tools.ToolRegistration.function(
+                        "read_file", "stub read", new JSONObject())
+                .executor(context -> AgentToolResult.success("file contents"))
+                .source("test")
+                .capability(com.saaspaymentsolutions.axion.agentsdk.ToolCapability.READ)
+                .build());
+
+        AgentRuntime runtime = new AgentRuntime.Builder(gateway)
+                .permissions(new PermissionLayer(ToolPolicy.permissive(), request -> PermissionDecision.ALLOW,
+                        new EventStream(Runnable::run, 16)))
+                .toolRegistry(registry)
+                .maxTurns(4)
+                .build();
+
+        List<ChatMessage> messages = new ArrayList<>();
+        List<ChatMessage> added = new ArrayList<>();
+        List<ChatMessage> removed = new ArrayList<>();
+        BlockingQueue<Boolean> finished = new LinkedBlockingQueue<>(1);
+        AgentManager.HostBridge bridge = new AgentManager.HostBridge(runtime,
+                () -> Agent.Builder.forName("a", "i").build(),
+                new AgentManager.AgentListener() {
+                    @Override
+                    public void onMessageAdded(ChatMessage message) {
+                        added.add(message);
+                    }
+
+                    @Override
+                    public void onMessageUpdated(ChatMessage message) {
+                    }
+
+                    @Override
+                    public void onMessageRemoved(ChatMessage message, int index) {
+                        removed.add(message);
+                    }
+
+                    @Override
+                    public void onStatusChanged(String status) {
+                    }
+
+                    @Override
+                    public void onDebug(String message) {
+                    }
+
+                    @Override
+                    public void onProcessingFinished() {
+                        finished.offer(Boolean.TRUE);
+                    }
+
+                    @Override
+                    public void onToolExecuted(String toolName, boolean isMutation) {
+                    }
+
+                    @Override
+                    public void onError(String error) {
+                    }
+                }, "sc_thinking", Runnable::run);
+        bridge.attachMessages(messages);
+
+        bridge.processUserMessage("read the file please");
+
+        assertTrue("run must finish", finished.poll(5, TimeUnit.SECONDS) == Boolean.TRUE);
+
+        // The transient "thinking" bubble must have been created (item 29/31: it
+        // must show up even though the turn went straight into a tool call, with
+        // no assistant text delta before it)...
+        assertTrue("a placeholder bot bubble must have been added before the tool ran",
+                added.stream().anyMatch(m -> m.isBot() && !m.hasDisplayContent()));
+        // ...and then removed once it turned out to be empty (never got real
+        // content before the tool call closed it), instead of being left behind
+        // as an invisible, persisted empty message.
+        assertTrue("the empty placeholder must be removed rather than left in history",
+                removed.stream().anyMatch(m -> m.isBot()));
+
+        // The real final answer must still have reached the UI as its own bubble.
+        assertEquals("here is the file", bridge.lastAssistantText());
+        assertTrue("final answer bubble must be a bot message with real content",
+                added.stream().anyMatch(m -> m.isBot() && "here is the file".equals(m.getDisplayContent())));
+    }
+
     // ------------------------------------------------------------------
     // helpers
     // ------------------------------------------------------------------

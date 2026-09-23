@@ -1226,24 +1226,6 @@ public class ChatActivity extends BaseAppCompatActivity {
         }
     }
 
-    private void updateComposerUiState() {
-        ComposerUiState state = ComposerUiState.forRunState(isProcessing);
-        if (btnSend != null) {
-            btnSend.setVisibility(state.sendVisible ? View.VISIBLE : View.GONE);
-        }
-        if (btnCancelRun != null) {
-            btnCancelRun.setVisibility(state.stopVisible ? View.VISIBLE : View.GONE);
-        }
-        if (editTextMessage != null) {
-            editTextMessage.setEnabled(state.messageInputEnabled);
-        }
-        if (btnAttach != null) {
-            btnAttach.setEnabled(state.attachEnabled);
-            btnAttach.setAlpha(state.attachAlpha);
-        }
-        updateSendButtonState();
-    }
-
     private void pickReferenceImageFromCamera() {
         try {
             File imageFile = createCameraImageFile();
@@ -1940,9 +1922,9 @@ public class ChatActivity extends BaseAppCompatActivity {
                 Toast.makeText(this,
                         R.string.chat_model_no_image_input,
                         Toast.LENGTH_LONG).show();
-                isProcessing = false;
                 setInputEnabled(true);
                 showProgress(false);
+                isProcessing = false;
                 return;
             }
         }
@@ -2010,7 +1992,10 @@ public class ChatActivity extends BaseAppCompatActivity {
     }
 
     private void setInputEnabled(boolean enabled) {
-        updateComposerUiState();
+        editTextMessage.setEnabled(enabled);
+        updateSendButtonState();
+        if (btnAttach != null) btnAttach.setEnabled(enabled);
+        if (btnAttach != null) btnAttach.setAlpha(enabled ? 1f : 0.55f);
     }
 
     private void showAttachMenu(View anchor) {
@@ -2367,7 +2352,9 @@ public class ChatActivity extends BaseAppCompatActivity {
     }
 
     private void showProgress(boolean show) {
-        updateComposerUiState();
+        if (btnCancelRun != null) {
+            btnCancelRun.setVisibility(show ? View.VISIBLE : View.GONE);
+        }
     }
 
     private void startVoiceInput() {
@@ -3393,7 +3380,6 @@ public class ChatActivity extends BaseAppCompatActivity {
         updateModelUI();
         updatePendingReferencesUi();
         updateComposerToolUi();
-        updateComposerUiState();
     }
 
     @Override

@@ -1087,9 +1087,6 @@ public class AiProviderService {
                         : context.getString(R.string.ai_status_waiting_model_attempt,
                                 attemptNumber, AiRetryController.MAX_ATTEMPTS),
                 attemptNumber, 0L, true, false, null);
-        SecureLogger.logRequestStart(operationContext.getRequestId(), providerId,
-                operationContext.getModelName(), 0, 0);
-
         android.util.Log.d("AiProviderService", "=== HTTP REQUEST START ===");
         android.util.Log.d("AiProviderService", "Request ID: " + operationContext.getRequestId());
         android.util.Log.d("AiProviderService", "Provider: " + providerId);
