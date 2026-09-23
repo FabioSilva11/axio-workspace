@@ -288,6 +288,17 @@
                 android:textColorHint="@color/chat_text_hint"
                 android:textSize="15sp" />
 
+            <TextView
+                android:id="@+id/text_permission_caption"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:includeFontPadding="false"
+                android:text="@string/chat_permission_mode_format"
+                android:textColor="@color/chat_text_hint"
+                android:textSize="11sp"
+                android:visibility="gone" />
+
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -370,36 +381,6 @@
                     android:visibility="gone" />
 
                 <TextView
-                    android:id="@+id/text_permissions_status"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="8dp"
-                    android:layout_marginEnd="8dp"
-                    android:background="@drawable/bg_chat_thread_badge"
-                    android:contentDescription="@string/chat_permissions_label"
-                    android:drawableStart="@drawable/ic_mtrl_shield_lock"
-                    android:drawablePadding="4dp"
-                    android:ellipsize="end"
-                    android:gravity="center_vertical"
-                    android:includeFontPadding="false"
-                    android:maxLines="1"
-                    android:maxWidth="180dp"
-                    android:paddingStart="10dp"
-                    android:paddingTop="4dp"
-                    android:paddingEnd="10dp"
-                    android:paddingBottom="4dp"
-                    android:text="@string/chat_permission_mode_format"
-                    android:textColor="@color/chat_text_secondary"
-                    android:textSize="12sp"
-                    android:visibility="gone"
-                    app:drawableTint="@color/chat_text_secondary"
-                    app:layout_constrainedWidth="true"
-                    app:layout_constraintBottom_toBottomOf="parent"
-                    app:layout_constraintEnd_toStartOf="@id/btn_attach"
-                    app:layout_constraintStart_toEndOf="@id/btn_mcp_servers"
-                    app:layout_constraintTop_toTopOf="parent" />
-
-                <TextView
                     android:id="@+id/text_current_model"
                     android:layout_width="0dp"
                     android:layout_height="0dp"
@@ -414,7 +395,8 @@
                     android:padding="6dp"
                     android:src="@drawable/kelivo_lucide_plus"
                     app:layout_constraintBottom_toBottomOf="parent"
-                    app:layout_constraintStart_toEndOf="@id/text_permissions_status"
+                    app:layout_constraintStart_toEndOf="@id/btn_mcp_servers"
+                    android:layout_marginStart="8dp"
                     app:layout_constraintTop_toTopOf="parent"
                     app:tint="@color/chat_text_primary" />
 
@@ -475,12 +457,5 @@
         android:layout_width="300dp"
         android:layout_height="match_parent"
         android:layout_gravity="start" />
-
-    <include
-        android:id="@+id/project_files_drawer"
-        layout="@layout/layout_chat_project_drawer"
-        android:layout_width="300dp"
-        android:layout_height="match_parent"
-        android:layout_gravity="end" />
 
 </androidx.drawerlayout.widget.DrawerLayout>

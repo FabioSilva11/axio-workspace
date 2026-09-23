@@ -910,8 +910,12 @@ public class ChatActivity extends BaseAppCompatActivity {
         if (prefs == null) {
             prefs = AiChatSettingsHelper.prefs(this);
         }
-        TextView pill = findViewById(R.id.text_permissions_status);
-        if (pill == null) {
+        // Item: the permission mode used to be shown as a small shield-icon
+        // badge next to the "+" button, duplicating the shield already used
+        // by btn_permissions in the same row. It now shows as a plain, quiet
+        // caption below the message input box instead (no icon).
+        TextView caption = findViewById(R.id.text_permission_caption);
+        if (caption == null) {
             return;
         }
         String mode = VoidPortSettings.getPermissionMode(prefs);
@@ -924,9 +928,9 @@ public class ChatActivity extends BaseAppCompatActivity {
             labelRes = R.string.chat_permission_ask_approval;
         }
         String label = getString(labelRes);
-        pill.setText(label);
-        pill.setContentDescription(getString(R.string.chat_permission_mode_format, label));
-        pill.setVisibility(View.VISIBLE);
+        caption.setText(getString(R.string.chat_permission_mode_format, label));
+        caption.setContentDescription(getString(R.string.chat_permission_mode_format, label));
+        caption.setVisibility(View.VISIBLE);
     }
 
     private void showModelSelectorMenu(SharedPreferences prefs) {
@@ -2352,6 +2356,14 @@ public class ChatActivity extends BaseAppCompatActivity {
     }
 
     private void showProgress(boolean show) {
+        // While a run is in progress, the send button must be hidden and
+        // replaced by the stop/cancel button — never both visible at once.
+        // Previously only btnCancelRun's visibility was toggled here, so
+        // btnSend stayed visible (just disabled/dimmed) the whole time,
+        // making both controls show together during a run.
+        if (btnSend != null) {
+            btnSend.setVisibility(show ? View.GONE : View.VISIBLE);
+        }
         if (btnCancelRun != null) {
             btnCancelRun.setVisibility(show ? View.VISIBLE : View.GONE);
         }
