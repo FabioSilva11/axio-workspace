@@ -226,7 +226,13 @@ public class ChatDiffFragment extends Fragment {
                     diffCache.put(position, computed);
                     FileRowHolder live = (FileRowHolder) recycler.findViewHolderForAdapterPosition(position);
                     if (live != null) {
-                        live.renderDiffRows(computed);
+                        // Refresh the collapsed +/- stats regardless of expanded
+                        // state (this is what makes them show up without the
+                        // user having to tap the row open).
+                        live.bindStats(items.get(position));
+                        if (expandedPosition == position) {
+                            live.renderDiffRows(computed);
+                        }
                     }
                 });
             }, "chat-diff-worker").start();
@@ -244,6 +250,7 @@ public class ChatDiffFragment extends Fragment {
             private final ChangedFilesAdapter adapter;
             private final View row;
             private final TextView badge;
+            private final TextView fileTypeBadge;
             private final TextView name;
             private final TextView path;
             private final TextView stats;
@@ -260,6 +267,7 @@ public class ChatDiffFragment extends Fragment {
                 this.adapter = adapter;
                 row = itemView;
                 badge = itemView.findViewById(R.id.text_file_badge);
+                fileTypeBadge = itemView.findViewById(R.id.text_file_type_badge);
                 name = itemView.findViewById(R.id.text_file_name);
                 path = itemView.findViewById(R.id.text_file_path);
                 stats = itemView.findViewById(R.id.text_file_stats);
@@ -306,12 +314,23 @@ public class ChatDiffFragment extends Fragment {
                 name.setText(adapter.displayName(change.filePath));
                 path.setText(change.filePath);
                 bindBadge(change);
+                bindFileTypeIcon(change);
                 bindStats(change);
                 chevron.setText(expanded ? "▾" : "▸");
                 chevron.setContentDescription(getString(expanded
                         ? R.string.chat_diff_collapse_cd : R.string.chat_diff_expand_cd));
                 row.setContentDescription(getString(R.string.chat_diff_file_row_cd,
                         change.filePath));
+
+                // Item: the +/- stats used to only be computed once the row was
+                // expanded, so a collapsed file row never showed real numbers.
+                // Kick the diff computation off as soon as the row is bound
+                // (i.e. as soon as it's visible), not only on tap, so the
+                // collapsed line can show real +N -N as soon as it's ready —
+                // same lazy background computation, just triggered earlier.
+                if (!adapter.diffCache.containsKey(position)) {
+                    adapter.computeDiffsAsync(position);
+                }
 
                 details.setVisibility(expanded ? View.VISIBLE : View.GONE);
                 codeRows.removeAllViews();
@@ -327,6 +346,17 @@ public class ChatDiffFragment extends Fragment {
                         renderDiffRows(adapter.pendingDiffs);
                     }
                 }
+            }
+
+            private void bindFileTypeIcon(FileChangeTracker.FileChange change) {
+                FileTypeBadge.Info info = FileTypeBadge.forFileName(change.filePath);
+                fileTypeBadge.setText(info.label);
+                // Each recycled row shares the inflated background drawable by
+                // default; mutate() before tinting so coloring one badge does
+                // not repaint every other row using the same drawable instance.
+                fileTypeBadge.getBackground().mutate();
+                fileTypeBadge.setBackgroundTintList(
+                        android.content.res.ColorStateList.valueOf(info.color));
             }
 
             private void bindBadge(FileChangeTracker.FileChange change) {
