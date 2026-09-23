@@ -152,12 +152,36 @@ public final class VoidPortConvertToLlmMessageService {
                 + "\n</" + safeName + "_result>";
     }
 
+    /**
+     * Bug fix: both fallbacks here used to be timestamp-based ({@code
+     * System.currentTimeMillis()} and {@code message.getTimestamp()}), which
+     * only has millisecond resolution. This method runs once per TYPE_TOOL
+     * message on every re-serialization of the whole conversation history
+     * (see the caller above), so any two sibling tool messages created in the
+     * same millisecond — e.g. two bubbles from a single turn's tool calls,
+     * created back-to-back in the same loop — got the IDENTICAL id whenever
+     * {@code toolId} was empty, and (being derived from the message's own
+     * stored timestamp) kept colliding on every subsequent turn, not just
+     * once. A duplicate id across two tool_call/tool-result entries in the
+     * same request makes providers misattribute which result answers which
+     * call, so the model could see one call's cached success attached to a
+     * different call that never actually ran. Use a real unique id instead.
+     */
     public static String stableToolId(ChatMessage message) {
         if (message == null) {
-            return "call_" + System.currentTimeMillis();
+            return "call_" + java.util.UUID.randomUUID();
         }
         String toolId = safe(message.getToolId()).trim();
-        return toolId.isEmpty() ? "call_" + message.getTimestamp() : toolId;
+        if (!toolId.isEmpty()) {
+            return toolId;
+        }
+        // Genuinely stable: generate once and persist it onto the message,
+        // so every later re-serialization of this same message (every
+        // subsequent turn resends the whole history) returns the SAME id,
+        // instead of a fresh random one each call.
+        String generated = "call_" + java.util.UUID.randomUUID();
+        message.setToolId(generated);
+        return generated;
     }
 
     private static String safe(String value) {

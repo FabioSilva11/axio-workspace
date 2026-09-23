@@ -1662,9 +1662,24 @@ public class ContextBuilder {
         return parseJsonObject(rawJson).toString();
     }
 
+    /**
+     * Bug fix: the fallback used to be {@code "call_" + System.currentTimeMillis()},
+     * which has only millisecond resolution. When re-serializing history into a
+     * request payload, several tool messages with a missing/empty {@code toolId}
+     * are processed in the same tight loop iteration — comfortably within the
+     * same millisecond — so this fallback could (and did) hand out the IDENTICAL
+     * id string to multiple genuinely different tool calls/results in the same
+     * request. A duplicate {@code tool_call_id} across two {@code tool_calls}/
+     * {@code tool} entries makes providers misattribute which result answers
+     * which call, so the model could see one call's success result attached to
+     * a different (still-unfinished) call. {@link java.util.UUID#randomUUID()}
+     * (the same fallback pattern already used in {@code AxionToolRouter.Route}
+     * and {@code AiProviderService.ToolCallAccumulator}) is unique regardless of
+     * how many calls are serialized within the same millisecond.
+     */
     private String safeToolId(String toolId) {
         String safeId = safe(toolId).trim();
-        return safeId.isEmpty() ? "call_" + System.currentTimeMillis() : safeId;
+        return safeId.isEmpty() ? "call_" + java.util.UUID.randomUUID() : safeId;
     }
 
     private boolean appendBoundedLine(StringBuilder builder, String line, int maxTokens) {
