@@ -35,8 +35,6 @@ import com.google.android.material.bottomsheet.BottomSheetDialog;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton;
 
-import com.saaspaymentsolutions.axion.analytics.AxionAnalytics;
-
 
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -59,7 +57,6 @@ public class MainActivity extends BaseAppCompatActivity {
     private ExtendedFloatingActionButton fabNewProject;
     private LinearLayout drawerItemSkills;
     private LinearLayout drawerItemAiSettings;
-    private LinearLayout drawerItemLogout;
     private TextView drawerUserName;
     private TextView drawerAppVersion;
 
@@ -125,7 +122,6 @@ public class MainActivity extends BaseAppCompatActivity {
         fabNewProject = findViewById(R.id.fab_new_project);
         drawerItemSkills = findViewById(R.id.drawer_item_skills);
         drawerItemAiSettings = findViewById(R.id.drawer_item_ai_settings);
-        drawerItemLogout = findViewById(R.id.drawer_item_logout);
         drawerUserName = findViewById(R.id.drawer_user_name);
         drawerAppVersion = findViewById(R.id.drawer_app_version);
         if (drawerAppVersion != null) {
@@ -220,17 +216,6 @@ public class MainActivity extends BaseAppCompatActivity {
         drawerItemAiSettings.setOnClickListener(v -> {
             drawerLayout.closeDrawer(GravityCompat.START);
             startActivity(new Intent(this, com.saaspaymentsolutions.axion.provider.IaSettingsActivity.class));
-        });
-        drawerItemLogout.setOnClickListener(v -> {
-            drawerLayout.closeDrawer(GravityCompat.START);
-            new MaterialAlertDialogBuilder(this)
-                    .setTitle(R.string.account_logout_title)
-                    .setMessage(R.string.account_logout_message)
-                    .setNegativeButton(R.string.common_word_cancel, null)
-                    .setPositiveButton(R.string.account_logout, (dialog, which) -> {
-                        AxionAnalytics.logEvent(this, AxionAnalytics.Events.LOGOUT);
-                        AxionAnalytics.clearUser(this);
-                    }).show();
         });
     }
 

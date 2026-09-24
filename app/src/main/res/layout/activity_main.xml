@@ -260,31 +260,6 @@
             android:layout_height="0dp"
             android:layout_weight="1" />
 
-        <LinearLayout
-            android:id="@+id/drawer_item_logout"
-            android:layout_width="match_parent"
-            android:layout_height="52dp"
-            android:background="?attr/selectableItemBackground"
-            android:gravity="center_vertical"
-            android:orientation="horizontal"
-            android:paddingHorizontal="20dp">
-
-            <ImageView
-                android:layout_width="22dp"
-                android:layout_height="22dp"
-                android:contentDescription="@string/account_logout"
-                android:src="@drawable/ic_mtrl_exit"
-                app:tint="@color/chat_error" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="16dp"
-                android:text="@string/account_logout"
-                android:textColor="@color/chat_error"
-                android:textSize="15sp" />
-        </LinearLayout>
-
         <TextView
             android:id="@+id/drawer_app_version"
             android:layout_width="wrap_content"
