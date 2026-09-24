@@ -274,8 +274,16 @@ public final class AxionAgentGateway implements AgentLlmGateway, AgentLlmGateway
                 finishReason.get(), structured, streamed, lastUsage);
     }
 
+    /**
+     * Transport-failure path — NEVER synthesized assistant text. A timeout,
+     * interrupt, cancellation or network failure produces a FAILED turn with
+     * an empty payload and a stable diagnostic code. The content field stays
+     * empty (no {@code "Error: ..."} mining); the runtime reacts to the
+     * semantic {@link LlmTurnOutput.Outcome}.
+     */
     private static LlmTurnOutput timeoutTurn(String message) {
-        return new LlmTurnOutput("Error: " + message, "", "error", null);
+        return LlmTurnOutput.failure(
+                LlmTurnOutput.CODE_EMPTY_ASSISTANT_PAYLOAD, message == null ? "" : message, null);
     }
 
     @Override
