@@ -3,6 +3,8 @@ package com.saaspaymentsolutions.axion.skills;
 import android.os.Bundle;
 import android.view.View;
 import android.widget.EditText;
+import android.widget.RadioGroup;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.annotation.Nullable;
@@ -16,13 +18,19 @@ import com.google.android.material.floatingactionbutton.ExtendedFloatingActionBu
 
 import com.saaspaymentsolutions.axion.BaseAppCompatActivity;
 import com.saaspaymentsolutions.axion.R;
+import com.saaspaymentsolutions.axion.workspace.Workspace;
+import com.saaspaymentsolutions.axion.workspace.WorkspaceManager;
+import com.saaspaymentsolutions.axion.workspace.WorkspaceRepository;
 
+import java.util.Collections;
 import java.util.List;
 
 /**
  * Tela onde o usuário cadastra suas próprias "skills": blocos reutilizáveis de
- * instruções/conhecimento que o chat (agente de IA) pode consultar e aplicar
- * durante a conversa.
+ * instruções/conhecimento que o runtime pode selecionar e aplicar durante a
+ * conversa. A identidade das skills é o id persistente (nunca o nome); o
+ * escopo define disponibilidade por projeto e a política define se a skill
+ * entra automaticamente ou só por pedido explícito.
  */
 public class SkillsActivity extends BaseAppCompatActivity {
 
@@ -83,14 +91,35 @@ public class SkillsActivity extends BaseAppCompatActivity {
     private void showEditDialog(@Nullable Skill existing) {
         View content = getLayoutInflater().inflate(R.layout.dialog_edit_skill, null);
         EditText inputName = content.findViewById(R.id.input_skill_name);
-        EditText inputTrigger = content.findViewById(R.id.input_skill_trigger);
+        EditText inputDescription = content.findViewById(R.id.input_skill_description);
         EditText inputContent = content.findViewById(R.id.input_skill_content);
+        RadioGroup groupInvocation = content.findViewById(R.id.group_invocation);
+        RadioGroup groupScope = content.findViewById(R.id.group_scope);
+        TextView scopeProjectHint = content.findViewById(R.id.scope_project_hint);
+
+        Workspace current = currentWorkspace();
+        if (current != null && current.getId() != null && !current.getId().isEmpty()) {
+            scopeProjectHint.setText(getString(R.string.skill_scope_project_hint, current.getName()));
+        } else {
+            scopeProjectHint.setVisibility(View.GONE);
+        }
+
+        groupScope.setOnCheckedChangeListener((group, checkedId) -> {
+            boolean projectScope = checkedId == R.id.radio_scope_project;
+            scopeProjectHint.setVisibility(projectScope && currentWorkspace() != null ? View.VISIBLE : View.GONE);
+        });
 
         boolean isEdit = existing != null;
         if (isEdit) {
             inputName.setText(existing.name);
-            inputTrigger.setText(existing.trigger);
+            inputDescription.setText(existing.getDescription());
             inputContent.setText(existing.content);
+            checkRadio(groupInvocation,
+                    existing.invocationPolicy == SkillInvocationPolicy.EXPLICIT_ONLY
+                            ? R.id.radio_invocation_explicit : R.id.radio_invocation_automatic);
+            checkRadio(groupScope,
+                    existing.scope == SkillScope.PROJECT
+                            ? R.id.radio_scope_project : R.id.radio_scope_user);
         }
 
         AlertDialog dialog = new MaterialAlertDialogBuilder(this)
@@ -102,7 +131,7 @@ public class SkillsActivity extends BaseAppCompatActivity {
 
         dialog.setOnShowListener(d -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
             String name = inputName.getText().toString().trim();
-            String trigger = inputTrigger.getText().toString().trim();
+            String description = inputDescription.getText().toString().trim();
             String skillContent = inputContent.getText().toString().trim();
 
             if (name.isEmpty()) {
@@ -114,19 +143,63 @@ public class SkillsActivity extends BaseAppCompatActivity {
                 return;
             }
 
+            SkillInvocationPolicy policy = groupInvocation.getCheckedRadioButtonId() == R.id.radio_invocation_explicit
+                    ? SkillInvocationPolicy.EXPLICIT_ONLY
+                    : SkillInvocationPolicy.AUTOMATIC;
+            boolean projectScope = groupScope.getCheckedRadioButtonId() == R.id.radio_scope_project;
+            String projectId = "";
+            if (projectScope) {
+                Workspace target = currentWorkspace();
+                if (target == null || target.getId() == null || target.getId().isEmpty()) {
+                    Toast.makeText(this, R.string.skill_error_project_required, Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                projectId = target.getId();
+            }
+
             if (isEdit) {
                 existing.name = name;
-                existing.trigger = trigger;
+                existing.description = description;
+                existing.shortDescription = "";
                 existing.content = skillContent;
+                existing.invocationPolicy = policy;
+                existing.scope = projectScope ? SkillScope.PROJECT : SkillScope.USER;
+                existing.projectId = projectId;
+                existing.version = Skill.VERSION_V2;
                 existing.updatedAt = System.currentTimeMillis();
                 SkillManager.upsert(this, existing);
             } else {
-                SkillManager.upsert(this, Skill.create(name, trigger, skillContent));
+                Skill created = Skill.createFull(name, description, "", skillContent,
+                        policy, projectScope ? SkillScope.PROJECT : SkillScope.USER,
+                        projectId, Collections.<SkillResource>emptyList());
+                SkillManager.upsert(this, created);
             }
             refreshList();
             dialog.dismiss();
         }));
         dialog.show();
+    }
+
+    private void checkRadio(RadioGroup group, int id) {
+        if (group.findViewById(id) != null) {
+            group.check(id);
+        }
+    }
+
+    /** Projeto atual: workspace ativo, senão o mais recente (fixos primeiro). */
+    private Workspace currentWorkspace() {
+        Workspace active = WorkspaceManager.getActiveWorkspace();
+        if (active != null) {
+            return active;
+        }
+        try {
+            List<Workspace> recent = new WorkspaceRepository(this).getAll();
+            if (!recent.isEmpty()) {
+                return recent.get(0);
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
     }
 
     private void confirmDelete(Skill skill) {

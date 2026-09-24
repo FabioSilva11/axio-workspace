@@ -7,6 +7,9 @@ import com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRegistry;
 import com.saaspaymentsolutions.axion.agentsdk.tools.AxionToolRouter;
 import com.saaspaymentsolutions.axion.agentsdk.tools.ToolCatalog;
 import com.saaspaymentsolutions.axion.agentsdk.tools.ToolRegistration;
+import com.saaspaymentsolutions.axion.skills.SkillContext;
+import com.saaspaymentsolutions.axion.skills.SkillFlow;
+import com.saaspaymentsolutions.axion.skills.SkillPromptBlocks;
 import com.saaspaymentsolutions.axion.toolcalling.ToolCall;
 
 import java.util.ArrayList;
@@ -47,6 +50,9 @@ public final class AgentRuntime {
     // Removed: expectFileMutations (Codex alignment)
     // The runtime no longer assumes all chats require file mutations.
     private final AiOperationContext builderOperationContext;
+    /** Único fluxo de Skills resolvido por execução (código-x). */
+    private final SkillFlow skillFlow;
+    private volatile SkillPromptBlocks lastSkillBlocks = SkillPromptBlocks.empty();
     private volatile boolean cancelRequested;
 
     private AgentRuntime(Builder builder) {
@@ -62,6 +68,7 @@ public final class AgentRuntime {
         this.includeProjectInstructions = builder.includeProjectInstructions;
         // Removed: expectFileMutations assignment (Codex alignment)
         this.builderOperationContext = builder.operationContext;
+        this.skillFlow = builder.skillFlow;
     }
 
     /** Single-shot run: user input in, final assistant text out. */
@@ -114,6 +121,12 @@ public final class AgentRuntime {
                 return RunResult.blockedByGuardrail(result);
             }
         }
+
+        // Items (skills): the skill context (catalog → selector → loader →
+        // renderer) is resolved ONCE per run from the run's scId and the
+        // latest user text. A failure anywhere yields empty blocks — the
+        // runtime NEVER breaks a conversation because of skills.
+        final SkillPromptBlocks skillBlocks = skillBlocksFor(scId, latestUserText);
 
         // ---- Single execution identity (item 2/3 of the migration) ----
         // The workspace of this run is resolved ONCE from the scId — never
@@ -202,7 +215,7 @@ public final class AgentRuntime {
                     // by the runtime — freeform/namespace kinds stay faithful
                     // until the provider serializer.
                     turn = gateway.completeTurn(
-                            resolveSystemPrompt(activeAgent, context),
+                            resolveSystemPrompt(activeAgent, context, skillBlocks),
                             toolCatalogFor(),
                             history,
                             runContextIdentity);
@@ -464,12 +477,50 @@ public final class AgentRuntime {
      * fragments — agent instructions, AGENTS.md hierarchy, workspace
      * snapshot and task memory — rendered in a fixed order from THIS run's
      * {@link RunContext}. Never reads the global active workspace.
+     *
+     * <p>Skills are appended as a separate, optional block: the run's
+     * {@link SkillPromptBlocks} are rendered after the base prompt whenever
+     * they are non-empty (single injection point for the whole run).</p>
      */
-    private String resolveSystemPrompt(Agent agent, RunContext context) {
-        if (!includeProjectInstructions) {
-            return agent.instructions();
+    private String resolveSystemPrompt(Agent agent, RunContext context, SkillPromptBlocks skills) {
+        String base = includeProjectInstructions
+                ? RunContextAssembler.assemble(agent, context).renderPrompt()
+                : agent.instructions();
+        if (skills == null || skills.isEmpty()) {
+            return base;
         }
-        return RunContextAssembler.assemble(agent, context).renderPrompt();
+        String skillBlock = skills.renderAll();
+        if (skillBlock.isEmpty()) {
+            return base;
+        }
+        return base + "\n\n" + skillBlock;
+    }
+
+    /**
+     * Resolve os blocos de Skills desta execução. Nunca lança: qualquer falha
+     * vira blocos vazios, preservando uma conversa funcional mesmo com
+     * catálogo corrompido ou repositório indisponível.
+     */
+    private SkillPromptBlocks skillBlocksFor(String scId, String userText) {
+        if (skillFlow == null) {
+            lastSkillBlocks = SkillPromptBlocks.empty();
+            return lastSkillBlocks;
+        }
+        try {
+            SkillContext context = skillFlow.resolveFor(scId, userText);
+            lastSkillBlocks = context != null && context.blocks() != null
+                    ? context.blocks()
+                    : SkillPromptBlocks.empty();
+            return lastSkillBlocks;
+        } catch (Exception e) {
+            lastSkillBlocks = SkillPromptBlocks.empty();
+            return lastSkillBlocks;
+        }
+    }
+
+    /** Blocos de Skills da última execução (inspeção/host). */
+    public SkillPromptBlocks lastSkillBlocks() {
+        return lastSkillBlocks;
     }
 
     /** ~4 chars per token, same estimate used by AgentManager. */
@@ -679,6 +730,7 @@ public final class AgentRuntime {
         private boolean includeProjectInstructions = true;
         // Removed: expectFileMutations field (Codex alignment)
         private AxionToolRegistry registry;
+        private SkillFlow skillFlow = SkillFlow.NOOP;
 
         public Builder(AgentLlmGateway gateway) {
             if (gateway == null) {
@@ -726,6 +778,17 @@ public final class AgentRuntime {
         /** M7: inject workspace AGENTS.md into the system prompt (default true). */
         public Builder includeProjectInstructions(boolean include) {
             this.includeProjectInstructions = include;
+            return this;
+        }
+
+        /**
+         * Fluxo oficial de Skills desta runtime (padrão: desligado). Resolvido
+         * uma vez por execução; implementações devem nunca lançar (o runtime
+         * já defende contra falhas). Em produção é construído por
+         * {@code SkillManager.appFlow(context)}.
+         */
+        public Builder skills(SkillFlow flow) {
+            this.skillFlow = flow == null ? SkillFlow.NOOP : flow;
             return this;
         }
 

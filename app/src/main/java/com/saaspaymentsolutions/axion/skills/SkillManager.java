@@ -12,19 +12,28 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 
+import com.saaspaymentsolutions.axion.ChatFlowLogger;
+import com.saaspaymentsolutions.axion.workspace.Workspace;
+import com.saaspaymentsolutions.axion.workspace.WorkspaceManager;
+import com.saaspaymentsolutions.axion.workspace.WorkspaceRepository;
+
 /**
- * Armazena e recupera as skills cadastradas pelo usuário, e monta o bloco de
- * texto que é injetado no system prompt do agente para que o chat possa
- * consultar e aplicar essas skills durante a conversa.
+ * Camada de persistência e montagem do fluxo oficial de Skills.
+ *
+ * <p>Evolução (código-x): o antigo {@code buildPromptBlock} (lista fixa de
+ * até 20 skills / 4000 chars injetada em todo prompt) foi removido — ele não
+ * tem mais o papel de único ponto de injeção. O runtime agora resolve as
+ * Skills via {@link SkillPipeline} (catálogo → seleção → loader → renderer).
+ * Este gerenciador continua dono do armazenamento SharedPreferences
+ * ({@code axion_skills}/{@code skills_json}) e das operações da UI
+ * (criar/editar/excluir/habilitar), com identidade canônica por id — nunca
+ * por nome.</p>
  */
 public final class SkillManager {
 
     private static final String PREFS_NAME = "axion_skills";
     private static final String KEY_SKILLS = "skills_json";
-
-    /** Limite defensivo para não estourar o orçamento de tokens do prompt. */
-    private static final int MAX_CONTENT_CHARS_PER_SKILL = 4000;
-    private static final int MAX_SKILLS_IN_PROMPT = 20;
+    private static final Object LOCK = new Object();
 
     private SkillManager() {
     }
@@ -33,22 +42,50 @@ public final class SkillManager {
         return context.getApplicationContext().getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
     }
 
-    public static synchronized List<Skill> getAll(Context context) {
-        List<Skill> result = new ArrayList<>();
-        String raw = prefs(context).getString(KEY_SKILLS, "");
-        if (TextUtils.isEmpty(raw)) {
-            return result;
-        }
-        try {
-            JSONArray array = new JSONArray(raw);
-            for (int i = 0; i < array.length(); i++) {
-                Skill skill = Skill.fromJson(array.optJSONObject(i));
-                if (skill != null) {
-                    result.add(skill);
+    /** Store SharedPreferences tolerante a JSON corrompido. */
+    public static SkillStore newStore(final Context context) {
+        return new SkillStore() {
+            @Override
+            public List<Skill> loadAll() {
+                synchronized (LOCK) {
+                    List<Skill> result = new ArrayList<Skill>();
+                    String raw = prefs(context).getString(KEY_SKILLS, "");
+                    if (TextUtils.isEmpty(raw)) {
+                        return result;
+                    }
+                    try {
+                        JSONArray array = new JSONArray(raw);
+                        for (int i = 0; i < array.length(); i++) {
+                            Skill skill = Skill.fromJson(array.optJSONObject(i));
+                            if (skill != null) {
+                                result.add(skill);
+                            }
+                        }
+                    } catch (Exception ignored) {
+                    }
+                    return result;
                 }
             }
-        } catch (Exception ignored) {
-        }
+
+            @Override
+            public void saveAll(List<Skill> skills) {
+                synchronized (LOCK) {
+                    JSONArray array = new JSONArray();
+                    List<Skill> values = skills == null ? Collections.emptyList() : skills;
+                    for (Skill skill : values) {
+                        if (skill != null) {
+                            array.put(skill.toJson());
+                        }
+                    }
+                    prefs(context).edit().putString(KEY_SKILLS, array.toString()).apply();
+                }
+            }
+        };
+    }
+
+    /** Todas as Skills para a UI, ordem de atualização decrescente. */
+    public static List<Skill> getAll(Context context) {
+        List<Skill> result = newStore(context).loadAll();
         Collections.sort(result, new Comparator<Skill>() {
             @Override
             public int compare(Skill a, Skill b) {
@@ -58,39 +95,14 @@ public final class SkillManager {
         return result;
     }
 
-    private static synchronized void saveAll(Context context, List<Skill> skills) {
-        JSONArray array = new JSONArray();
-        for (Skill skill : skills) {
-            array.put(skill.toJson());
-        }
-        prefs(context).edit().putString(KEY_SKILLS, array.toString()).apply();
-    }
-
     public static void upsert(Context context, Skill skill) {
-        List<Skill> all = getAll(context);
-        boolean replaced = false;
-        for (int i = 0; i < all.size(); i++) {
-            if (all.get(i).id.equals(skill.id)) {
-                all.set(i, skill);
-                replaced = true;
-                break;
-            }
+        if (skill != null) {
+            newStore(context).upsert(skill);
         }
-        if (!replaced) {
-            all.add(skill);
-        }
-        saveAll(context, all);
     }
 
     public static void delete(Context context, String skillId) {
-        List<Skill> all = getAll(context);
-        for (int i = 0; i < all.size(); i++) {
-            if (all.get(i).id.equals(skillId)) {
-                all.remove(i);
-                break;
-            }
-        }
-        saveAll(context, all);
+        newStore(context).deleteById(skillId);
     }
 
     public static void setEnabled(Context context, String skillId, boolean enabled) {
@@ -99,60 +111,55 @@ public final class SkillManager {
             if (skill.id.equals(skillId)) {
                 skill.enabled = enabled;
                 skill.updatedAt = System.currentTimeMillis();
+                newStore(context).upsert(skill);
                 break;
             }
         }
-        saveAll(context, all);
     }
 
     public static int count(Context context) {
-        return getAll(context).size();
+        return newStore(context).loadAll().size();
     }
 
     /**
-     * Monta o bloco de texto com as skills habilitadas para injeção no system
-     * prompt. Retorna string vazia quando não há nenhuma skill habilitada.
+     * Id do "projeto atual": o workspace ativo (quando aberto), senão o
+     * workspace mais recente
+     * (fixos primeiro, depois último acesso — ordem do WorkspaceRepository).
+     * Sem workspace conhecido retorna vazio (skills tornam-se USER-only).
      */
-    public static String buildPromptBlock(Context context) {
-        List<Skill> enabled = new ArrayList<>();
-        for (Skill skill : getAll(context)) {
-            if (skill.enabled && !skill.content.trim().isEmpty()) {
-                enabled.add(skill);
-            }
-        }
-        if (enabled.isEmpty()) {
+    public static String resolveCurrentProjectId(Context context) {
+        if (context == null) {
             return "";
         }
-        if (enabled.size() > MAX_SKILLS_IN_PROMPT) {
-            enabled = enabled.subList(0, MAX_SKILLS_IN_PROMPT);
+        Workspace active = WorkspaceManager.getActiveWorkspace();
+        if (active != null && active.getId() != null && !active.getId().isEmpty()) {
+            return active.getId();
         }
-
-        StringBuilder builder = new StringBuilder();
-        builder.append("The user has registered custom SKILLS: reusable blocks of domain knowledge or ")
-                .append("instructions. Check the name/trigger of each skill below; when the user's request ")
-                .append("relates to one, read and follow its instructions as if they were part of your own ")
-                .append("knowledge. Do not mention the existence of this list unless relevant.\n")
-                .append("<skills>\n");
-        for (Skill skill : enabled) {
-            String name = skill.name.trim().isEmpty() ? "Untitled skill" : skill.name.trim();
-            String trigger = skill.trigger.trim();
-            String content = skill.content.trim();
-            if (content.length() > MAX_CONTENT_CHARS_PER_SKILL) {
-                content = content.substring(0, MAX_CONTENT_CHARS_PER_SKILL) + "\n...(truncated)";
+        try {
+            List<Workspace> recent = new WorkspaceRepository(context).getAll();
+            if (recent != null && !recent.isEmpty()) {
+                String id = recent.get(0).getId();
+                return id == null ? "" : id;
             }
-            builder.append("<skill name=\"").append(escapeAttr(name)).append("\">\n");
-            if (!trigger.isEmpty()) {
-                builder.append("When to use: ").append(trigger).append("\n");
-            }
-            builder.append(content).append("\n");
-            builder.append("</skill>\n");
+        } catch (Exception ignored) {
         }
-        builder.append("</skills>");
-        return builder.toString();
+        return "";
     }
 
-    private static String escapeAttr(String value) {
-        return value.replace("&", "&amp;").replace("\"", "&quot;")
-                .replace("<", "&lt;").replace(">", "&gt;");
+    /**
+     * Fluxo oficial de Skills para o runtime de produção: store real +
+     * manutenção de catálogo + seleção determinística + loader com teto de
+     * conteúdo configurável, com diagnóstico no ChatFlowLogger. Sem contexto
+     * (hosts JVM) retorna um fluxo desligado — o runtime simplesmente não
+     * injeta Skills.
+     */
+    public static SkillFlow appFlow(Context context) {
+        if (context == null) {
+            return SkillFlow.NOOP;
+        }
+        final SkillDebugSink sink = message -> ChatFlowLogger.event("skills", "skill_flow", message);
+        SkillStore store = newStore(context);
+        SkillLoader loader = new SkillLoader(store, SkillLoader.DEFAULT_MAX_CONTENT_CHARS, sink);
+        return new SkillPipeline(store, new DefaultSkillSelector(), loader, sink);
     }
 }

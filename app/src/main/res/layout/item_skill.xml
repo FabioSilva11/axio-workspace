@@ -51,7 +51,7 @@
                 tools:text="Convenções do projeto" />
 
             <TextView
-                android:id="@+id/skill_trigger"
+                android:id="@+id/skill_description"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="3dp"
@@ -60,6 +60,15 @@
                 android:textColor="@color/chat_text_secondary"
                 android:textSize="13sp"
                 tools:text="Quando o usuário pedir para gerar layouts XML" />
+
+            <TextView
+                android:id="@+id/skill_meta"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:textColor="@color/chat_accent"
+                android:textSize="12sp"
+                tools:text="Auto · Geral" />
 
             <LinearLayout
                 android:layout_width="wrap_content"

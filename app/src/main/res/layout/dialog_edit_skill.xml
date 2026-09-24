@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:maxHeight="520dp">
@@ -38,24 +39,106 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            android:text="@string/skill_field_trigger"
+            android:text="@string/skill_field_description"
             android:textColor="@color/chat_text_secondary"
             android:textSize="12sp"
             android:textStyle="bold" />
 
         <EditText
-            android:id="@+id/input_skill_trigger"
+            android:id="@+id/input_skill_description"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="4dp"
             android:background="@drawable/bg_outline_edittext"
-            android:hint="@string/skill_field_trigger_hint"
+            android:hint="@string/skill_field_description_hint"
             android:inputType="text|textCapSentences"
             android:maxLines="2"
             android:padding="12dp"
             android:textColor="@color/chat_text_primary"
             android:textColorHint="@color/chat_text_hint"
             android:textSize="14sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/skill_invocation_label"
+            android:textColor="@color/chat_text_secondary"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <RadioGroup
+            android:id="@+id/group_invocation"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:orientation="vertical">
+
+            <RadioButton
+                android:id="@+id/radio_invocation_automatic"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:checked="true"
+                android:paddingVertical="4dp"
+                android:text="@string/skill_invocation_automatic"
+                android:textColor="@color/chat_text_primary"
+                android:textSize="14sp" />
+
+            <RadioButton
+                android:id="@+id/radio_invocation_explicit"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingVertical="4dp"
+                android:text="@string/skill_invocation_explicit"
+                android:textColor="@color/chat_text_primary"
+                android:textSize="14sp" />
+        </RadioGroup>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/skill_scope_label"
+            android:textColor="@color/chat_text_secondary"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <RadioGroup
+            android:id="@+id/group_scope"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:orientation="vertical">
+
+            <RadioButton
+                android:id="@+id/radio_scope_user"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:checked="true"
+                android:paddingVertical="4dp"
+                android:text="@string/skill_scope_user"
+                android:textColor="@color/chat_text_primary"
+                android:textSize="14sp" />
+
+            <RadioButton
+                android:id="@+id/radio_scope_project"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingVertical="4dp"
+                android:text="@string/skill_scope_project"
+                android:textColor="@color/chat_text_primary"
+                android:textSize="14sp" />
+        </RadioGroup>
+
+        <TextView
+            android:id="@+id/scope_project_hint"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="36dp"
+            android:textSize="12sp"
+            android:textColor="@color/chat_text_secondary"
+            android:visibility="gone"
+            tools:text='Vale para "Meu App"' />
 
         <TextView
             android:layout_width="match_parent"

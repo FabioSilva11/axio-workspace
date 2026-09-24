@@ -1,5 +1,6 @@
 package com.saaspaymentsolutions.axion.skills;
 
+import android.content.Context;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -50,12 +51,15 @@ public class SkillsAdapter extends RecyclerView.Adapter<SkillsAdapter.SkillViewH
     @Override
     public void onBindViewHolder(@NonNull SkillViewHolder holder, int position) {
         Skill skill = items.get(position);
+        Context context = holder.itemView.getContext();
         holder.name.setText(skill.name.trim().isEmpty() ? "-" : skill.name.trim());
-        holder.trigger.setText(skill.trigger.trim().isEmpty()
+        String description = skill.getDescription();
+        holder.description.setText(description.trim().isEmpty()
                 ? skill.content.trim()
-                : skill.trigger.trim());
-        holder.trigger.setVisibility(
-                (skill.trigger.trim().isEmpty() && skill.content.trim().isEmpty()) ? View.GONE : View.VISIBLE);
+                : description.trim());
+        holder.description.setVisibility(
+                (description.trim().isEmpty() && skill.content.trim().isEmpty()) ? View.GONE : View.VISIBLE);
+        holder.meta.setText(badge(context, skill));
 
         holder.switchEnabled.setOnCheckedChangeListener(null);
         holder.switchEnabled.setChecked(skill.enabled);
@@ -74,6 +78,16 @@ public class SkillsAdapter extends RecyclerView.Adapter<SkillsAdapter.SkillViewH
         });
     }
 
+    private static String badge(Context context, Skill skill) {
+        String policy = skill.invocationPolicy == SkillInvocationPolicy.EXPLICIT_ONLY
+                ? context.getString(R.string.skill_badge_explicit)
+                : context.getString(R.string.skill_badge_automatic);
+        String scope = skill.scope == SkillScope.PROJECT
+                ? context.getString(R.string.skill_badge_project)
+                : context.getString(R.string.skill_badge_user);
+        return policy + " · " + scope;
+    }
+
     @Override
     public int getItemCount() {
         return items.size();
@@ -81,7 +95,8 @@ public class SkillsAdapter extends RecyclerView.Adapter<SkillsAdapter.SkillViewH
 
     static class SkillViewHolder extends RecyclerView.ViewHolder {
         final TextView name;
-        final TextView trigger;
+        final TextView description;
+        final TextView meta;
         final TextView edit;
         final TextView delete;
         final MaterialSwitch switchEnabled;
@@ -89,7 +104,8 @@ public class SkillsAdapter extends RecyclerView.Adapter<SkillsAdapter.SkillViewH
         SkillViewHolder(@NonNull View itemView) {
             super(itemView);
             name = itemView.findViewById(R.id.skill_name);
-            trigger = itemView.findViewById(R.id.skill_trigger);
+            description = itemView.findViewById(R.id.skill_description);
+            meta = itemView.findViewById(R.id.skill_meta);
             edit = itemView.findViewById(R.id.skill_edit);
             delete = itemView.findViewById(R.id.skill_delete);
             switchEnabled = itemView.findViewById(R.id.skill_switch);

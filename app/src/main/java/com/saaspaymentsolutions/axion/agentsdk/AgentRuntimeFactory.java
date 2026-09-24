@@ -37,7 +37,8 @@ public final class AgentRuntimeFactory {
         AxionAgentGateway gateway = new AxionAgentGateway(aiService, "agent");
         android.content.SharedPreferences prefs =
                 context == null ? null : com.saaspaymentsolutions.axion.port.VoidPortSettings.prefs(context);
-        return createForChatWithGateway(gateway, prefs);
+        return createForChatWithGateway(gateway, prefs,
+                com.saaspaymentsolutions.axion.skills.SkillManager.appFlow(context));
     }
 
     /**
@@ -66,6 +67,18 @@ public final class AgentRuntimeFactory {
     public static AgentRuntime createForChatWithGateway(
             com.saaspaymentsolutions.axion.agentsdk.AgentLlmGateway gateway,
             android.content.SharedPreferences mcpPrefs) {
+        return createForChatWithGateway(gateway, mcpPrefs, null);
+    }
+
+    /**
+     * Variante que também injeta o fluxo de Skills (produção usa
+     * {@code SkillManager.appFlow(context)}; JVM/mainstay passa {@code null}
+     * para deixar o runtime sem skills).
+     */
+    public static AgentRuntime createForChatWithGateway(
+            com.saaspaymentsolutions.axion.agentsdk.AgentLlmGateway gateway,
+            android.content.SharedPreferences mcpPrefs,
+            com.saaspaymentsolutions.axion.skills.SkillFlow skills) {
         // Item 16: the interactive resolver is the explicit approval
         // protocol — requests are resolved by requestId from the UI thread.
         ApprovalHandler.Resolver approvals = new ApprovalHandler.Resolver();
@@ -95,6 +108,7 @@ public final class AgentRuntimeFactory {
                 .events(events)
                 .permissions(new PermissionLayer(approvals, events))
                 .toolRegistry(registry)
+                .skills(skills)
                 // Removed: expectFileMutations(true) - Codex alignment
                 // The runtime no longer forces mutations for all chats.
                 // Text-only responses are valid for read-only queries.
